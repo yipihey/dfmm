@@ -10,6 +10,7 @@ import pytest
 from dfmm import Tracers
 from dfmm.integrate import run_to
 from dfmm.schemes._common import IDX_RHO, IDX_L1
+from dfmm.setups.wavepool import make_wave_pool_ic
 
 
 def _uniform_periodic_ic(N=64, u0=0.25, rho0=1.0, P0=0.1, sigma_x0=0.02):
@@ -31,28 +32,38 @@ def test_init_from_conditions():
     U0, x = _uniform_periodic_ic(N=64, rho0=1.0)
     tr = Tracers.from_initial_conditions(U0, x, periodic=True)
 
-    # One tracer per cell, at the cell center.
-    assert tr.n == 64
-    assert np.max(np.abs(tr.x - x)) < 1e-15
+    # Periodic default drops boundary_buffer=2 cells on each end.
+    assert tr.n == 60
+    # Tracers live on cells 2..61; x positions match those cell centers.
+    assert np.max(np.abs(tr.x - x[2:-2])) < 1e-15
 
     # q is monotone non-decreasing.
     assert np.all(np.diff(tr.q) >= -1e-15)
 
     # For uniform rho, q is uniformly spaced in mass = rho*dx per step.
-    expected_dq = 1.0 / 64  # rho0 * dx with rho0=1, dx=1/64
+    expected_dq = 1.0 / 64
     assert np.max(np.abs(np.diff(tr.q) - expected_dq)) < 1e-14
 
-    # First cell's q is half its mass (mass coordinate at cell center).
-    assert abs(tr.q[0] - 0.5 * expected_dq) < 1e-14
+    # First retained tracer is on cell index 2; its q is the cumulative
+    # mass up to cell 2's center = 2*dq + 0.5*dq = 2.5 * expected_dq.
+    assert abs(tr.q[0] - 2.5 * expected_dq) < 1e-14
 
     # Labels equal the shipped-setup convention L1(x, 0) = x.
     assert np.max(np.abs(tr.label - tr.x)) < 1e-14
 
 
-def test_init_transmissive_has_same_count():
-    """Both periodic and transmissive produce N cell-center tracers."""
+def test_init_transmissive_keeps_all_cells():
+    """Transmissive keeps the full N tracers (no boundary buffer by default)."""
     U0, x = _uniform_periodic_ic(N=32)
     tr = Tracers.from_initial_conditions(U0, x, periodic=False)
+    assert tr.n == 32
+
+
+def test_init_boundary_buffer_zero_periodic():
+    """Periodic with boundary_buffer=0 reproduces the full N tracers."""
+    U0, x = _uniform_periodic_ic(N=32)
+    tr = Tracers.from_initial_conditions(U0, x, periodic=True,
+                                         boundary_buffer=0)
     assert tr.n == 32
 
 
@@ -60,6 +71,7 @@ def test_update_at_t0_is_identity():
     """Updating against the initial U leaves tracer positions unchanged."""
     U0, x = _uniform_periodic_ic(N=128)
     tr = Tracers.from_initial_conditions(U0, x, periodic=True)
+    assert tr.n == 124  # default buffer = 2 on each end
     x_before = tr.x.copy()
     tr.update(U0, x)
     assert np.max(np.abs(tr.x - x_before)) < 1e-12
@@ -112,6 +124,60 @@ def test_sample_reproduces_uniform_field():
     tr.update(U0, x)
     rho_at_tracers = tr.sample(U0[IDX_RHO])
     assert np.max(np.abs(rho_at_tracers - 2.5)) < 1e-12
+
+
+def test_wavepool_periodic_tracking():
+    """Tracers survive a full wave-pool run with a cs-scaled seam buffer.
+
+    Seam smearing depth scales roughly as `cs * t / dx`, where cs is
+    the scheme's max signal speed. For the wave-pool with P0=0.1 the
+    sound speed is cs ≈ sqrt((3+√6)*0.1) ≈ 0.74; at N=128 and
+    t_end=0.1 this works out to ~9 cells, so we pass
+    `boundary_buffer=12` to cover the damaged zone with margin. The
+    default-value of 2 is appropriate for shorter or lower-cs runs.
+
+    The wave-pool IC has zero mean momentum by construction, so the
+    seam stays stationary and the buffer brackets it permanently.
+    """
+    from dfmm.schemes.cholesky import hll_step_periodic, max_signal_speed
+
+    N = 128
+    t_end = 0.1
+    cfl = 0.3
+    buf = 12
+
+    U, x = make_wave_pool_ic(N, u0=1.0, P0=0.1, seed=42)
+    dx = x[1] - x[0]
+    tr = Tracers.from_initial_conditions(U, x, periodic=True,
+                                         boundary_buffer=buf)
+    assert tr.n == N - 2 * buf
+    x_before = tr.x.copy()
+
+    t = 0.0
+    while t < t_end:
+        smax = max_signal_speed(U)
+        dt = min(cfl * dx / smax, t_end - t)
+        U = hll_step_periodic(U, dx, dt, tau=1e-3)
+        tr.update(U, x)
+        t += dt
+
+    # (a) No tracer is lost.
+    assert np.all(np.isfinite(tr.x)), \
+        f"{np.sum(~np.isfinite(tr.x))} tracers became NaN"
+
+    # (b) Consecutive-tracer gaps stay bounded — no crossings /
+    # runaway. The wave-pool IC is smooth so pairs shouldn't bunch
+    # or separate by more than a few dx.
+    gaps = np.diff(tr.x)
+    assert gaps.min() > -0.5, "tracers have wrapped-crossed (negative gap)"
+    assert gaps.max() < 5 * dx, \
+        f"largest tracer gap = {gaps.max():.4f} exceeds 5*dx = {5*dx:.4f}"
+
+    # (c) Mean displacement is small — wave-pool has zero net momentum.
+    disp = tr.x - x_before
+    disp -= np.round(disp)  # wrap any periodic roll
+    assert abs(disp.mean()) < 2 * dx, \
+        f"mean displacement {disp.mean():.4f} exceeds 2*dx = {2*dx:.4f}"
 
 
 def test_refine_bisects_large_gaps():

@@ -30,17 +30,20 @@ V1 scope / known limitations
   scan window around each tracer (pre-shell-crossing, or within one
   stream post-shell-crossing). The cholesky scheme's closure
   diagnostics (gamma -> 0) already flag where this breaks.
-- **Periodic seam smearing**. The shipped setups initialize
-  `L1 = x` which is NOT itself a periodic field; the L1 values
-  across the period boundary jump by one full period. On the first
-  step, the HLL scheme treats this jump as a large gradient and
-  diffuses it across several cells, making tracer lookup near the
-  seam unreliable. The local scan here does handle label-wrap in
-  the bracket test (shift L_hi and target by ±period so adjacent
-  cells stay comparable), but it cannot recover information the
-  underlying scheme has already smeared away. For periodic flows,
-  treat tracers within ~O(cs*t/dx) cells of the seam as suspect.
-  Transmissive BCs have no seam and track cleanly.
+- **Periodic seam buffer**. The shipped setups initialize `L1 = x`
+  which is NOT periodic; the L1 field has a full-period jump at the
+  domain boundary, and the HLL scheme diffuses that jump across
+  several cells on the first step. For periodic BCs we therefore
+  skip the `boundary_buffer` leftmost and rightmost cells at
+  construction (default 2) so no tracer's label falls inside the
+  damaged zone. This relies on the seam staying stationary — valid
+  for flows with zero mean velocity like the wave-pool. The scan
+  itself is wrap-aware (cell index mod N, and L_hi/target shifted
+  by ±period in the bracket test) so tracers drifting close to
+  either edge search on both sides of the seam. Strong net drift in
+  periodic would move the seam through the domain and break this
+  assumption; that case needs a different approach (e.g. semi-
+  Lagrangian velocity integration, or periodic label fields).
 - Single-fluid 8-field state only. Two-fluid tracers would live per
   species (straightforward extension).
 """
@@ -188,12 +191,14 @@ class Tracers:
 
     @classmethod
     def from_initial_conditions(cls, U0, x_centers, domain=None,
-                                periodic=False, capacity=None):
+                                periodic=False, capacity=None,
+                                boundary_buffer=None):
         """Place one tracer per Eulerian cell, at the cell center.
 
-        For a grid of N cells, produces N tracers (both periodic and
-        transmissive). Each tracer's mass coordinate `q_i` is the
-        cumulative mass up to the cell's center,
+        For a grid of N cells, produces N tracers in the transmissive
+        case and `N - 2 * boundary_buffer` tracers in the periodic
+        case. Each tracer's mass coordinate `q_i` is the cumulative
+        mass up to the cell's center,
 
             q_i = 0.5 * rho[i] * dx + sum_{j<i} rho[j] * dx,
 
@@ -205,6 +210,19 @@ class Tracers:
         L1 field, so the local-scan lookup cannot locate it. Placing
         at cell centers gives every tracer a findable label at t=0
         by construction.
+
+        Parameters
+        ----------
+        boundary_buffer : int, optional
+            For `periodic=True` only: skip the `boundary_buffer`
+            leftmost and rightmost cells when placing tracers. The
+            HLL scheme diffuses the L1 seam discontinuity across
+            a few cells on the first step and `label`-based lookup
+            there becomes unreliable; the buffer brackets out the
+            damaged zone. Defaults to 2 for periodic, ignored
+            (treated as 0) for transmissive. See the module
+            docstring for the zero-net-drift assumption this is
+            valid under.
         """
         rho = U0[IDX_RHO]
         L1 = U0[IDX_L1] / np.maximum(rho, 1e-30)
@@ -217,20 +235,29 @@ class Tracers:
             x_max = float(x_centers[-1]) + 0.5 * dx
             domain = (x_min, x_max)
 
+        if periodic:
+            b = 2 if boundary_buffer is None else int(boundary_buffer)
+        else:
+            b = 0 if boundary_buffer is None else int(boundary_buffer)
+        if b < 0 or 2 * b >= N:
+            raise ValueError(
+                f"boundary_buffer={b} leaves no interior cells (N={N})")
+
         # Mass per cell; cumulative mass at cell centers
         mass_per_cell = rho * dx
         q_centers = np.cumsum(mass_per_cell) - 0.5 * mass_per_cell
 
-        q = q_centers
-        x = np.asarray(x_centers, dtype=float).copy()
-        label = np.asarray(L1, dtype=float).copy()
+        interior = slice(b, N - b)
+        q = q_centers[interior]
+        x = np.asarray(x_centers, dtype=float)[interior].copy()
+        label = np.asarray(L1, dtype=float)[interior].copy()
 
         obj = cls(q=q, label=label, x=x, domain=domain,
                   periodic=periodic, capacity=capacity)
-        # Seed the idx_hint so each tracer starts at its own cell;
-        # otherwise the first update()'s bounded scan only reaches
-        # cells within max_scan of cell 0.
-        obj._idx_hint[:N] = np.arange(N, dtype=np.int64)
+        # Seed idx_hint with the tracer's absolute cell index so the
+        # first update()'s bounded scan starts at the right place.
+        n_kept = N - 2 * b
+        obj._idx_hint[:n_kept] = np.arange(b, N - b, dtype=np.int64)
         return obj
 
     # ---------- Public array views ----------
