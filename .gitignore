@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Generated paper artifacts
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.toc
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.synctex.gz
+
+# Regenerated figures (tracked after full reproduction run, so uncomment to exclude)
+# paper/figs/*.png
+
+# Regenerated data (tracked only if small)
+*.npz.bak
+
+# Editor/OS junk
+.DS_Store
+.vscode/
+.idea/
+*.swp
