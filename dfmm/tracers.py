@@ -166,7 +166,8 @@ class Tracers:
         the grow factor so one refinement round fits without realloc.
     """
 
-    def __init__(self, q, label, x, domain, periodic=False, capacity=None):
+    def __init__(self, q, label, x, domain, periodic=False, capacity=None,
+                 boundary_buffer=0):
         q = np.asarray(q, dtype=float)
         label = np.asarray(label, dtype=float)
         x = np.asarray(x, dtype=float)
@@ -184,8 +185,12 @@ class Tracers:
         self._x = np.empty(capacity); self._x[:n] = x
         self._idx_hint = np.zeros(capacity, dtype=np.int64)
         self._frac = np.zeros(capacity)
+        self._lost = np.zeros(capacity, dtype=bool)
         self.domain = (float(domain[0]), float(domain[1]))
         self.periodic = bool(periodic)
+        # How many outer cells to treat as unreliable (only meaningful
+        # in periodic mode; set by the factory, exposed for update()).
+        self._buffer = int(boundary_buffer)
 
     # ---------- Factory ----------
 
@@ -253,7 +258,7 @@ class Tracers:
         label = np.asarray(L1, dtype=float)[interior].copy()
 
         obj = cls(q=q, label=label, x=x, domain=domain,
-                  periodic=periodic, capacity=capacity)
+                  periodic=periodic, capacity=capacity, boundary_buffer=b)
         # Seed idx_hint with the tracer's absolute cell index so the
         # first update()'s bounded scan starts at the right place.
         n_kept = N - 2 * b
@@ -286,6 +291,24 @@ class Tracers:
     def frac(self):
         return self._frac[:self._n]
 
+    @property
+    def lost(self):
+        """Boolean mask: True where the last `update()` left the tracer
+        either unresolved (NaN x) or inside the `boundary_buffer`-wide
+        damaged band near the periodic seam where the L1 field is
+        scheme-smeared and the lookup is physically unreliable.
+
+        Cleared and rewritten each `update()` — a tracer that drifts
+        back out of the damaged zone loses its lost flag.
+        """
+        return self._lost[:self._n]
+
+    @property
+    def valid(self):
+        """Inverse of `lost` — the tracers whose current x is safe to
+        use downstream."""
+        return ~self._lost[:self._n]
+
     # ---------- Update / sample / snapshot ----------
 
     def update(self, U, x_centers, max_scan=_DEFAULT_MAX_SCAN):
@@ -293,10 +316,15 @@ class Tracers:
 
         Runs a bounded local scan around each tracer's last known
         cell index and linearly interpolates the bracketing cells to
-        solve L1(x, t) = label. Updates `x`, `idx_hint`, `frac` in
-        place. Tracers that fail the scan are marked NaN in `x` and
-        keep their last valid hint (so a later refinement pass can
-        re-seed them).
+        solve L1(x, t) = label. Updates `x`, `idx_hint`, `frac`, and
+        `lost` in place. A tracer is marked `lost=True` if either:
+          - the scan failed (x is NaN), or
+          - the resolved x lies within `boundary_buffer * dx` of
+            either periodic domain edge — the zone where HLL
+            diffusion of the initial seam discontinuity has
+            corrupted the L1 field.
+        Tracers that fail the scan keep their last valid idx_hint
+        so a later refinement pass can re-seed them.
         """
         rho = U[IDX_RHO]
         L1 = U[IDX_L1] / np.maximum(rho, 1e-30)
@@ -307,6 +335,17 @@ class Tracers:
                      L1, np.asarray(x_centers, dtype=float), dx,
                      int(max_scan), self.periodic, period, x_min,
                      int(len(x_centers)), int(self._n))
+
+        # Flag tracers in the damaged zone or NaN'd.
+        n = self._n
+        xs = self._x[:n]
+        not_finite = ~np.isfinite(xs)
+        if self.periodic and self._buffer > 0:
+            lo = x_min + self._buffer * dx
+            hi = x_max - self._buffer * dx
+            self._lost[:n] = not_finite | (xs < lo) | (xs > hi)
+        else:
+            self._lost[:n] = not_finite
 
     def sample(self, field_centers):
         """Linear-interpolate a cell-centered field at tracer positions.
@@ -385,7 +424,7 @@ class Tracers:
         # Insert from right to left so earlier insert positions stay valid
         n = self._n
         q_buf = self._q; lab_buf = self._label; x_buf = self._x
-        idx_buf = self._idx_hint; frac_buf = self._frac
+        idx_buf = self._idx_hint; frac_buf = self._frac; lost_buf = self._lost
         for k in insert_indices[::-1]:
             # Shift [k+1 : n] right by 1, insert at slot k+1
             q_buf[k + 2:n + 1] = q_buf[k + 1:n]
@@ -393,11 +432,13 @@ class Tracers:
             x_buf[k + 2:n + 1] = x_buf[k + 1:n]
             idx_buf[k + 2:n + 1] = idx_buf[k + 1:n]
             frac_buf[k + 2:n + 1] = frac_buf[k + 1:n]
+            lost_buf[k + 2:n + 1] = lost_buf[k + 1:n]
             q_buf[k + 1] = 0.5 * (q_buf[k] + q_buf[k + 2])
             lab_buf[k + 1] = 0.5 * (lab_buf[k] + lab_buf[k + 2])
             x_buf[k + 1] = 0.5 * (x_buf[k] + x_buf[k + 2])
             idx_buf[k + 1] = idx_buf[k]  # seed near the left neighbor
             frac_buf[k + 1] = 0.5
+            lost_buf[k + 1] = False       # let the next update() re-classify
             n += 1
         self._n = n
         return n_new
@@ -414,6 +455,7 @@ class Tracers:
         self._x = grow(self._x)
         self._idx_hint = grow(self._idx_hint)
         self._frac = grow(self._frac)
+        self._lost = grow(self._lost)
         self._capacity = new_capacity
 
     def __len__(self):

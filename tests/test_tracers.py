@@ -161,9 +161,10 @@ def test_wavepool_periodic_tracking():
         tr.update(U, x)
         t += dt
 
-    # (a) No tracer is lost.
-    assert np.all(np.isfinite(tr.x)), \
-        f"{np.sum(~np.isfinite(tr.x))} tracers became NaN"
+    # (a) No tracer is lost (neither NaN'd nor drifted into the
+    # buffered damaged zone).
+    assert np.all(tr.valid), \
+        f"{tr.lost.sum()} tracers became lost (NaN or in damaged zone)"
 
     # (b) Consecutive-tracer gaps stay bounded — no crossings /
     # runaway. The wave-pool IC is smooth so pairs shouldn't bunch
@@ -178,6 +179,49 @@ def test_wavepool_periodic_tracking():
     disp -= np.round(disp)  # wrap any periodic roll
     assert abs(disp.mean()) < 2 * dx, \
         f"mean displacement {disp.mean():.4f} exceeds 2*dx = {2*dx:.4f}"
+
+
+def test_lost_flag_catches_damaged_zone_entry():
+    """A tracer manually placed inside the buffered damaged zone is
+    flagged as lost on the next update()."""
+    U0, x = _uniform_periodic_ic(N=128)
+    dx = x[1] - x[0]
+    # Construct a small set: two safely mid-domain tracers + one deep
+    # inside the left damaged zone (cell 1, where the HLL-smeared L1
+    # makes the lookup unreliable).
+    q = np.array([dx, 0.3, 0.5])
+    x_pos = np.array([1.5 * dx, 0.3, 0.5])
+    label = x_pos.copy()
+    tr = Tracers(q=q, label=label, x=x_pos, domain=(0.0, 1.0),
+                 periodic=True, boundary_buffer=5)
+    tr._idx_hint[:3] = np.array([1, 38, 64], dtype=np.int64)
+    tr.update(U0, x)
+    # Mid-domain tracers are valid; the near-seam one is lost.
+    assert tr.valid.sum() == 2
+    assert tr.lost[0] == True
+    assert tr.lost[1] == False
+    assert tr.lost[2] == False
+
+
+def test_lost_flag_clears_on_drift_out():
+    """If a previously-lost tracer drifts back out of the damaged zone,
+    the flag clears on the next update()."""
+    U0, x = _uniform_periodic_ic(N=128)
+    dx = x[1] - x[0]
+    # Start a tracer inside the buffer.
+    tr = Tracers(q=np.array([dx]), label=np.array([1.5 * dx]),
+                 x=np.array([1.5 * dx]), domain=(0.0, 1.0),
+                 periodic=True, boundary_buffer=5)
+    tr._idx_hint[:1] = np.array([1], dtype=np.int64)
+    tr.update(U0, x)
+    assert tr.lost[0] == True
+
+    # Manually move it out of the damaged zone, then update.
+    tr._x[0] = 0.5
+    tr._label[0] = 0.5
+    tr._idx_hint[0] = 64
+    tr.update(U0, x)
+    assert tr.lost[0] == False
 
 
 def test_refine_bisects_large_gaps():
