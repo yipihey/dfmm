@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.venv/
 
 # Generated paper artifacts
 paper/*.aux
