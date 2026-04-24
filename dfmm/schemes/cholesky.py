@@ -77,6 +77,106 @@ def max_signal_speed(U):
 
 
 @nb.njit(cache=True, fastmath=False)
+def hll_step(U, dx, dt, tau, n_ghost,
+             rho_floor, alpha_floor, realizability_headroom):
+    """Unified HLL + BGK step on a ghost-padded state.
+
+    Caller is responsible for filling the ghost cells before calling
+    (see `dfmm.schemes.boundaries.apply_mixed`). Only the interior
+    cells of the returned array hold updated values; the ghost slots
+    are copied through unchanged (so a subsequent BC apply overwrites
+    them cleanly).
+
+    `U` must have shape `(n_fields, N + 2*n_ghost)`; interior is the
+    slice `U[:, n_ghost:n_ghost+N]`. All tolerances (rho_floor,
+    alpha_floor, realizability_headroom) are scalar args so Numba
+    stays a happy camper.
+    """
+    n_fields, N_tot = U.shape
+    N = N_tot - 2 * n_ghost
+    Unew = np.empty_like(U)
+
+    rho   = U[IDX_RHO]
+    u     = U[IDX_MOM]/rho
+    Pxx   = U[IDX_EXX] - rho*u*u
+    Pp    = U[IDX_PP]
+    L1    = U[IDX_L1]/rho
+    alpha = U[IDX_ALPHA]/rho
+    beta  = U[IDX_BETA]/rho
+    M3    = U[IDX_M3]
+    Q     = M3 - rho*u*u*u - 3.0*u*Pxx
+    cs    = np.sqrt(CSCOEF*np.maximum(Pxx, rho_floor)/np.maximum(rho, rho_floor))
+
+    # Flux at the N+1 interior faces. Face i (for i in [n_ghost,
+    # n_ghost+N]) is between cell i-1 and cell i in the padded layout.
+    Fleft = np.empty((n_fields, N_tot + 1))
+    for i in range(n_ghost, n_ghost + N + 1):
+        F0, F1, F2, F3, F4, F5, F6, F7 = hll_edge_flux(
+            U[:, i-1], U[:, i], cs[i-1], cs[i])
+        Fleft[0, i] = F0; Fleft[1, i] = F1; Fleft[2, i] = F2; Fleft[3, i] = F3
+        Fleft[4, i] = F4; Fleft[5, i] = F5; Fleft[6, i] = F6; Fleft[7, i] = F7
+
+    # Conservative update for interior cells
+    inv_dx = 1.0/dx
+    for j in range(n_ghost, n_ghost + N):
+        for k in range(n_fields):
+            Unew[k, j] = U[k, j] - dt*inv_dx*(Fleft[k, j+1] - Fleft[k, j])
+    # Copy ghost cells through (apply_* will rewrite them on next step)
+    for g in range(n_ghost):
+        for k in range(n_fields):
+            Unew[k, g] = U[k, g]
+            Unew[k, n_ghost + N + g] = U[k, n_ghost + N + g]
+
+    # Liouville sources for alpha and beta.
+    # Ghost cells provide neighbours for the central du/dx stencil,
+    # which is why n_ghost >= 1 is required. For periodic BCs with
+    # apply_periodic this reproduces the original modulo-wrapped
+    # stencil bit-identically. For transmissive (copy-nearest-interior)
+    # it gives du/dx at the boundary as (u_inner_next - u_inner) /
+    # (2*dx), i.e. half the original one-sided forward diff — a
+    # modest numerical change, consistent with zero-gradient at the
+    # boundary.
+    for j in range(n_ghost, n_ghost + N):
+        Sigma_vv_i = Pxx[j]/max(rho[j], rho_floor)
+        a = alpha[j]; b = beta[j]
+        gamma2_signed = Sigma_vv_i - b*b
+        dudx_i = (u[j+1] - u[j-1])/(2.0*dx)
+        Unew[IDX_ALPHA, j] += dt*rho[j]*b
+        a_safe = a if a > alpha_floor else alpha_floor
+        Unew[IDX_BETA, j]  += dt*rho[j]*(gamma2_signed/a_safe - dudx_i*b)
+
+    # Exact-exponential BGK relaxation on interior cells
+    decay = np.exp(-dt/tau)
+    for j in range(n_ghost, n_ghost + N):
+        rho_n = Unew[IDX_RHO, j]
+        u_n   = Unew[IDX_MOM, j]/rho_n
+        Pxx_n = Unew[IDX_EXX, j] - rho_n*u_n*u_n
+        Pp_n  = Unew[IDX_PP, j]
+        a_n   = Unew[IDX_ALPHA, j]/rho_n
+        b_n   = Unew[IDX_BETA, j]/rho_n
+        M3_n  = Unew[IDX_M3, j]
+        Q_n   = M3_n - rho_n*u_n*u_n*u_n - 3.0*u_n*Pxx_n
+
+        P_iso = (Pxx_n + 2.0*Pp_n)/3.0
+        Pxx_new = P_iso + (Pxx_n - P_iso)*decay
+        Pp_new  = P_iso + (Pp_n  - P_iso)*decay
+        b_new = b_n*decay
+        Q_new = Q_n*decay
+
+        Sigma_vv_new = max(Pxx_new, rho_floor)/max(rho_n, rho_floor)
+        beta_max = realizability_headroom*np.sqrt(Sigma_vv_new)
+        if b_new > beta_max:    b_new = beta_max
+        elif b_new < -beta_max: b_new = -beta_max
+
+        Unew[IDX_EXX, j]  = rho_n*u_n*u_n + Pxx_new
+        Unew[IDX_PP,  j]  = Pp_new
+        Unew[IDX_BETA, j] = rho_n*b_new
+        Unew[IDX_M3,  j]  = rho_n*u_n*u_n*u_n + 3.0*u_n*Pxx_new + Q_new
+
+    return Unew
+
+
+@nb.njit(cache=True, fastmath=False)
 def hll_step_periodic(U, dx, dt, tau):
     n_fields, N = U.shape
     Unew = np.empty_like(U)

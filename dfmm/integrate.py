@@ -1,67 +1,80 @@
 """
 Time integration and coarse-graining utilities.
 
-Integrators are thin drivers over the per-step kernels in
-`dfmm.schemes`: they handle CFL selection, save-time scheduling,
-and snapshot bookkeeping while delegating the actual update to a
-scheme's `hll_step_*` function.
+`run_to` is a thin driver over the unified `hll_step` kernel in
+`dfmm.schemes.cholesky`, with boundary conditions applied via the
+ghost-cell machinery in `dfmm.schemes.boundaries`. Each step pads the
+(n_fields, N) interior state to (n_fields, N + 2*n_ghost), fills the
+ghosts with the configured BC, invokes the kernel, and unpads the
+result for storage/snapshot.
 
 The `coarse_grain` helper box-averages a fine-resolution state onto a
 coarser grid. Because every field in the 8-field state is conservative
 or additive (rho, rho u, E_xx, P_perp, rho L_1, rho alpha, rho beta,
 M_3), simple averaging is the correct filter operator.
 """
+from dataclasses import replace
 import numpy as np
 
-from .schemes.cholesky import (hll_step_periodic, hll_step_transmissive,
-                                max_signal_speed)
+from .config import SimulationConfig
+from .schemes.boundaries import (pad_with_ghosts, unpad_ghosts,
+                                  apply_mixed)
+from .schemes.cholesky import hll_step, max_signal_speed
 
 
-_STEPPERS = {
-    "periodic": hll_step_periodic,
-    "transmissive": hll_step_transmissive,
-}
-
-
-def run_to(U, t_end, cfl=0.3, tau=1e-3, save_times=None, checkpoint_dt=None,
-           bc="periodic"):
+def run_to(U, t_end, cfl=None, tau=None, save_times=None, checkpoint_dt=None,
+           bc="periodic", cfg=None):
     """Integrate a state forward to `t_end`, saving at requested times.
-
-    The per-step update is dispatched by `bc`:
-
-        bc="periodic"      periodic HLL + BGK (default; wave-pool, sine)
-        bc="transmissive"  zero-gradient outflow on both ends (Sod-like)
 
     Parameters
     ----------
     U : ndarray, shape (8, N)
-        Initial state.
+        Initial state (interior only; ghost padding is handled
+        internally).
     t_end : float
         Final integration time.
-    cfl : float, default 0.3
-        CFL coefficient.
-    tau : float, default 1e-3
-        BGK relaxation time.
+    cfl : float, optional
+        CFL coefficient; overrides `cfg.cfl` if both given.
+    tau : float, optional
+        BGK relaxation time; overrides `cfg.tau`.
     save_times : array-like or None
-        Times at which to record snapshots. Either this or
-        `checkpoint_dt` must be given.
+        Times at which to record snapshots.
     checkpoint_dt : float or None
         If given, overrides `save_times` with uniform spacing.
-    bc : {"periodic", "transmissive"}
-        Boundary-condition variant (see above).
+    bc : {"periodic", "transmissive", "reflective"}, default "periodic"
+        Backward-compat shortcut — sets both `cfg.bc_left` and
+        `cfg.bc_right` to this value. Ignored if `cfg` is passed
+        with explicit BC fields.
+    cfg : SimulationConfig, optional
+        Full configuration. If None, one is built from the `cfl`,
+        `tau`, and `bc` shortcuts (plus all defaults).
 
     Returns
     -------
     snapshots : list of (float, ndarray)
         (time, state) pairs, including the t=0 initial snapshot.
+        States are the unpadded (8, N) interior view.
     nsteps : int
         Number of HLL steps taken.
     """
-    try:
-        step = _STEPPERS[bc]
-    except KeyError:
-        raise ValueError(f"unknown bc={bc!r}; use one of {list(_STEPPERS)}")
-    dx = 1.0/U.shape[1]
+    if cfg is None:
+        kw = {}
+        if cfl is not None: kw['cfl'] = cfl
+        if tau is not None: kw['tau'] = tau
+        kw['bc_left'] = bc
+        kw['bc_right'] = bc
+        cfg = SimulationConfig(**kw)
+    else:
+        # Allow the positional shortcuts to override corresponding
+        # fields on an explicitly-supplied cfg.
+        overrides = {}
+        if cfl is not None: overrides['cfl'] = cfl
+        if tau is not None: overrides['tau'] = tau
+        if overrides:
+            cfg = replace(cfg, **overrides)
+
+    n_ghost = cfg.n_ghost
+    dx = 1.0 / U.shape[1]
     t = 0.0
     snapshots = [(0.0, U.copy())]
     if save_times is None:
@@ -69,19 +82,31 @@ def run_to(U, t_end, cfl=0.3, tau=1e-3, save_times=None, checkpoint_dt=None,
         save_times = np.arange(checkpoint_dt, t_end + 1e-9, checkpoint_dt)
     save_idx = 0
     nsteps = 0
+
+    # Pad to ghost layout once; every step rewrites ghosts in place.
+    U_ghost = pad_with_ghosts(U, n_ghost)
+
     while t < t_end and save_idx < len(save_times):
         next_save = save_times[save_idx]
-        smax = max_signal_speed(U)
-        dt = min(cfl*dx/smax, next_save - t, t_end - t)
+        # Apply BCs so max_signal_speed sees a consistent field
+        # (and so the Liouville-source du/dx stencil at interior
+        # edges uses the correct ghost neighbour).
+        apply_mixed(U_ghost, n_ghost, cfg.bc_left, cfg.bc_right,
+                    state_left=cfg.bc_state_left,
+                    state_right=cfg.bc_state_right)
+        smax = max_signal_speed(unpad_ghosts(U_ghost, n_ghost))
+        dt = min(cfg.cfl * dx / smax, next_save - t, t_end - t)
         if dt <= 1e-14:
-            snapshots.append((t, U.copy()))
+            snapshots.append((t, unpad_ghosts(U_ghost, n_ghost).copy()))
             save_idx += 1
             continue
-        U = step(U, dx, dt, tau)
+        U_ghost = hll_step(U_ghost, dx, dt, cfg.tau, n_ghost,
+                           cfg.rho_floor, cfg.alpha_floor,
+                           cfg.realizability_headroom)
         t += dt
         nsteps += 1
         if t >= next_save - 1e-12:
-            snapshots.append((t, U.copy()))
+            snapshots.append((t, unpad_ghosts(U_ghost, n_ghost).copy()))
             save_idx += 1
     return snapshots, nsteps
 
