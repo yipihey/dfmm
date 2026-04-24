@@ -181,6 +181,74 @@ def test_wavepool_periodic_tracking():
         f"mean displacement {disp.mean():.4f} exceeds 2*dx = {2*dx:.4f}"
 
 
+def test_step_stats_before_first_update():
+    """step_stats() returns None until update() is called."""
+    U0, x = _uniform_periodic_ic(N=32)
+    tr = Tracers.from_initial_conditions(U0, x, periodic=True)
+    assert tr.step_stats() is None
+
+
+def test_step_stats_at_t0_identity():
+    """First update() against the initial U leaves Δx ≈ 0 everywhere."""
+    U0, x = _uniform_periodic_ic(N=128)
+    tr = Tracers.from_initial_conditions(U0, x, periodic=True)
+    tr.update(U0, x)
+    stats = tr.step_stats()
+    assert stats['n_valid'] == tr.n
+    assert abs(stats['mean']) < 1e-12
+    assert abs(stats['median']) < 1e-12
+    assert stats['max_abs'] < 1e-12
+
+
+def test_step_stats_tracks_uniform_advection():
+    """Under a uniform-u transmissive flow, Δx per step ≈ u*dt with
+    near-zero spread; max_abs stays well under max_scan * dx."""
+    from dfmm.schemes.cholesky import hll_step_transmissive, max_signal_speed
+
+    u0 = 0.1
+    U, x = _uniform_periodic_ic(N=128, u0=u0)
+    dx = x[1] - x[0]
+    tr = Tracers.from_initial_conditions(U, x, periodic=False)
+
+    cfl = 0.3
+    smax = max_signal_speed(U)
+    dt = cfl * dx / smax
+    U = hll_step_transmissive(U, dx, dt, tau=1e-3)
+    tr.update(U, x)
+
+    stats = tr.step_stats()
+    expected = u0 * dt
+    # Interior tracers track uniform advection; allow O(dx) error
+    # per step due to HLL diffusion of the L1 field.
+    assert abs(stats['median'] - expected) < 0.5 * dx
+    assert stats['max_abs'] < 5 * dx  # within max_scan's reach
+
+
+def test_step_stats_wavepool_reasonable_magnitude():
+    """Sanity: per-step Δx in a wave-pool run is bounded by a few
+    CFL*dx, consistent with the scheme's CFL-limited dt."""
+    from dfmm.schemes.cholesky import hll_step_periodic, max_signal_speed
+
+    U, x = make_wave_pool_ic(N=128, u0=1.0, P0=0.1, seed=42)
+    dx = x[1] - x[0]
+    tr = Tracers.from_initial_conditions(U, x, periodic=True,
+                                         boundary_buffer=12)
+
+    cfl = 0.3
+    max_observed = 0.0
+    for _ in range(10):
+        smax = max_signal_speed(U)
+        dt = cfl * dx / smax
+        U = hll_step_periodic(U, dx, dt, tau=1e-3)
+        tr.update(U, x)
+        stats = tr.step_stats()
+        max_observed = max(max_observed, stats['max_abs'])
+
+    # Each step's max |Δx| should stay well under the scan reach.
+    assert max_observed < 5 * dx, \
+        f"per-step max_abs = {max_observed:.4f} approaches 5*dx = {5*dx:.4f}"
+
+
 def test_lost_flag_catches_damaged_zone_entry():
     """A tracer manually placed inside the buffered damaged zone is
     flagged as lost on the next update()."""

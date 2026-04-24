@@ -186,6 +186,8 @@ class Tracers:
         self._idx_hint = np.zeros(capacity, dtype=np.int64)
         self._frac = np.zeros(capacity)
         self._lost = np.zeros(capacity, dtype=bool)
+        self._dx_step = np.zeros(capacity)
+        self._last_step_stats = None
         self.domain = (float(domain[0]), float(domain[1]))
         self.periodic = bool(periodic)
         # How many outer cells to treat as unreliable (only meaningful
@@ -309,6 +311,26 @@ class Tracers:
         use downstream."""
         return ~self._lost[:self._n]
 
+    @property
+    def dx_step(self):
+        """Per-tracer signed displacement from the most recent
+        `update()`, adjusted for periodic wrap. Length `n`. NaN where
+        the tracer was NaN'd by the scan."""
+        return self._dx_step[:self._n]
+
+    def step_stats(self):
+        """Summary statistics of the last `update()`'s Δx distribution.
+
+        Returns a dict with keys:
+          n_valid, n_lost, mean, std, median, max_abs
+        computed over tracers with `valid=True` and finite Δx. Returns
+        None if no `update()` has been called yet. Signed `mean` and
+        `median` give net-drift information; `max_abs` is the diagnostic
+        for whether `max_scan` is sized appropriately (if `max_abs`
+        approaches `max_scan * dx` the scan is near its limit).
+        """
+        return self._last_step_stats
+
     # ---------- Update / sample / snapshot ----------
 
     def update(self, U, x_centers, max_scan=_DEFAULT_MAX_SCAN):
@@ -331,13 +353,18 @@ class Tracers:
         dx = float(x_centers[1] - x_centers[0])
         x_min, x_max = self.domain
         period = x_max - x_min
+
+        # Snapshot x before the scan overwrites it, so we can compute
+        # per-tracer Δx below.
+        n = self._n
+        x_prev = self._x[:n].copy()
+
         _locate_many(self._label, self._x, self._idx_hint, self._frac,
                      L1, np.asarray(x_centers, dtype=float), dx,
                      int(max_scan), self.periodic, period, x_min,
-                     int(len(x_centers)), int(self._n))
+                     int(len(x_centers)), int(n))
 
         # Flag tracers in the damaged zone or NaN'd.
-        n = self._n
         xs = self._x[:n]
         not_finite = ~np.isfinite(xs)
         if self.periodic and self._buffer > 0:
@@ -346,6 +373,31 @@ class Tracers:
             self._lost[:n] = not_finite | (xs < lo) | (xs > hi)
         else:
             self._lost[:n] = not_finite
+
+        # Per-step displacement, periodic-wrap-adjusted (minimum-image
+        # convention on a tracer that wrapped around the seam).
+        d = xs - x_prev
+        if self.periodic:
+            d = d - period * np.round(d / period)
+        self._dx_step[:n] = d
+        # Summary stats over the valid, finite-Δx subset.
+        good = (~self._lost[:n]) & np.isfinite(d)
+        if good.any():
+            dg = d[good]
+            self._last_step_stats = {
+                'n_valid': int(good.sum()),
+                'n_lost': int(n - good.sum()),
+                'mean': float(dg.mean()),
+                'std': float(dg.std()),
+                'median': float(np.median(dg)),
+                'max_abs': float(np.max(np.abs(dg))),
+            }
+        else:
+            self._last_step_stats = {
+                'n_valid': 0, 'n_lost': int(n),
+                'mean': float('nan'), 'std': float('nan'),
+                'median': float('nan'), 'max_abs': float('nan'),
+            }
 
     def sample(self, field_centers):
         """Linear-interpolate a cell-centered field at tracer positions.
@@ -425,6 +477,7 @@ class Tracers:
         n = self._n
         q_buf = self._q; lab_buf = self._label; x_buf = self._x
         idx_buf = self._idx_hint; frac_buf = self._frac; lost_buf = self._lost
+        dxs_buf = self._dx_step
         for k in insert_indices[::-1]:
             # Shift [k+1 : n] right by 1, insert at slot k+1
             q_buf[k + 2:n + 1] = q_buf[k + 1:n]
@@ -433,12 +486,14 @@ class Tracers:
             idx_buf[k + 2:n + 1] = idx_buf[k + 1:n]
             frac_buf[k + 2:n + 1] = frac_buf[k + 1:n]
             lost_buf[k + 2:n + 1] = lost_buf[k + 1:n]
+            dxs_buf[k + 2:n + 1] = dxs_buf[k + 1:n]
             q_buf[k + 1] = 0.5 * (q_buf[k] + q_buf[k + 2])
             lab_buf[k + 1] = 0.5 * (lab_buf[k] + lab_buf[k + 2])
             x_buf[k + 1] = 0.5 * (x_buf[k] + x_buf[k + 2])
             idx_buf[k + 1] = idx_buf[k]  # seed near the left neighbor
             frac_buf[k + 1] = 0.5
             lost_buf[k + 1] = False       # let the next update() re-classify
+            dxs_buf[k + 1] = 0.0
             n += 1
         self._n = n
         return n_new
@@ -456,6 +511,7 @@ class Tracers:
         self._idx_hint = grow(self._idx_hint)
         self._frac = grow(self._frac)
         self._lost = grow(self._lost)
+        self._dx_step = grow(self._dx_step)
         self._capacity = new_capacity
 
     def __len__(self):
