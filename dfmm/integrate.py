@@ -20,7 +20,10 @@ from .config import SimulationConfig
 from .schemes._common import Workspace
 from .schemes.boundaries import (pad_with_ghosts, unpad_ghosts,
                                   apply_mixed)
-from .schemes.cholesky import hll_step, max_signal_speed
+from .schemes.cholesky import hll_step, hll_step_muscl, max_signal_speed
+
+# String -> integer code for the limiter dispatch inside hll_step_muscl.
+_LIMITER_CODES = {'minmod': 0, 'mc': 1, 'van_leer': 2}
 
 
 def run_to(U, t_end, cfl=None, tau=None, save_times=None, checkpoint_dt=None,
@@ -88,8 +91,9 @@ def run_to(U, t_end, cfl=None, tau=None, save_times=None, checkpoint_dt=None,
     # pong `U_curr` / `U_next` across steps to avoid per-step
     # allocations.
     U_curr = pad_with_ghosts(U, n_ghost)
-    ws = Workspace.for_padded_state(U_curr)
+    ws = Workspace.for_padded_state(U_curr, reconstruction=cfg.reconstruction)
     U_next = ws.Unew
+    limiter_code = _LIMITER_CODES[cfg.limiter]
 
     while t < t_end and save_idx < len(save_times):
         next_save = save_times[save_idx]
@@ -105,10 +109,17 @@ def run_to(U, t_end, cfl=None, tau=None, save_times=None, checkpoint_dt=None,
             snapshots.append((t, unpad_ghosts(U_curr, n_ghost).copy()))
             save_idx += 1
             continue
-        hll_step(U_curr, dx, dt, cfg.tau, n_ghost,
-                 cfg.rho_floor, cfg.alpha_floor,
-                 cfg.realizability_headroom,
-                 U_next, ws.Fleft)
+        if cfg.reconstruction == 'first':
+            hll_step(U_curr, dx, dt, cfg.tau, n_ghost,
+                     cfg.rho_floor, cfg.alpha_floor,
+                     cfg.realizability_headroom,
+                     U_next, ws.Fleft)
+        else:  # 'muscl'
+            hll_step_muscl(U_curr, dx, dt, cfg.tau, n_ghost,
+                           cfg.rho_floor, cfg.alpha_floor,
+                           cfg.realizability_headroom,
+                           limiter_code,
+                           U_next, ws.Fleft, ws.U_L_edge, ws.U_R_edge)
         # Swap roles — U_next holds the new state; reuse the old
         # U_curr slot as scratch on the next iteration.
         U_curr, U_next = U_next, U_curr

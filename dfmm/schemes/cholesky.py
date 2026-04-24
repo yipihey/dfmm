@@ -47,7 +47,7 @@ import numba as nb
 
 from ._common import (CSCOEF, IDX_RHO, IDX_MOM, IDX_EXX, IDX_PP,
                       IDX_L1, IDX_ALPHA, IDX_BETA, IDX_M3,
-                      hll_edge_flux)
+                      hll_edge_flux, limit, LIMITER_MINMOD)
 
 
 def primitives(U):
@@ -177,6 +177,191 @@ def hll_step(U, dx, dt, tau, n_ghost,
         Unew[IDX_PP,  j]  = Pp_new
         Unew[IDX_BETA, j] = rho_n*b_new
         Unew[IDX_M3,  j]  = rho_n*u_n*u_n*u_n + 3.0*u_n*Pxx_new + Q_new
+
+    return Unew
+
+
+@nb.njit(cache=True, fastmath=False)
+def hll_step_muscl(U, dx, dt, tau, n_ghost,
+                   rho_floor, alpha_floor, realizability_headroom,
+                   limiter_code,
+                   Unew, Fleft, U_L_edge, U_R_edge):
+    """Second-order MUSCL-Hancock HLL + BGK step on a ghost-padded state.
+
+    Requires n_ghost >= 2 so the reconstruction stencil (per-cell
+    slope uses cells [j-1, j, j+1]) has room at the interior-face
+    boundaries. Reconstruction is in primitive variables
+    (rho, u, Pxx, Pp, L1, alpha, beta, Q) to avoid nonphysical
+    reconstructed states (e.g. negative rho); the limited slope is
+    controlled by `limiter_code` (0=minmod, 1=MC, 2=van_leer).
+
+    Workspace buffers `U_L_edge` / `U_R_edge` hold the reconstructed
+    conserved state at each cell's left/right edge after the Hancock
+    half-step predictor. The face loop then uses HLL on these
+    predicted states.
+
+    Post-flux logic (Liouville sources, BGK relaxation) is identical
+    to `hll_step`.
+    """
+    n_fields, N_tot = U.shape
+    N = N_tot - 2 * n_ghost
+    inv_dx = 1.0 / dx
+    half_dt_over_dx = 0.5 * dt * inv_dx
+
+    # Vectorized primitives on the full padded array (used below for
+    # slopes, Liouville source, and BGK).
+    rho   = U[IDX_RHO]
+    u     = U[IDX_MOM]/rho
+    Pxx   = U[IDX_EXX] - rho*u*u
+    Pp    = U[IDX_PP]
+    L1    = U[IDX_L1]/rho
+    alpha = U[IDX_ALPHA]/rho
+    beta  = U[IDX_BETA]/rho
+    M3    = U[IDX_M3]
+    Q     = M3 - rho*u*u*u - 3.0*u*Pxx
+
+    # --- MUSCL reconstruction + Hancock predictor ---
+    # For each cell j in [1, N_tot-2], compute slope-limited edge
+    # states and evolve them by dt/2 via the analytic flux Jacobian
+    # applied to the reconstructed states. We skip cells 0 and
+    # N_tot-1 (need ghosts on both sides). With n_ghost >= 2 this
+    # still covers every cell that contributes to an interior-face
+    # flux.
+    for j in range(1, N_tot - 1):
+        # Primitive slopes via the selected limiter
+        s_rho = limit(rho[j]   - rho[j-1],   rho[j+1]   - rho[j],   limiter_code)
+        s_u   = limit(u[j]     - u[j-1],     u[j+1]     - u[j],     limiter_code)
+        s_Pxx = limit(Pxx[j]   - Pxx[j-1],   Pxx[j+1]   - Pxx[j],   limiter_code)
+        s_Pp  = limit(Pp[j]    - Pp[j-1],    Pp[j+1]    - Pp[j],    limiter_code)
+        s_L1  = limit(L1[j]    - L1[j-1],    L1[j+1]    - L1[j],    limiter_code)
+        s_a   = limit(alpha[j] - alpha[j-1], alpha[j+1] - alpha[j], limiter_code)
+        s_b   = limit(beta[j]  - beta[j-1],  beta[j+1]  - beta[j],  limiter_code)
+        s_Q   = limit(Q[j]     - Q[j-1],     Q[j+1]     - Q[j],     limiter_code)
+
+        # Reconstructed primitives at left edge (minus) and right edge (plus)
+        rho_L = rho[j]   - 0.5 * s_rho; rho_R = rho[j]   + 0.5 * s_rho
+        u_L   = u[j]     - 0.5 * s_u;   u_R   = u[j]     + 0.5 * s_u
+        Pxx_L = Pxx[j]   - 0.5 * s_Pxx; Pxx_R = Pxx[j]   + 0.5 * s_Pxx
+        Pp_L  = Pp[j]    - 0.5 * s_Pp;  Pp_R  = Pp[j]    + 0.5 * s_Pp
+        L1_L  = L1[j]    - 0.5 * s_L1;  L1_R  = L1[j]    + 0.5 * s_L1
+        a_L   = alpha[j] - 0.5 * s_a;   a_R   = alpha[j] + 0.5 * s_a
+        b_L   = beta[j]  - 0.5 * s_b;   b_R   = beta[j]  + 0.5 * s_b
+        Q_L   = Q[j]     - 0.5 * s_Q;   Q_R   = Q[j]     + 0.5 * s_Q
+
+        # Floor rho to keep fluxes finite
+        rho_L_safe = rho_L if rho_L > rho_floor else rho_floor
+        rho_R_safe = rho_R if rho_R > rho_floor else rho_floor
+
+        # Analytic flux at each reconstructed edge state
+        FL0 = rho_L * u_L
+        FL1 = rho_L * u_L * u_L + Pxx_L
+        FL2 = rho_L * u_L**3 + 3.0 * u_L * Pxx_L + Q_L
+        FL3 = u_L * Pp_L
+        FL4 = rho_L * L1_L * u_L
+        FL5 = rho_L * a_L * u_L
+        FL6 = rho_L * b_L * u_L
+        FL7 = rho_L * u_L**4 + 6.0 * u_L * u_L * Pxx_L + 4.0 * u_L * Q_L \
+              + 3.0 * Pxx_L * Pxx_L / rho_L_safe
+
+        FR0 = rho_R * u_R
+        FR1 = rho_R * u_R * u_R + Pxx_R
+        FR2 = rho_R * u_R**3 + 3.0 * u_R * Pxx_R + Q_R
+        FR3 = u_R * Pp_R
+        FR4 = rho_R * L1_R * u_R
+        FR5 = rho_R * a_R * u_R
+        FR6 = rho_R * b_R * u_R
+        FR7 = rho_R * u_R**4 + 6.0 * u_R * u_R * Pxx_R + 4.0 * u_R * Q_R \
+              + 3.0 * Pxx_R * Pxx_R / rho_R_safe
+
+        # Conserved-form left/right edges, then Hancock half-step predictor:
+        #   U_edge_pred = U_edge - (dt/2/dx) * (F_R - F_L)
+        U_L_edge[IDX_RHO,   j] = rho_L                          - half_dt_over_dx * (FR0 - FL0)
+        U_L_edge[IDX_MOM,   j] = rho_L * u_L                    - half_dt_over_dx * (FR1 - FL1)
+        U_L_edge[IDX_EXX,   j] = rho_L * u_L * u_L + Pxx_L      - half_dt_over_dx * (FR2 - FL2)
+        U_L_edge[IDX_PP,    j] = Pp_L                           - half_dt_over_dx * (FR3 - FL3)
+        U_L_edge[IDX_L1,    j] = rho_L * L1_L                   - half_dt_over_dx * (FR4 - FL4)
+        U_L_edge[IDX_ALPHA, j] = rho_L * a_L                    - half_dt_over_dx * (FR5 - FL5)
+        U_L_edge[IDX_BETA,  j] = rho_L * b_L                    - half_dt_over_dx * (FR6 - FL6)
+        U_L_edge[IDX_M3,    j] = rho_L * u_L**3 + 3.0 * u_L * Pxx_L + Q_L - half_dt_over_dx * (FR7 - FL7)
+
+        U_R_edge[IDX_RHO,   j] = rho_R                          - half_dt_over_dx * (FR0 - FL0)
+        U_R_edge[IDX_MOM,   j] = rho_R * u_R                    - half_dt_over_dx * (FR1 - FL1)
+        U_R_edge[IDX_EXX,   j] = rho_R * u_R * u_R + Pxx_R      - half_dt_over_dx * (FR2 - FL2)
+        U_R_edge[IDX_PP,    j] = Pp_R                           - half_dt_over_dx * (FR3 - FL3)
+        U_R_edge[IDX_L1,    j] = rho_R * L1_R                   - half_dt_over_dx * (FR4 - FL4)
+        U_R_edge[IDX_ALPHA, j] = rho_R * a_R                    - half_dt_over_dx * (FR5 - FL5)
+        U_R_edge[IDX_BETA,  j] = rho_R * b_R                    - half_dt_over_dx * (FR6 - FL6)
+        U_R_edge[IDX_M3,    j] = rho_R * u_R**3 + 3.0 * u_R * Pxx_R + Q_R - half_dt_over_dx * (FR7 - FL7)
+
+    # --- Face fluxes from reconstructed edge states ---
+    # At face i (between cell i-1 and cell i), take the left state
+    # from the right edge of cell i-1 and the right state from the
+    # left edge of cell i. Compute cs from each reconstructed state.
+    for i in range(n_ghost, n_ghost + N + 1):
+        # Left side = U_R_edge[:, i-1], right side = U_L_edge[:, i]
+        rho_L = U_R_edge[IDX_RHO, i-1]
+        rho_L_safe = rho_L if rho_L > rho_floor else rho_floor
+        u_L_face = U_R_edge[IDX_MOM, i-1] / rho_L_safe
+        Pxx_L_face = U_R_edge[IDX_EXX, i-1] - rho_L * u_L_face * u_L_face
+        cs_L = np.sqrt(CSCOEF * max(Pxx_L_face, rho_floor) / rho_L_safe)
+
+        rho_R = U_L_edge[IDX_RHO, i]
+        rho_R_safe = rho_R if rho_R > rho_floor else rho_floor
+        u_R_face = U_L_edge[IDX_MOM, i] / rho_R_safe
+        Pxx_R_face = U_L_edge[IDX_EXX, i] - rho_R * u_R_face * u_R_face
+        cs_R = np.sqrt(CSCOEF * max(Pxx_R_face, rho_floor) / rho_R_safe)
+
+        F0, F1, F2, F3, F4, F5, F6, F7 = hll_edge_flux(
+            U_R_edge[:, i-1], U_L_edge[:, i], cs_L, cs_R)
+        Fleft[0, i] = F0; Fleft[1, i] = F1; Fleft[2, i] = F2; Fleft[3, i] = F3
+        Fleft[4, i] = F4; Fleft[5, i] = F5; Fleft[6, i] = F6; Fleft[7, i] = F7
+
+    # --- Conservative update for interior cells ---
+    for j in range(n_ghost, n_ghost + N):
+        for k in range(n_fields):
+            Unew[k, j] = U[k, j] - dt * inv_dx * (Fleft[k, j+1] - Fleft[k, j])
+    # Copy ghost cells through (apply_* will rewrite them on next step)
+    for g in range(n_ghost):
+        for k in range(n_fields):
+            Unew[k, g] = U[k, g]
+            Unew[k, n_ghost + N + g] = U[k, n_ghost + N + g]
+
+    # --- Liouville sources for alpha and beta (same stencil as first-order) ---
+    for j in range(n_ghost, n_ghost + N):
+        Sigma_vv_i = Pxx[j] / max(rho[j], rho_floor)
+        a = alpha[j]; b = beta[j]
+        gamma2_signed = Sigma_vv_i - b * b
+        dudx_i = (u[j+1] - u[j-1]) / (2.0 * dx)
+        Unew[IDX_ALPHA, j] += dt * rho[j] * b
+        a_safe = a if a > alpha_floor else alpha_floor
+        Unew[IDX_BETA, j]  += dt * rho[j] * (gamma2_signed / a_safe - dudx_i * b)
+
+    # --- Exact-exponential BGK relaxation on interior cells ---
+    decay = np.exp(-dt / tau)
+    for j in range(n_ghost, n_ghost + N):
+        rho_n = Unew[IDX_RHO, j]
+        u_n   = Unew[IDX_MOM, j] / rho_n
+        Pxx_n = Unew[IDX_EXX, j] - rho_n * u_n * u_n
+        Pp_n  = Unew[IDX_PP, j]
+        b_n   = Unew[IDX_BETA, j] / rho_n
+        M3_n  = Unew[IDX_M3, j]
+        Q_n   = M3_n - rho_n * u_n**3 - 3.0 * u_n * Pxx_n
+
+        P_iso = (Pxx_n + 2.0 * Pp_n) / 3.0
+        Pxx_new = P_iso + (Pxx_n - P_iso) * decay
+        Pp_new  = P_iso + (Pp_n  - P_iso) * decay
+        b_new = b_n * decay
+        Q_new = Q_n * decay
+
+        Sigma_vv_new = max(Pxx_new, rho_floor) / max(rho_n, rho_floor)
+        beta_max = realizability_headroom * np.sqrt(Sigma_vv_new)
+        if b_new > beta_max:    b_new = beta_max
+        elif b_new < -beta_max: b_new = -beta_max
+
+        Unew[IDX_EXX,  j] = rho_n * u_n * u_n + Pxx_new
+        Unew[IDX_PP,   j] = Pp_new
+        Unew[IDX_BETA, j] = rho_n * b_new
+        Unew[IDX_M3,   j] = rho_n * u_n**3 + 3.0 * u_n * Pxx_new + Q_new
 
     return Unew
 
