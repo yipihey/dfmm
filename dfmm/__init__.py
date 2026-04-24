@@ -25,11 +25,13 @@ Package layout
     dfmm.integrate         run_to, coarse_grain.
     dfmm.diagnostics       Closure-quality scalars (s, gamma, Mach).
     dfmm.analysis          Spectrum and Lagrangian-reindex helpers.
+    dfmm.tracers           Mass-coordinate Lagrangian tracer particles.
 """
 __version__ = "0.1.0"
 
 from . import schemes, setups, closure
-from . import integrate, diagnostics, analysis
+from . import integrate, diagnostics, analysis, tracers
+from .tracers import Tracers
 
 __all__ = [
     "schemes",
@@ -38,4 +40,6 @@ __all__ = [
     "integrate",
     "diagnostics",
     "analysis",
+    "tracers",
+    "Tracers",
 ]
