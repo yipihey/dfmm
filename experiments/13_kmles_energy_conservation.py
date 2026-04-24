@@ -17,9 +17,9 @@ import os, time
 import numpy as np
 import matplotlib.pyplot as plt
 
-from momentlag.setups.wavepool import make_wave_pool_ic
-from momentlag.integrate import run_to
-from momentlag.closure.noise_model import run_noise, total_energy
+from dfmm.setups.wavepool import make_wave_pool_ic
+from dfmm.integrate import run_to
+from dfmm.closure.noise_model import run_noise, total_energy
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 FIG_DIR = os.path.join(os.path.dirname(__file__), "..", "paper", "figs")

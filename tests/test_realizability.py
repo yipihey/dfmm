@@ -9,10 +9,10 @@ Sigma_xx = alpha^2 >= 0 and gamma^2 = Sigma_vv - beta^2 >= 0 pointwise.
 import numpy as np
 import pytest
 
-from momentlag.setups.wavepool import make_wave_pool_ic
-from momentlag.setups.sod import make_sod_ic
-from momentlag.integrate import run_to
-from momentlag.diagnostics import extract_diagnostics
+from dfmm.setups.wavepool import make_wave_pool_ic
+from dfmm.setups.sod import make_sod_ic
+from dfmm.integrate import run_to
+from dfmm.diagnostics import extract_diagnostics
 
 
 def test_wavepool_realizability():

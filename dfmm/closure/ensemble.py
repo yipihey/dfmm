@@ -13,7 +13,7 @@ compressible-turbulence wave-pool initial conditions:
 
 Further variance reduction comes from time-window averaging around each
 focus time (a few snapshots within ~dt_window) and logarithmic k-binning
-(see `momentlag.analysis.log_bin_spectrum`).
+(see `dfmm.analysis.log_bin_spectrum`).
 """
 import numpy as np
 

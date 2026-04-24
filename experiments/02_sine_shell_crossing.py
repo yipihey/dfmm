@@ -27,10 +27,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 
-from momentlag.setups.sine import make_sine_ic
-from momentlag.integrate import run_to
-from momentlag.diagnostics import extract_diagnostics
-from momentlag.schemes.cholesky import primitives, build_f
+from dfmm.setups.sine import make_sine_ic
+from dfmm.integrate import run_to
+from dfmm.diagnostics import extract_diagnostics
+from dfmm.schemes.cholesky import primitives, build_f
 
 FIG_DIR = os.path.join(os.path.dirname(__file__), "..", "paper", "figs")
 os.makedirs(FIG_DIR, exist_ok=True)

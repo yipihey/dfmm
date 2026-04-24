@@ -20,7 +20,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.special import roots_hermite
 
-from momentlag.schemes.maxent import solve_maxent
+from dfmm.schemes.maxent import solve_maxent
 
 FIG_DIR = os.path.join(os.path.dirname(__file__), "..", "paper", "figs")
 os.makedirs(FIG_DIR, exist_ok=True)

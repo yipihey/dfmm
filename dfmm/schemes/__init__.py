@@ -1,4 +1,4 @@
-"""Numerical schemes for the moment-Lagrangian system.
+"""Numerical schemes for the dual-frame moment system.
 
 Each module exposes a step function (the HLL+BGK update for one timestep)
 and a convenience `run_to` driver that integrates to a target time and

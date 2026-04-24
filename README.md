@@ -1,4 +1,4 @@
-# momentlag
+# dfmm — dual frame moment method
 
 A one-dimensional moment scheme with built-in closure-quality diagnostics,
 a Lagrangian-coordinate tracking of phase-space structure, and a
@@ -14,12 +14,12 @@ figure, the LaTeX paper source, and minimal tests.
 ## What is inside
 
 ```
-momentlag/
+dfmm/
 ├── README.md                   This file.
 ├── LICENSE                     MIT.
 ├── Makefile                    Top-level build targets.
 ├── pyproject.toml              Python package metadata and dependencies.
-├── momentlag/                  The Python library (the scheme).
+├── dfmm/                       The Python library (the scheme).
 │   ├── schemes/                Numerical schemes.
 │   ├── setups/                 Initial-condition builders.
 │   └── closure/                Kramers-Moyal LES closure machinery.

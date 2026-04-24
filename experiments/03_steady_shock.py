@@ -16,8 +16,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
-from momentlag.setups.shock import run_steady_shock, rankine_hugoniot, GAMMA
-from momentlag.diagnostics import extract_diagnostics
+from dfmm.setups.shock import run_steady_shock, rankine_hugoniot, GAMMA
+from dfmm.diagnostics import extract_diagnostics
 
 FIG_DIR = os.path.join(os.path.dirname(__file__), "..", "paper", "figs")
 os.makedirs(FIG_DIR, exist_ok=True)

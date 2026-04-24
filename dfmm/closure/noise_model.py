@@ -243,7 +243,7 @@ def run_noise(U, t_end, save_times, C_A, C_B, ell_corr=2.0, cfl=0.3,
     Returns
     -------
     snapshots : list of (float, ndarray)
-        Matches the convention of `momentlag.integrate.run_to`.
+        Matches the convention of `dfmm.integrate.run_to`.
     """
     dx = 1.0/U.shape[1]
     rng = np.random.default_rng(seed)

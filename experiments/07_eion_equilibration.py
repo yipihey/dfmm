@@ -22,7 +22,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-from momentlag.schemes import two_fluid as tf
+from dfmm.schemes import two_fluid as tf
 
 FIG_DIR = os.path.join(os.path.dirname(__file__), "..", "paper", "figs")
 os.makedirs(FIG_DIR, exist_ok=True)

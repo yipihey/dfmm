@@ -7,9 +7,9 @@ noise scheme preserves total energy to machine precision as well.
 import numpy as np
 import pytest
 
-from momentlag.setups.wavepool import make_wave_pool_ic
-from momentlag.integrate import run_to
-from momentlag.closure.noise_model import run_noise, total_energy
+from dfmm.setups.wavepool import make_wave_pool_ic
+from dfmm.integrate import run_to
+from dfmm.closure.noise_model import run_noise, total_energy
 
 
 def _totals(U):

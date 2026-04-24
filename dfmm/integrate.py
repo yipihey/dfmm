@@ -2,7 +2,7 @@
 Time integration and coarse-graining utilities.
 
 Integrators are thin drivers over the per-step kernels in
-`momentlag.schemes`: they handle CFL selection, save-time scheduling,
+`dfmm.schemes`: they handle CFL selection, save-time scheduling,
 and snapshot bookkeeping while delegating the actual update to a
 scheme's `hll_step_*` function.
 

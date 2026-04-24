@@ -13,9 +13,9 @@ import os, time
 import numpy as np
 import matplotlib.pyplot as plt
 
-from momentlag.setups.wavepool import make_wave_pool_ic
-from momentlag.integrate import run_to
-from momentlag.diagnostics import extract_diagnostics
+from dfmm.setups.wavepool import make_wave_pool_ic
+from dfmm.integrate import run_to
+from dfmm.diagnostics import extract_diagnostics
 
 FIG_DIR = os.path.join(os.path.dirname(__file__), "..", "paper", "figs")
 os.makedirs(FIG_DIR, exist_ok=True)

@@ -1,4 +1,4 @@
-# Top-level Makefile for momentlag
+# Top-level Makefile for dfmm
 #
 # Usage:
 #   make install    # install the package in editable mode
@@ -16,7 +16,7 @@
 
 help:
 	@echo "Common targets:"
-	@echo "  install   install momentlag in editable mode"
+	@echo "  install   install dfmm in editable mode"
 	@echo "  test      run smoke tests"
 	@echo "  paper     compile the paper PDF"
 	@echo "  figures   regenerate all paper figures (takes ~20 minutes)"
@@ -36,5 +36,5 @@ figures:
 
 clean:
 	rm -rf build dist *.egg-info
-	rm -rf momentlag/__pycache__ momentlag/*/__pycache__
+	rm -rf dfmm/__pycache__ dfmm/*/__pycache__
 	$(MAKE) -C paper clean

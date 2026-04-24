@@ -20,8 +20,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
-from momentlag.setups.shock import run_steady_shock, rankine_hugoniot, GAMMA
-from momentlag.schemes.barotropic import (run_baro_shock,
+from dfmm.setups.shock import run_steady_shock, rankine_hugoniot, GAMMA
+from dfmm.schemes.barotropic import (run_baro_shock,
                                               compression_ratio_polytropic,
                                               baro_primitives)
 

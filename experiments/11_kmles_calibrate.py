@@ -26,8 +26,8 @@ import os, time
 import numpy as np
 import matplotlib.pyplot as plt
 
-from momentlag.setups.wavepool import make_wave_pool_ic
-from momentlag.integrate import run_to, coarse_grain
+from dfmm.setups.wavepool import make_wave_pool_ic
+from dfmm.integrate import run_to, coarse_grain
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 FIG_DIR = os.path.join(os.path.dirname(__file__), "..", "paper", "figs")
