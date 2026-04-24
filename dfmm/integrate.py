@@ -17,6 +17,7 @@ from dataclasses import replace
 import numpy as np
 
 from .config import SimulationConfig
+from .schemes._common import Workspace
 from .schemes.boundaries import (pad_with_ghosts, unpad_ghosts,
                                   apply_mixed)
 from .schemes.cholesky import hll_step, max_signal_speed
@@ -83,30 +84,38 @@ def run_to(U, t_end, cfl=None, tau=None, save_times=None, checkpoint_dt=None,
     save_idx = 0
     nsteps = 0
 
-    # Pad to ghost layout once; every step rewrites ghosts in place.
-    U_ghost = pad_with_ghosts(U, n_ghost)
+    # Pad to ghost layout once; allocate the workspace once; ping-
+    # pong `U_curr` / `U_next` across steps to avoid per-step
+    # allocations.
+    U_curr = pad_with_ghosts(U, n_ghost)
+    ws = Workspace.for_padded_state(U_curr)
+    U_next = ws.Unew
 
     while t < t_end and save_idx < len(save_times):
         next_save = save_times[save_idx]
         # Apply BCs so max_signal_speed sees a consistent field
         # (and so the Liouville-source du/dx stencil at interior
         # edges uses the correct ghost neighbour).
-        apply_mixed(U_ghost, n_ghost, cfg.bc_left, cfg.bc_right,
+        apply_mixed(U_curr, n_ghost, cfg.bc_left, cfg.bc_right,
                     state_left=cfg.bc_state_left,
                     state_right=cfg.bc_state_right)
-        smax = max_signal_speed(unpad_ghosts(U_ghost, n_ghost))
+        smax = max_signal_speed(unpad_ghosts(U_curr, n_ghost))
         dt = min(cfg.cfl * dx / smax, next_save - t, t_end - t)
         if dt <= 1e-14:
-            snapshots.append((t, unpad_ghosts(U_ghost, n_ghost).copy()))
+            snapshots.append((t, unpad_ghosts(U_curr, n_ghost).copy()))
             save_idx += 1
             continue
-        U_ghost = hll_step(U_ghost, dx, dt, cfg.tau, n_ghost,
-                           cfg.rho_floor, cfg.alpha_floor,
-                           cfg.realizability_headroom)
+        hll_step(U_curr, dx, dt, cfg.tau, n_ghost,
+                 cfg.rho_floor, cfg.alpha_floor,
+                 cfg.realizability_headroom,
+                 U_next, ws.Fleft)
+        # Swap roles — U_next holds the new state; reuse the old
+        # U_curr slot as scratch on the next iteration.
+        U_curr, U_next = U_next, U_curr
         t += dt
         nsteps += 1
         if t >= next_save - 1e-12:
-            snapshots.append((t, unpad_ghosts(U_ghost, n_ghost).copy()))
+            snapshots.append((t, unpad_ghosts(U_curr, n_ghost).copy()))
             save_idx += 1
     return snapshots, nsteps
 

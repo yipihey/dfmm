@@ -1,4 +1,5 @@
-"""Shared constants and HLL flux helper for the 8-field moment state.
+"""Shared constants, HLL flux helper, and workspace for the 8-field
+moment state.
 
 Imported by the cholesky scheme (`dfmm.schemes.cholesky`), the
 energy-conservative noise scheme (`dfmm.closure.noise_model`), and
@@ -9,6 +10,7 @@ use different wave-speed coefficients and do not share this module.
 The IDX_* constants are plain ints; Numba inlines them into the
 compiled code, so using `U[IDX_RHO]` has identical cost to `U[0]`.
 """
+from dataclasses import dataclass
 import numpy as np
 import numba as nb
 
@@ -23,6 +25,33 @@ IDX_M3    = 7   # rho <v^3>
 
 # 13-moment max-eigenvalue coefficient: cs = sqrt(CSCOEF * P_xx / rho)
 CSCOEF = 3.0 + np.sqrt(6.0)
+
+
+@dataclass
+class Workspace:
+    """Pre-allocated scratch buffers for the HLL step kernel.
+
+    Bundling them in one object lets `run_to` allocate once at entry
+    and reuse across every step, eliminating per-step GC pressure
+    that can dominate runtime on long simulations. The kernel
+    receives the individual `Unew` / `Fleft` ndarrays as positional
+    arguments (Numba can't destructure a dataclass).
+
+    Sized to match the ghost-padded shape `(n_fields, N + 2*n_ghost)`.
+    `Fleft` has one extra column to hold fluxes at all interior faces
+    plus the two boundary faces when n_ghost >= 1.
+    """
+    Unew: np.ndarray
+    Fleft: np.ndarray
+
+    @classmethod
+    def for_padded_state(cls, U_ghost):
+        """Build a fresh workspace sized to `U_ghost.shape`."""
+        n_fields, N_padded = U_ghost.shape
+        return cls(
+            Unew=np.empty((n_fields, N_padded), dtype=U_ghost.dtype),
+            Fleft=np.empty((n_fields, N_padded + 1), dtype=U_ghost.dtype),
+        )
 
 
 @nb.njit(cache=True, fastmath=False, inline='always')

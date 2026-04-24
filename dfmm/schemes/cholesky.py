@@ -78,7 +78,8 @@ def max_signal_speed(U):
 
 @nb.njit(cache=True, fastmath=False)
 def hll_step(U, dx, dt, tau, n_ghost,
-             rho_floor, alpha_floor, realizability_headroom):
+             rho_floor, alpha_floor, realizability_headroom,
+             Unew, Fleft):
     """Unified HLL + BGK step on a ghost-padded state.
 
     Caller is responsible for filling the ghost cells before calling
@@ -91,10 +92,15 @@ def hll_step(U, dx, dt, tau, n_ghost,
     slice `U[:, n_ghost:n_ghost+N]`. All tolerances (rho_floor,
     alpha_floor, realizability_headroom) are scalar args so Numba
     stays a happy camper.
+
+    `Unew` and `Fleft` are pre-allocated scratch buffers (see
+    `Workspace.for_padded_state`): `Unew` shape matches `U`, `Fleft`
+    has shape `(n_fields, N + 2*n_ghost + 1)`. The kernel writes into
+    these in place and returns `Unew` (so the caller can ping-pong
+    the two buffers across steps without re-allocation).
     """
     n_fields, N_tot = U.shape
     N = N_tot - 2 * n_ghost
-    Unew = np.empty_like(U)
 
     rho   = U[IDX_RHO]
     u     = U[IDX_MOM]/rho
@@ -109,7 +115,6 @@ def hll_step(U, dx, dt, tau, n_ghost,
 
     # Flux at the N+1 interior faces. Face i (for i in [n_ghost,
     # n_ghost+N]) is between cell i-1 and cell i in the padded layout.
-    Fleft = np.empty((n_fields, N_tot + 1))
     for i in range(n_ghost, n_ghost + N + 1):
         F0, F1, F2, F3, F4, F5, F6, F7 = hll_edge_flux(
             U[:, i-1], U[:, i], cs[i-1], cs[i])
