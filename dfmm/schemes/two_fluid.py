@@ -25,7 +25,8 @@ import numba as nb
 # 8-field block the field layout is shared with the single-fluid state
 # (see dfmm.schemes._common).
 from ._common import (CSCOEF, IDX_RHO, IDX_MOM, IDX_EXX, IDX_PP,
-                      IDX_L1, IDX_ALPHA, IDX_BETA, IDX_M3)
+                      IDX_L1, IDX_ALPHA, IDX_BETA, IDX_M3,
+                      hll_edge_flux)
 
 
 # -------- Generic single-species primitives --------
@@ -66,67 +67,8 @@ def primitives(U, species='A', m=1.0):
                 Svv=Svv, Q=Q, T=T, Piso=Piso)
 
 
-# -------- HLL flux for one species; periodic or transmissive BC --------
-
-@nb.njit(cache=True, fastmath=False)
-def _hll_flux_one_species(Ul, Ur, cs_l, cs_r):
-    """8-component HLL flux given left and right 8-field states and their wave speeds."""
-    F = np.zeros(8)
-    rho_L = Ul[IDX_RHO]; u_L = Ul[IDX_MOM]/max(rho_L, 1e-30)
-    Pxx_L = Ul[IDX_EXX] - rho_L*u_L*u_L
-    Pp_L  = Ul[IDX_PP]
-    L1_L  = Ul[IDX_L1]/max(rho_L, 1e-30)
-    a_L   = Ul[IDX_ALPHA]/max(rho_L, 1e-30)
-    b_L   = Ul[IDX_BETA]/max(rho_L, 1e-30)
-    M3_L  = Ul[IDX_M3]
-    Q_L   = M3_L - rho_L*u_L*u_L*u_L - 3.0*u_L*Pxx_L
-
-    rho_R = Ur[IDX_RHO]; u_R = Ur[IDX_MOM]/max(rho_R, 1e-30)
-    Pxx_R = Ur[IDX_EXX] - rho_R*u_R*u_R
-    Pp_R  = Ur[IDX_PP]
-    L1_R  = Ur[IDX_L1]/max(rho_R, 1e-30)
-    a_R   = Ur[IDX_ALPHA]/max(rho_R, 1e-30)
-    b_R   = Ur[IDX_BETA]/max(rho_R, 1e-30)
-    M3_R  = Ur[IDX_M3]
-    Q_R   = M3_R - rho_R*u_R*u_R*u_R - 3.0*u_R*Pxx_R
-
-    SL = min(u_L - cs_l, u_R - cs_r)
-    SR = max(u_L + cs_l, u_R + cs_r)
-
-    FL0 = rho_L*u_L
-    FL1 = rho_L*u_L*u_L + Pxx_L
-    FL2 = rho_L*u_L*u_L*u_L + 3.0*u_L*Pxx_L + Q_L
-    FL3 = u_L*Pp_L
-    FL4 = rho_L*L1_L*u_L
-    FL5 = rho_L*a_L*u_L
-    FL6 = rho_L*b_L*u_L
-    # Wick fourth moment: <(v-u)^4> = 3 Svv^2, so M4 = rho u^4 + 6 u^2 Pxx + 4 u Q + 3 Pxx^2/rho
-    FL7 = rho_L*u_L**4 + 6.0*u_L*u_L*Pxx_L + 4.0*u_L*Q_L + 3.0*Pxx_L*Pxx_L/max(rho_L, 1e-30)
-
-    FR0 = rho_R*u_R
-    FR1 = rho_R*u_R*u_R + Pxx_R
-    FR2 = rho_R*u_R*u_R*u_R + 3.0*u_R*Pxx_R + Q_R
-    FR3 = u_R*Pp_R
-    FR4 = rho_R*L1_R*u_R
-    FR5 = rho_R*a_R*u_R
-    FR6 = rho_R*b_R*u_R
-    FR7 = rho_R*u_R**4 + 6.0*u_R*u_R*Pxx_R + 4.0*u_R*Q_R + 3.0*Pxx_R*Pxx_R/max(rho_R, 1e-30)
-
-    if SL >= 0.0:
-        F[0]=FL0; F[1]=FL1; F[2]=FL2; F[3]=FL3; F[4]=FL4; F[5]=FL5; F[6]=FL6; F[7]=FL7
-    elif SR <= 0.0:
-        F[0]=FR0; F[1]=FR1; F[2]=FR2; F[3]=FR3; F[4]=FR4; F[5]=FR5; F[6]=FR6; F[7]=FR7
-    else:
-        invDS = 1.0/(SR - SL + 1e-30)
-        F[0] = (SR*FL0 - SL*FR0 + SL*SR*(Ur[0]-Ul[0]))*invDS
-        F[1] = (SR*FL1 - SL*FR1 + SL*SR*(Ur[1]-Ul[1]))*invDS
-        F[2] = (SR*FL2 - SL*FR2 + SL*SR*(Ur[2]-Ul[2]))*invDS
-        F[3] = (SR*FL3 - SL*FR3 + SL*SR*(Ur[3]-Ul[3]))*invDS
-        F[4] = (SR*FL4 - SL*FR4 + SL*SR*(Ur[4]-Ul[4]))*invDS
-        F[5] = (SR*FL5 - SL*FR5 + SL*SR*(Ur[5]-Ul[5]))*invDS
-        F[6] = (SR*FL6 - SL*FR6 + SL*SR*(Ur[6]-Ul[6]))*invDS
-        F[7] = (SR*FL7 - SL*FR7 + SL*SR*(Ur[7]-Ul[7]))*invDS
-    return F
+# HLL flux logic lives in `._common.hll_edge_flux`, shared with
+# the single-fluid cholesky scheme and the noise scheme.
 
 
 # -------- Single-species step (Steps 1-3 machinery) --------
@@ -149,9 +91,10 @@ def _species_step_periodic(U_full, off, dx, dt, tau_self, N):
     Fleft = np.empty((8, N))
     for i in range(N):
         l = (i-1) % N
-        F = _hll_flux_one_species(U_full[off:off+8, l], U_full[off:off+8, i], cs[l], cs[i])
-        for k in range(8):
-            Fleft[k, i] = F[k]
+        F0, F1, F2, F3, F4, F5, F6, F7 = hll_edge_flux(
+            U_full[off:off+8, l], U_full[off:off+8, i], cs[l], cs[i])
+        Fleft[0, i] = F0; Fleft[1, i] = F1; Fleft[2, i] = F2; Fleft[3, i] = F3
+        Fleft[4, i] = F4; Fleft[5, i] = F5; Fleft[6, i] = F6; Fleft[7, i] = F7
 
     # Conservative update for this species' 8 fields
     inv_dx = 1.0/dx
@@ -219,12 +162,13 @@ def _species_step_transmissive(U_full, off, dx, dt, tau_self, N):
 
     Fleft = np.empty((8, N+1))
     for i in range(N+1):
-        if i == 0:      l = 0; r = 0
-        elif i == N:    l = N-1; r = N-1
-        else:           l = i-1; r = i
-        F = _hll_flux_one_species(U_full[off:off+8, l], U_full[off:off+8, r], cs[l], cs[r])
-        for k in range(8):
-            Fleft[k, i] = F[k]
+        if i == 0:    l = 0;   r = 0
+        elif i == N:  l = N-1; r = N-1
+        else:         l = i-1; r = i
+        F0, F1, F2, F3, F4, F5, F6, F7 = hll_edge_flux(
+            U_full[off:off+8, l], U_full[off:off+8, r], cs[l], cs[r])
+        Fleft[0, i] = F0; Fleft[1, i] = F1; Fleft[2, i] = F2; Fleft[3, i] = F3
+        Fleft[4, i] = F4; Fleft[5, i] = F5; Fleft[6, i] = F6; Fleft[7, i] = F7
 
     inv_dx = 1.0/dx
     for i in range(N):

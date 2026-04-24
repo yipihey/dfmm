@@ -37,7 +37,8 @@ import numba as nb
 
 from ..schemes.cholesky import max_signal_speed
 from ..schemes._common import (CSCOEF, IDX_RHO, IDX_MOM, IDX_EXX, IDX_PP,
-                               IDX_L1, IDX_ALPHA, IDX_BETA, IDX_M3)
+                               IDX_L1, IDX_ALPHA, IDX_BETA, IDX_M3,
+                               hll_edge_flux)
 
 
 def smooth_gaussian_periodic(eta, ell_corr):
@@ -106,44 +107,9 @@ def hll_step_noise_econsv(U, dx, dt, tau, C_A, C_B, eta_draw):
     Fleft = np.empty((n_fields, N))
     for i in range(N):
         l = (i-1) % N
-        rho_L = rho[l]; u_L = u[l]; Pxx_L = Pxx[l]; Pp_L = Pp[l]; L1_L = L1[l]
-        a_L = alpha[l]; b_L = beta[l]; Q_L = Q[l]; cs_L = cs[l]
-        rho_R = rho[i]; u_R = u[i]; Pxx_R = Pxx[i]; Pp_R = Pp[i]; L1_R = L1[i]
-        a_R = alpha[i]; b_R = beta[i]; Q_R = Q[i]; cs_R = cs[i]
-        SL = min(u_L - cs_L, u_R - cs_R)
-        SR = max(u_L + cs_L, u_R + cs_R)
-        FL0 = rho_L*u_L
-        FL1 = rho_L*u_L*u_L + Pxx_L
-        FL2 = rho_L*u_L*u_L*u_L + 3.0*u_L*Pxx_L + Q_L
-        FL3 = u_L*Pp_L
-        FL4 = rho_L*L1_L*u_L
-        FL5 = rho_L*a_L*u_L
-        FL6 = rho_L*b_L*u_L
-        FL7 = rho_L*u_L**4 + 6.0*u_L*u_L*Pxx_L + 4.0*u_L*Q_L + 3.0*Pxx_L*Pxx_L/rho_L
-        FR0 = rho_R*u_R
-        FR1 = rho_R*u_R*u_R + Pxx_R
-        FR2 = rho_R*u_R*u_R*u_R + 3.0*u_R*Pxx_R + Q_R
-        FR3 = u_R*Pp_R
-        FR4 = rho_R*L1_R*u_R
-        FR5 = rho_R*a_R*u_R
-        FR6 = rho_R*b_R*u_R
-        FR7 = rho_R*u_R**4 + 6.0*u_R*u_R*Pxx_R + 4.0*u_R*Q_R + 3.0*Pxx_R*Pxx_R/rho_R
-        if SL >= 0.0:
-            Fleft[0,i]=FL0; Fleft[1,i]=FL1; Fleft[2,i]=FL2; Fleft[3,i]=FL3
-            Fleft[4,i]=FL4; Fleft[5,i]=FL5; Fleft[6,i]=FL6; Fleft[7,i]=FL7
-        elif SR <= 0.0:
-            Fleft[0,i]=FR0; Fleft[1,i]=FR1; Fleft[2,i]=FR2; Fleft[3,i]=FR3
-            Fleft[4,i]=FR4; Fleft[5,i]=FR5; Fleft[6,i]=FR6; Fleft[7,i]=FR7
-        else:
-            invDS = 1.0/(SR - SL + 1e-30)
-            Fleft[0,i] = (SR*FL0 - SL*FR0 + SL*SR*(U[IDX_RHO,  i] - U[IDX_RHO,  l]))*invDS
-            Fleft[1,i] = (SR*FL1 - SL*FR1 + SL*SR*(U[IDX_MOM,  i] - U[IDX_MOM,  l]))*invDS
-            Fleft[2,i] = (SR*FL2 - SL*FR2 + SL*SR*(U[IDX_EXX,  i] - U[IDX_EXX,  l]))*invDS
-            Fleft[3,i] = (SR*FL3 - SL*FR3 + SL*SR*(U[IDX_PP,   i] - U[IDX_PP,   l]))*invDS
-            Fleft[4,i] = (SR*FL4 - SL*FR4 + SL*SR*(U[IDX_L1,   i] - U[IDX_L1,   l]))*invDS
-            Fleft[5,i] = (SR*FL5 - SL*FR5 + SL*SR*(U[IDX_ALPHA,i] - U[IDX_ALPHA,l]))*invDS
-            Fleft[6,i] = (SR*FL6 - SL*FR6 + SL*SR*(U[IDX_BETA, i] - U[IDX_BETA, l]))*invDS
-            Fleft[7,i] = (SR*FL7 - SL*FR7 + SL*SR*(U[IDX_M3,   i] - U[IDX_M3,   l]))*invDS
+        F0, F1, F2, F3, F4, F5, F6, F7 = hll_edge_flux(U[:, l], U[:, i], cs[l], cs[i])
+        Fleft[0, i] = F0; Fleft[1, i] = F1; Fleft[2, i] = F2; Fleft[3, i] = F3
+        Fleft[4, i] = F4; Fleft[5, i] = F5; Fleft[6, i] = F6; Fleft[7, i] = F7
 
     # Conservative update
     inv_dx = 1.0/dx
