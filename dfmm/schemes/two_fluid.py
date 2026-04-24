@@ -21,20 +21,11 @@ This file contains the generic infrastructure.  Application-specific kernels
 import numpy as np
 import numba as nb
 
-# Indices into the 16-field state vector
-# Species A: 0..7
-# Species B: 8..15
-# Within each 8-field block:
-IDX_RHO   = 0
-IDX_MOM   = 1
-IDX_EXX   = 2    # E_xx = rho u^2 + P_xx
-IDX_PP    = 3    # P_perp
-IDX_L1    = 4    # rho * L1
-IDX_ALPHA = 5    # rho * alpha (Cholesky: sqrt(Sigma_xx))
-IDX_BETA  = 6    # rho * beta  (Cholesky: Sigma_xv / alpha)
-IDX_M3    = 7    # rho * <v^3>
-
-CSCOEF = 3.0 + np.sqrt(6.0)      # 13-moment max signal speed coefficient
+# Species A occupies U[0..7]; species B occupies U[8..15]; within each
+# 8-field block the field layout is shared with the single-fluid state
+# (see dfmm.schemes._common).
+from ._common import (CSCOEF, IDX_RHO, IDX_MOM, IDX_EXX, IDX_PP,
+                      IDX_L1, IDX_ALPHA, IDX_BETA, IDX_M3)
 
 
 # -------- Generic single-species primitives --------

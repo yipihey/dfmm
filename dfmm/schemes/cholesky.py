@@ -45,18 +45,19 @@ Fourth-moment closure is Wick-Gaussian by default.
 import numpy as np
 import numba as nb
 
-CSCOEF = 3.0 + np.sqrt(6.0)            # 13-moment max-eigenvalue^2 coefficient
+from ._common import (CSCOEF, IDX_RHO, IDX_MOM, IDX_EXX, IDX_PP,
+                      IDX_L1, IDX_ALPHA, IDX_BETA, IDX_M3)
 
 
 def primitives(U):
-    rho   = U[0]
-    u     = U[1]/rho
-    Pxx   = U[2] - rho*u*u
-    Pp    = U[3]
-    L1    = U[4]/rho
-    alpha = U[5]/rho
-    beta  = U[6]/rho
-    M3    = U[7]
+    rho   = U[IDX_RHO]
+    u     = U[IDX_MOM]/rho
+    Pxx   = U[IDX_EXX] - rho*u*u
+    Pp    = U[IDX_PP]
+    L1    = U[IDX_L1]/rho
+    alpha = U[IDX_ALPHA]/rho
+    beta  = U[IDX_BETA]/rho
+    M3    = U[IDX_M3]
     Q     = M3 - rho*u*u*u - 3.0*u*Pxx
     Sigma_vv = np.maximum(Pxx, 1e-30)/np.maximum(rho, 1e-30)
     Sigma_xx = alpha*alpha
@@ -66,27 +67,27 @@ def primitives(U):
     return rho, u, Pxx, Pp, L1, alpha, beta, gamma, Sigma_xx, Sigma_xv, Sigma_vv, Q
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=False)
 def max_signal_speed(U):
-    rho = U[0]; u = U[1]/rho
-    Pxx = U[2] - rho*u*u
+    rho = U[IDX_RHO]; u = U[IDX_MOM]/rho
+    Pxx = U[IDX_EXX] - rho*u*u
     cs = np.sqrt(CSCOEF*np.maximum(Pxx, 1e-30)/np.maximum(rho, 1e-30))
     return float(np.max(np.abs(u) + cs))
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=False)
 def hll_step_periodic(U, dx, dt, tau):
     n_fields, N = U.shape
     Unew = np.empty_like(U)
 
-    rho   = U[0]
-    u     = U[1]/rho
-    Pxx   = U[2] - rho*u*u
-    Pp    = U[3]
-    L1    = U[4]/rho
-    alpha = U[5]/rho
-    beta  = U[6]/rho
-    M3    = U[7]
+    rho   = U[IDX_RHO]
+    u     = U[IDX_MOM]/rho
+    Pxx   = U[IDX_EXX] - rho*u*u
+    Pp    = U[IDX_PP]
+    L1    = U[IDX_L1]/rho
+    alpha = U[IDX_ALPHA]/rho
+    beta  = U[IDX_BETA]/rho
+    M3    = U[IDX_M3]
     Q     = M3 - rho*u*u*u - 3.0*u*Pxx
     cs    = np.sqrt(CSCOEF*np.maximum(Pxx, 1e-30)/np.maximum(rho, 1e-30))
 
@@ -126,14 +127,14 @@ def hll_step_periodic(U, dx, dt, tau):
             Fleft[4,i]=FR4; Fleft[5,i]=FR5; Fleft[6,i]=FR6; Fleft[7,i]=FR7
         else:
             invDS = 1.0/(SR - SL + 1e-30)
-            Fleft[0,i] = (SR*FL0 - SL*FR0 + SL*SR*(U[0,i] - U[0,l]))*invDS
-            Fleft[1,i] = (SR*FL1 - SL*FR1 + SL*SR*(U[1,i] - U[1,l]))*invDS
-            Fleft[2,i] = (SR*FL2 - SL*FR2 + SL*SR*(U[2,i] - U[2,l]))*invDS
-            Fleft[3,i] = (SR*FL3 - SL*FR3 + SL*SR*(U[3,i] - U[3,l]))*invDS
-            Fleft[4,i] = (SR*FL4 - SL*FR4 + SL*SR*(U[4,i] - U[4,l]))*invDS
-            Fleft[5,i] = (SR*FL5 - SL*FR5 + SL*SR*(U[5,i] - U[5,l]))*invDS
-            Fleft[6,i] = (SR*FL6 - SL*FR6 + SL*SR*(U[6,i] - U[6,l]))*invDS
-            Fleft[7,i] = (SR*FL7 - SL*FR7 + SL*SR*(U[7,i] - U[7,l]))*invDS
+            Fleft[0,i] = (SR*FL0 - SL*FR0 + SL*SR*(U[IDX_RHO,  i] - U[IDX_RHO,  l]))*invDS
+            Fleft[1,i] = (SR*FL1 - SL*FR1 + SL*SR*(U[IDX_MOM,  i] - U[IDX_MOM,  l]))*invDS
+            Fleft[2,i] = (SR*FL2 - SL*FR2 + SL*SR*(U[IDX_EXX,  i] - U[IDX_EXX,  l]))*invDS
+            Fleft[3,i] = (SR*FL3 - SL*FR3 + SL*SR*(U[IDX_PP,   i] - U[IDX_PP,   l]))*invDS
+            Fleft[4,i] = (SR*FL4 - SL*FR4 + SL*SR*(U[IDX_L1,   i] - U[IDX_L1,   l]))*invDS
+            Fleft[5,i] = (SR*FL5 - SL*FR5 + SL*SR*(U[IDX_ALPHA,i] - U[IDX_ALPHA,l]))*invDS
+            Fleft[6,i] = (SR*FL6 - SL*FR6 + SL*SR*(U[IDX_BETA, i] - U[IDX_BETA, l]))*invDS
+            Fleft[7,i] = (SR*FL7 - SL*FR7 + SL*SR*(U[IDX_M3,   i] - U[IDX_M3,   l]))*invDS
 
     inv_dx = 1.0/dx
     for i in range(N):
@@ -155,20 +156,20 @@ def hll_step_periodic(U, dx, dt, tau):
         gamma2_signed = Sigma_vv_i - b*b           # may be negative
         ip2 = (i+1) % N; im2 = (i-1) % N
         dudx_i = (u[ip2] - u[im2])/(2.0*dx)
-        Unew[5, i] += dt*rho[i]*b
+        Unew[IDX_ALPHA, i] += dt*rho[i]*b
         a_safe = a if a > 1e-15 else 1e-15
-        Unew[6, i] += dt*rho[i]*(gamma2_signed/a_safe - dudx_i*b)
+        Unew[IDX_BETA, i] += dt*rho[i]*(gamma2_signed/a_safe - dudx_i*b)
 
     # BGK relaxation
     decay = np.exp(-dt/tau)
     for i in range(N):
-        rho_n = Unew[0, i]
-        u_n   = Unew[1, i]/rho_n
-        Pxx_n = Unew[2, i] - rho_n*u_n*u_n
-        Pp_n  = Unew[3, i]
-        a_n   = Unew[5, i]/rho_n
-        b_n   = Unew[6, i]/rho_n
-        M3_n  = Unew[7, i]
+        rho_n = Unew[IDX_RHO, i]
+        u_n   = Unew[IDX_MOM, i]/rho_n
+        Pxx_n = Unew[IDX_EXX, i] - rho_n*u_n*u_n
+        Pp_n  = Unew[IDX_PP, i]
+        a_n   = Unew[IDX_ALPHA, i]/rho_n
+        b_n   = Unew[IDX_BETA, i]/rho_n
+        M3_n  = Unew[IDX_M3, i]
         Q_n   = M3_n - rho_n*u_n*u_n*u_n - 3.0*u_n*Pxx_n
 
         # Pressure isotropization
@@ -187,24 +188,24 @@ def hll_step_periodic(U, dx, dt, tau):
         if b_new > beta_max:    b_new = beta_max
         elif b_new < -beta_max: b_new = -beta_max
 
-        Unew[2, i] = rho_n*u_n*u_n + Pxx_new
-        Unew[3, i] = Pp_new
-        Unew[6, i] = rho_n*b_new
-        Unew[7, i] = rho_n*u_n*u_n*u_n + 3.0*u_n*Pxx_new + Q_new
+        Unew[IDX_EXX, i] = rho_n*u_n*u_n + Pxx_new
+        Unew[IDX_PP,  i] = Pp_new
+        Unew[IDX_BETA,i] = rho_n*b_new
+        Unew[IDX_M3,  i] = rho_n*u_n*u_n*u_n + 3.0*u_n*Pxx_new + Q_new
         # alpha unchanged by collisions
 
     return Unew
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=False)
 def hll_step_transmissive(U, dx, dt, tau):
     n_fields, N = U.shape
     Unew = np.empty_like(U)
 
-    rho   = U[0]; u = U[1]/rho
-    Pxx   = U[2] - rho*u*u; Pp = U[3]; L1 = U[4]/rho
-    alpha = U[5]/rho; beta = U[6]/rho
-    M3    = U[7]; Q = M3 - rho*u*u*u - 3.0*u*Pxx
+    rho   = U[IDX_RHO]; u = U[IDX_MOM]/rho
+    Pxx   = U[IDX_EXX] - rho*u*u; Pp = U[IDX_PP]; L1 = U[IDX_L1]/rho
+    alpha = U[IDX_ALPHA]/rho; beta = U[IDX_BETA]/rho
+    M3    = U[IDX_M3]; Q = M3 - rho*u*u*u - 3.0*u*Pxx
     cs    = np.sqrt(CSCOEF*np.maximum(Pxx, 1e-30)/np.maximum(rho, 1e-30))
 
     Fleft = np.empty((n_fields, N+1))
@@ -236,14 +237,14 @@ def hll_step_transmissive(U, dx, dt, tau):
             Fleft[4,i]=FR4; Fleft[5,i]=FR5; Fleft[6,i]=FR6; Fleft[7,i]=FR7
         else:
             invDS = 1.0/(SR - SL + 1e-30)
-            Fleft[0,i] = (SR*FL0 - SL*FR0 + SL*SR*(U[0,r] - U[0,l]))*invDS
-            Fleft[1,i] = (SR*FL1 - SL*FR1 + SL*SR*(U[1,r] - U[1,l]))*invDS
-            Fleft[2,i] = (SR*FL2 - SL*FR2 + SL*SR*(U[2,r] - U[2,l]))*invDS
-            Fleft[3,i] = (SR*FL3 - SL*FR3 + SL*SR*(U[3,r] - U[3,l]))*invDS
-            Fleft[4,i] = (SR*FL4 - SL*FR4 + SL*SR*(U[4,r] - U[4,l]))*invDS
-            Fleft[5,i] = (SR*FL5 - SL*FR5 + SL*SR*(U[5,r] - U[5,l]))*invDS
-            Fleft[6,i] = (SR*FL6 - SL*FR6 + SL*SR*(U[6,r] - U[6,l]))*invDS
-            Fleft[7,i] = (SR*FL7 - SL*FR7 + SL*SR*(U[7,r] - U[7,l]))*invDS
+            Fleft[0,i] = (SR*FL0 - SL*FR0 + SL*SR*(U[IDX_RHO,  r] - U[IDX_RHO,  l]))*invDS
+            Fleft[1,i] = (SR*FL1 - SL*FR1 + SL*SR*(U[IDX_MOM,  r] - U[IDX_MOM,  l]))*invDS
+            Fleft[2,i] = (SR*FL2 - SL*FR2 + SL*SR*(U[IDX_EXX,  r] - U[IDX_EXX,  l]))*invDS
+            Fleft[3,i] = (SR*FL3 - SL*FR3 + SL*SR*(U[IDX_PP,   r] - U[IDX_PP,   l]))*invDS
+            Fleft[4,i] = (SR*FL4 - SL*FR4 + SL*SR*(U[IDX_L1,   r] - U[IDX_L1,   l]))*invDS
+            Fleft[5,i] = (SR*FL5 - SL*FR5 + SL*SR*(U[IDX_ALPHA,r] - U[IDX_ALPHA,l]))*invDS
+            Fleft[6,i] = (SR*FL6 - SL*FR6 + SL*SR*(U[IDX_BETA, r] - U[IDX_BETA, l]))*invDS
+            Fleft[7,i] = (SR*FL7 - SL*FR7 + SL*SR*(U[IDX_M3,   r] - U[IDX_M3,   l]))*invDS
     inv_dx = 1.0/dx
     for i in range(N):
         for k in range(n_fields):
@@ -255,15 +256,15 @@ def hll_step_transmissive(U, dx, dt, tau):
         if i == 0:        dudx_i = (u[1] - u[0])/dx
         elif i == N-1:    dudx_i = (u[N-1] - u[N-2])/dx
         else:             dudx_i = (u[i+1] - u[i-1])/(2.0*dx)
-        Unew[5, i] += dt*rho[i]*b
+        Unew[IDX_ALPHA, i] += dt*rho[i]*b
         a_safe = a if a > 1e-15 else 1e-15
-        Unew[6, i] += dt*rho[i]*(gamma2/a_safe - dudx_i*b)
+        Unew[IDX_BETA, i] += dt*rho[i]*(gamma2/a_safe - dudx_i*b)
     decay = np.exp(-dt/tau)
     for i in range(N):
-        rho_n = Unew[0, i]; u_n = Unew[1, i]/rho_n
-        Pxx_n = Unew[2, i] - rho_n*u_n*u_n; Pp_n = Unew[3, i]
-        a_n = Unew[5, i]/rho_n; b_n = Unew[6, i]/rho_n
-        M3_n = Unew[7, i]; Q_n = M3_n - rho_n*u_n*u_n*u_n - 3.0*u_n*Pxx_n
+        rho_n = Unew[IDX_RHO, i]; u_n = Unew[IDX_MOM, i]/rho_n
+        Pxx_n = Unew[IDX_EXX, i] - rho_n*u_n*u_n; Pp_n = Unew[IDX_PP, i]
+        a_n = Unew[IDX_ALPHA, i]/rho_n; b_n = Unew[IDX_BETA, i]/rho_n
+        M3_n = Unew[IDX_M3, i]; Q_n = M3_n - rho_n*u_n*u_n*u_n - 3.0*u_n*Pxx_n
         P_iso = (Pxx_n + 2.0*Pp_n)/3.0
         Pxx_new = P_iso + (Pxx_n - P_iso)*decay
         Pp_new  = P_iso + (Pp_n  - P_iso)*decay
@@ -273,10 +274,10 @@ def hll_step_transmissive(U, dx, dt, tau):
         beta_max = 0.999*np.sqrt(Sigma_vv_new)
         if b_new > beta_max:    b_new = beta_max
         elif b_new < -beta_max: b_new = -beta_max
-        Unew[2, i] = rho_n*u_n*u_n + Pxx_new
-        Unew[3, i] = Pp_new
-        Unew[6, i] = rho_n*b_new
-        Unew[7, i] = rho_n*u_n*u_n*u_n + 3.0*u_n*Pxx_new + Q_new
+        Unew[IDX_EXX, i] = rho_n*u_n*u_n + Pxx_new
+        Unew[IDX_PP,  i] = Pp_new
+        Unew[IDX_BETA,i] = rho_n*b_new
+        Unew[IDX_M3,  i] = rho_n*u_n*u_n*u_n + 3.0*u_n*Pxx_new + Q_new
     return Unew
 
 

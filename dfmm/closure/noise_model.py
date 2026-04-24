@@ -35,7 +35,9 @@ optimal ell_corr from the calibration is ~2 cells.
 import numpy as np
 import numba as nb
 
-from ..schemes.cholesky import max_signal_speed, CSCOEF
+from ..schemes.cholesky import max_signal_speed
+from ..schemes._common import (CSCOEF, IDX_RHO, IDX_MOM, IDX_EXX, IDX_PP,
+                               IDX_L1, IDX_ALPHA, IDX_BETA, IDX_M3)
 
 
 def smooth_gaussian_periodic(eta, ell_corr):
@@ -57,7 +59,7 @@ def smooth_gaussian_periodic(eta, ell_corr):
     return eta_smooth
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=False)
 def hll_step_noise_econsv(U, dx, dt, tau, C_A, C_B, eta_draw):
     """Periodic HLL + BGK step with energy-conservative noise injection.
 
@@ -82,14 +84,14 @@ def hll_step_noise_econsv(U, dx, dt, tau, C_A, C_B, eta_draw):
     n_fields, N = U.shape
     Unew = np.empty_like(U)
 
-    rho   = U[0]
-    u     = U[1]/rho
-    Pxx   = U[2] - rho*u*u
-    Pp    = U[3]
-    L1    = U[4]/rho
-    alpha = U[5]/rho
-    beta  = U[6]/rho
-    M3    = U[7]
+    rho   = U[IDX_RHO]
+    u     = U[IDX_MOM]/rho
+    Pxx   = U[IDX_EXX] - rho*u*u
+    Pp    = U[IDX_PP]
+    L1    = U[IDX_L1]/rho
+    alpha = U[IDX_ALPHA]/rho
+    beta  = U[IDX_BETA]/rho
+    M3    = U[IDX_M3]
     Q     = M3 - rho*u*u*u - 3.0*u*Pxx
     cs    = np.sqrt(CSCOEF*np.maximum(Pxx, 1e-30)/np.maximum(rho, 1e-30))
 
@@ -134,14 +136,14 @@ def hll_step_noise_econsv(U, dx, dt, tau, C_A, C_B, eta_draw):
             Fleft[4,i]=FR4; Fleft[5,i]=FR5; Fleft[6,i]=FR6; Fleft[7,i]=FR7
         else:
             invDS = 1.0/(SR - SL + 1e-30)
-            Fleft[0,i] = (SR*FL0 - SL*FR0 + SL*SR*(U[0,i]-U[0,l]))*invDS
-            Fleft[1,i] = (SR*FL1 - SL*FR1 + SL*SR*(U[1,i]-U[1,l]))*invDS
-            Fleft[2,i] = (SR*FL2 - SL*FR2 + SL*SR*(U[2,i]-U[2,l]))*invDS
-            Fleft[3,i] = (SR*FL3 - SL*FR3 + SL*SR*(U[3,i]-U[3,l]))*invDS
-            Fleft[4,i] = (SR*FL4 - SL*FR4 + SL*SR*(U[4,i]-U[4,l]))*invDS
-            Fleft[5,i] = (SR*FL5 - SL*FR5 + SL*SR*(U[5,i]-U[5,l]))*invDS
-            Fleft[6,i] = (SR*FL6 - SL*FR6 + SL*SR*(U[6,i]-U[6,l]))*invDS
-            Fleft[7,i] = (SR*FL7 - SL*FR7 + SL*SR*(U[7,i]-U[7,l]))*invDS
+            Fleft[0,i] = (SR*FL0 - SL*FR0 + SL*SR*(U[IDX_RHO,  i] - U[IDX_RHO,  l]))*invDS
+            Fleft[1,i] = (SR*FL1 - SL*FR1 + SL*SR*(U[IDX_MOM,  i] - U[IDX_MOM,  l]))*invDS
+            Fleft[2,i] = (SR*FL2 - SL*FR2 + SL*SR*(U[IDX_EXX,  i] - U[IDX_EXX,  l]))*invDS
+            Fleft[3,i] = (SR*FL3 - SL*FR3 + SL*SR*(U[IDX_PP,   i] - U[IDX_PP,   l]))*invDS
+            Fleft[4,i] = (SR*FL4 - SL*FR4 + SL*SR*(U[IDX_L1,   i] - U[IDX_L1,   l]))*invDS
+            Fleft[5,i] = (SR*FL5 - SL*FR5 + SL*SR*(U[IDX_ALPHA,i] - U[IDX_ALPHA,l]))*invDS
+            Fleft[6,i] = (SR*FL6 - SL*FR6 + SL*SR*(U[IDX_BETA, i] - U[IDX_BETA, l]))*invDS
+            Fleft[7,i] = (SR*FL7 - SL*FR7 + SL*SR*(U[IDX_M3,   i] - U[IDX_M3,   l]))*invDS
 
     # Conservative update
     inv_dx = 1.0/dx
@@ -153,13 +155,13 @@ def hll_step_noise_econsv(U, dx, dt, tau, C_A, C_B, eta_draw):
     # Exact-exponential BGK relaxation
     decay = np.exp(-dt/tau)
     for i in range(N):
-        rho_n = Unew[0, i]
-        u_n   = Unew[1, i]/rho_n
-        Pxx_n = Unew[2, i] - rho_n*u_n*u_n
-        Pp_n  = Unew[3, i]
-        M3_n  = Unew[7, i]
+        rho_n = Unew[IDX_RHO, i]
+        u_n   = Unew[IDX_MOM, i]/rho_n
+        Pxx_n = Unew[IDX_EXX, i] - rho_n*u_n*u_n
+        Pp_n  = Unew[IDX_PP,  i]
+        M3_n  = Unew[IDX_M3,  i]
         Q_n   = M3_n - rho_n*u_n*u_n*u_n - 3.0*u_n*Pxx_n
-        b_n   = Unew[6, i]/rho_n
+        b_n   = Unew[IDX_BETA, i]/rho_n
         P_iso = (Pxx_n + 2.0*Pp_n)/3.0
         Pxx_new = P_iso + (Pxx_n - P_iso)*decay
         Pp_new  = P_iso + (Pp_n  - P_iso)*decay
@@ -169,19 +171,19 @@ def hll_step_noise_econsv(U, dx, dt, tau, C_A, C_B, eta_draw):
         b_max = 0.999*np.sqrt(Svv_n)
         if b_new >  b_max: b_new =  b_max
         elif b_new < -b_max: b_new = -b_max
-        Unew[2, i] = rho_n*u_n*u_n + Pxx_new
-        Unew[3, i] = Pp_new
-        Unew[6, i] = rho_n*b_new
-        Unew[7, i] = rho_n*u_n*u_n*u_n + 3.0*u_n*Pxx_new + Q_new
+        Unew[IDX_EXX, i] = rho_n*u_n*u_n + Pxx_new
+        Unew[IDX_PP,  i] = Pp_new
+        Unew[IDX_BETA,i] = rho_n*b_new
+        Unew[IDX_M3,  i] = rho_n*u_n*u_n*u_n + 3.0*u_n*Pxx_new + Q_new
 
     # Energy-conservative noise injection
     for i in range(N):
-        rho_i = Unew[0, i]
-        u_i   = Unew[1, i]/rho_i
-        Exx_old = Unew[2, i]
+        rho_i = Unew[IDX_RHO, i]
+        u_i   = Unew[IDX_MOM, i]/rho_i
+        Exx_old = Unew[IDX_EXX, i]
         Pxx_old = Exx_old - rho_i*u_i*u_i
-        Pp_old  = Unew[3, i]
-        M3_old  = Unew[7, i]
+        Pp_old  = Unew[IDX_PP,  i]
+        M3_old  = Unew[IDX_M3,  i]
         Q_old   = M3_old - rho_i*u_i*u_i*u_i - 3.0*u_i*Pxx_old
 
         drift_term = C_A * rho[i] * dudx[i] * dt
@@ -200,7 +202,7 @@ def hll_step_noise_econsv(U, dx, dt, tau, C_A, C_B, eta_draw):
         if delta_rhou > delta_max: delta_rhou = delta_max
         elif delta_rhou < -delta_max: delta_rhou = -delta_max
 
-        rhou_new = Unew[1, i] + delta_rhou
+        rhou_new = Unew[IDX_MOM, i] + delta_rhou
         u_new = rhou_new/rho_i
 
         Delta_KE_vol = u_i * delta_rhou + 0.5 * delta_rhou**2 / rho_i
@@ -211,10 +213,10 @@ def hll_step_noise_econsv(U, dx, dt, tau, C_A, C_B, eta_draw):
         if Pxx_new < 1e-8: Pxx_new = 1e-8
         if Pp_new  < 1e-8: Pp_new  = 1e-8
 
-        Unew[1, i] = rhou_new
-        Unew[2, i] = rho_i*u_new*u_new + Pxx_new
-        Unew[3, i] = Pp_new
-        Unew[7, i] = rho_i*u_new**3 + 3.0*u_new*Pxx_new + Q_old
+        Unew[IDX_MOM, i] = rhou_new
+        Unew[IDX_EXX, i] = rho_i*u_new*u_new + Pxx_new
+        Unew[IDX_PP,  i] = Pp_new
+        Unew[IDX_M3,  i] = rho_i*u_new**3 + 3.0*u_new*Pxx_new + Q_old
 
     return Unew
 
