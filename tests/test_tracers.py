@@ -317,6 +317,117 @@ def test_refine_bisects_large_gaps():
     assert abs(tr.q[1] - 0.5 * (q[0] + q[1])) < 1e-14
 
 
+def test_add_seam_tracer_periodic_basic():
+    """add_seam_tracer in periodic mode places one tracer at the
+    discontinuity, marks it as seam, and the identity update keeps it
+    in place even though it sits inside the boundary buffer."""
+    U0, x = _uniform_periodic_ic(N=64)
+    dx = x[1] - x[0]
+    tr = Tracers.from_initial_conditions(U0, x, periodic=True,
+                                         boundary_buffer=4)
+    n_before = tr.n
+    k = tr.add_seam_tracer(U0, x)
+    assert k == n_before
+    assert tr.n == n_before + 1
+    assert tr.seam[k] == True
+    assert tr.seam.sum() == 1
+    # Position lies inside the buffer (one of the two outermost
+    # `boundary_buffer` cells on either side).
+    assert tr.x[k] < 4 * dx or tr.x[k] > 1.0 - 4 * dx
+    # Identity update at t=0: seam tracer must NOT be flagged lost,
+    # despite living inside the buffer.
+    tr.update(U0, x)
+    assert not tr.lost[k]
+
+
+def test_add_seam_tracer_transmissive_is_noop():
+    """Outside periodic mode there is no seam — calling add_seam_tracer
+    is a no-op (returns -1, no tracer added)."""
+    U0, x = _uniform_periodic_ic(N=32)
+    tr = Tracers.from_initial_conditions(U0, x, periodic=False)
+    n_before = tr.n
+    rv = tr.add_seam_tracer(U0, x)
+    assert rv == -1
+    assert tr.n == n_before
+    assert tr.seam.sum() == 0
+
+
+def test_seam_tracer_survives_wavepool_run():
+    """The seam tracer never NaN's out across a wave-pool run, even
+    though its label-based location would (the smeared L1 ramp washes
+    out the original L1 = x label values within a few steps)."""
+    from dfmm.schemes.cholesky import hll_step_periodic, max_signal_speed
+
+    N = 128
+    t_end = 0.3
+    cfl = 0.3
+    buf = 12
+
+    U, x = make_wave_pool_ic(N, u0=1.0, P0=0.1, seed=42)
+    dx = x[1] - x[0]
+    period = 1.0
+    tr = Tracers.from_initial_conditions(U, x, periodic=True,
+                                         boundary_buffer=buf)
+    seam_k = tr.add_seam_tracer(U, x)
+
+    n_lost_steps = 0
+    t = 0.0
+    while t < t_end:
+        smax = max_signal_speed(U)
+        dt = min(cfl * dx / smax, t_end - t)
+        U = hll_step_periodic(U, dx, dt, tau=1e-3)
+        tr.update(U, x)
+        if tr.lost[seam_k]:
+            n_lost_steps += 1
+        # Seam tracer must always be in the wrap-buffer band.
+        sx = tr.x[seam_k]
+        assert (sx < buf * dx) or (sx > 1.0 - buf * dx), \
+            f"seam tracer drifted out of buffer to x={sx}"
+        t += dt
+    # Tolerate at most a handful of "lost" frames (none expected, but
+    # the buffer-band check could in principle false-positive on a
+    # cell exactly on the boundary).
+    assert n_lost_steps == 0, \
+        f"seam tracer was flagged lost on {n_lost_steps} steps"
+
+
+def test_seam_tracer_step_quantized_in_dx():
+    """The re-anchored seam tracer hops between cell centres, so its
+    per-step Δx should be (approximately) an integer multiple of dx
+    after the periodic minimum-image convention."""
+    from dfmm.schemes.cholesky import hll_step_periodic, max_signal_speed
+
+    N = 128
+    cfl = 0.3
+    buf = 12
+
+    U, x = make_wave_pool_ic(N, u0=1.0, P0=0.1, seed=42)
+    dx = x[1] - x[0]
+    period = 1.0
+    tr = Tracers.from_initial_conditions(U, x, periodic=True,
+                                         boundary_buffer=buf)
+    seam_k = tr.add_seam_tracer(U, x)
+
+    # Run a handful of steps and check the seam Δx is k * dx for
+    # small integer k.
+    t = 0.0
+    seam_dx_values = []
+    while t < 0.05:
+        smax = max_signal_speed(U)
+        dt = min(cfl * dx / smax, 0.05 - t)
+        U = hll_step_periodic(U, dx, dt, tau=1e-3)
+        tr.update(U, x)
+        seam_dx_values.append(float(tr.dx_step[seam_k]))
+        t += dt
+    seam_dx_values = np.array(seam_dx_values)
+    # Each Δx is an integer multiple of dx (snap-to-cell), within
+    # round-off.
+    ratios = seam_dx_values / dx
+    nearest_int = np.round(ratios)
+    assert np.max(np.abs(ratios - nearest_int)) < 1e-9, \
+        f"seam Δx not quantized in dx: residuals={ratios - nearest_int}"
+
+
 def test_refine_grows_capacity():
     """Refinement over an initially-tight capacity reallocates storage."""
     U0, x = _uniform_periodic_ic(N=8)
