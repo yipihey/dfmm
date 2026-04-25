@@ -514,8 +514,12 @@ to add at the start of Phase 5).
 - GPU.
 - Self-gravity (Milestone 4).
 - Two-fluid 2D extensions (Milestone 4).
-- The polynomial-moment integration over polygons (deferred to
-  Milestone 3 since 1D remap is trivial interval intersection).
+- The polynomial-moment integration over polygons. 1D remap is trivial
+  interval intersection, so M1 does not need it. **For M3 (2D),
+  Tom is independently porting r3d (Powell-Abel 2015) to Julia;
+  assume that package is available as a dep when 2D work begins,
+  and skip the GeometryOps.jl + custom moment-integration alternative
+  recommended in `specs/05_julia_ecosystem_survey.md` §6.3.**
 
 ---
 
