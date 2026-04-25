@@ -225,6 +225,7 @@ end
 
 """
     det_step!(mesh::Mesh1D, dt; tau=nothing, sparse_jac=true,
+              q_kind=:none, c_q_quad=1.0, c_q_lin=0.5,
               abstol=1e-13, reltol=1e-13, maxiters=50)
 
 Advance the multi-segment Phase-2/5 mesh by one timestep `dt`. Solves
@@ -242,6 +243,17 @@ runs unchanged (`P_⊥` is left at its initial value, which is
 isotropic-Maxwellian if the mesh was constructed without explicit
 `Pps`).
 
+**Phase 5b (`q_kind`)**: opt-in artificial viscosity. With the
+default `q_kind = :none`, the integrator runs the bare variational
+form (bit-equal to Phase 5). With `q_kind = :vNR_linear_quadratic`,
+the Kuropatenko / von Neumann-Richtmyer combined linear+quadratic
+artificial pressure is added to the EL momentum residual at each
+segment midpoint, and a post-Newton entropy update absorbs the
+q-dissipation `Δs/c_v = -(Γ-1) (q/P_xx) (∂_x u) Δt` so the EOS
+stays consistent with the dissipated kinetic energy. Coefficients
+`c_q_quad ∈ [1, 2]` (default 1.0) and `c_q_lin ∈ [0, 0.5]` (default
+0.5) follow Caramana-Shashkov-Whalen 1998 §2.
+
 The initial guess is an explicit-Euler advance:
   x_i^{n+1,(0)} = x_i^n + dt · u_i^n
   u_i^{n+1,(0)} = u_i^n − dt · (P_i − P_{i-1})/m̄_i
@@ -251,8 +263,13 @@ The initial guess is an explicit-Euler advance:
 function det_step!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
                    tau::Union{Real,Nothing} = nothing,
                    sparse_jac::Bool = true,
+                   q_kind::Symbol = Q_KIND_NONE,
+                   c_q_quad::Real = 1.0,
+                   c_q_lin::Real  = 0.5,
                    abstol::Real = 1e-13, reltol::Real = 1e-13,
                    maxiters::Int = 50) where {T<:Real}
+    @assert q_kind_supported(q_kind) "Unsupported q_kind = $q_kind. " *
+        "Use :none or :vNR_linear_quadratic."
     N = n_segments(mesh)
     Δm_vec = T[seg.Δm for seg in mesh.segments]
     s_vec  = T[seg.state.s for seg in mesh.segments]
@@ -267,11 +284,19 @@ function det_step!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
     y_n = pack_state(mesh)
     y0  = explicit_euler_guess(y_n, Δm_vec, s_vec, L_box, T(dt))
 
-    # Closure with parameters captured.
+    # Closure with parameters captured. Phase 5b: forward q_kind +
+    # coefficients into the residual. With q_kind = :none these are
+    # ignored at near-zero cost (compute_q_segment skipped); the
+    # bit-equality with Phase 5 is preserved.
+    cqq = T(c_q_quad)
+    cql = T(c_q_lin)
     p = (y_n, Δm_vec, s_vec, L_box, T(dt))
     f = (u, p_in) -> begin
         y_n_in, Δm_in, s_in, L_box_in, dt_in = p_in
-        return det_el_residual(u, y_n_in, Δm_in, s_in, L_box_in, dt_in)
+        return det_el_residual(u, y_n_in, Δm_in, s_in, L_box_in, dt_in;
+                               q_kind = q_kind,
+                               c_q_quad = cqq,
+                               c_q_lin  = cql)
     end
 
     # Build the NonlinearProblem with sparse Jacobian prototype when
@@ -301,7 +326,10 @@ function det_step!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
             maxiters = maxiters,
         )
     end
-    res = det_el_residual(sol.u, y_n, Δm_vec, s_vec, L_box, T(dt))
+    res = det_el_residual(sol.u, y_n, Δm_vec, s_vec, L_box, T(dt);
+                          q_kind = q_kind,
+                          c_q_quad = cqq,
+                          c_q_lin  = cql)
     res_norm = maximum(abs, res)
     # Newton may report `Stalled` or `MaxIters` retcodes on smooth
     # nearly-converged problems where the per-step descent falls below
@@ -315,6 +343,63 @@ function det_step!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
     end
 
     unpack_state!(mesh, sol.u)
+
+    # Phase 5b: post-Newton entropy update for the q-dissipation.
+    # The artificial viscosity dissipates kinetic energy at rate
+    # `(q/ρ) ∂_x u` (negative when ∂_x u < 0, i.e. compression heats).
+    # For an ideal-gas EOS `M_vv = J^{1-Γ} exp(s/c_v)`, the change in
+    # internal energy at fixed J is converted to entropy via
+    #   Δs/c_v = -(Γ-1) (q/P_xx) (∂_x u) Δt
+    # which is non-negative in compression (q > 0, ∂_x u < 0). At
+    # `q_kind = :none` we skip this branch entirely so Phase 5
+    # behaviour is bit-equal.
+    if q_active(q_kind)
+        Γ_q = T(GAMMA_LAW_DEFAULT)
+        cqq = T(c_q_quad)
+        cql = T(c_q_lin)
+        # Recompute midpoint divu and q per segment from the
+        # **midpoint** (½(y_n + y_np1)) state — same definition as
+        # `det_el_residual` so the dissipation is consistent with the
+        # momentum equation that produced the new state.
+        @inbounds for j in 1:N
+            j_right = j == N ? 1 : j + 1
+            wrap = (j == N) ? L_box : zero(T)
+            # Midpoint vertex positions and velocities.
+            x_left_n  = y_n[4*(j-1) + 1]
+            x_right_n = y_n[4*(j_right-1) + 1] + wrap
+            x_left_np1  = mesh.segments[j].state.x
+            x_right_np1 = mesh.segments[j_right].state.x + wrap
+            u_left_n  = y_n[4*(j-1) + 2]
+            u_right_n = y_n[4*(j_right-1) + 2]
+            u_left_np1  = mesh.segments[j].state.u
+            u_right_np1 = mesh.segments[j_right].state.u
+
+            x̄_left  = (x_left_n  + x_left_np1)  / 2
+            x̄_right = (x_right_n + x_right_np1) / 2
+            ū_left  = (u_left_n  + u_left_np1)  / 2
+            ū_right = (u_right_n + u_right_np1) / 2
+            Δx̄ = x̄_right - x̄_left
+            divu_j = (ū_right - ū_left) / Δx̄
+            J̄_j = Δx̄ / Δm_vec[j]
+            ρ̄_j = one(T) / J̄_j
+            s_pre = mesh.segments[j].state.s
+            M̄vv_j = Mvv(J̄_j, s_pre)
+            P̄xx_j = ρ̄_j * M̄vv_j
+
+            c_s_bar = sqrt(max(Γ_q * M̄vv_j, zero(T)))
+            q_j = compute_q_segment(divu_j, ρ̄_j, c_s_bar, Δx̄;
+                                    c_q_quad = cqq, c_q_lin = cql)
+            # Entropy update Δs/c_v = -(Γ-1)(q/P_xx)·divu·dt.
+            # Skip when q is zero or P_xx degenerate.
+            if q_j > 0 && P̄xx_j > 0
+                Δs_q = -(Γ_q - one(T)) * (q_j / P̄xx_j) * divu_j * T(dt)
+                seg = mesh.segments[j]
+                seg.state = DetField{T}(seg.state.x, seg.state.u,
+                                        seg.state.α, seg.state.β,
+                                        s_pre + Δs_q, seg.state.Pp)
+            end
+        end
+    end
 
     # Phase-5: post-Newton BGK update of (P_xx, P_⊥). Computed in
     # three substeps:

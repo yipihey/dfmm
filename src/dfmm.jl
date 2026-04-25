@@ -37,6 +37,8 @@ include("discrete_action.jl")
 include("cholesky_sector.jl")
 # Phase 5: deviatoric / P_⊥ BGK update (used by det_step!).
 include("deviatoric.jl")
+# Phase 5b: opt-in artificial viscosity (tensor-q) for shock capture.
+include("artificial_viscosity.jl")
 include("newton_step.jl")
 
 # --- Phase 1 API ----------------------------------------------------------
@@ -58,6 +60,10 @@ export det_step!, det_run!, pack_state, pack_state!, unpack_state!
 # --- Phase 5 API (deviatoric / P_⊥ BGK relaxation) -------------------------
 export deviatoric_bgk_step, deviatoric_bgk_step_exponential,
        pperp_advect_lagrangian, bgk_relax_pressures, pperp_step
+
+# --- Phase 5b API (opt-in artificial viscosity / tensor-q) -----------------
+export compute_q_segment, q_kind_supported, q_active,
+       Q_KIND_NONE, Q_KIND_VNR_LINEAR_QUADRATIC
 
 # --- Track C/F infrastructure layer (Milestone 1, Agent C) -----------------
 # Pure infrastructure modules: diagnostics, I/O, plotting, calibration.

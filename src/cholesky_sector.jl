@@ -202,7 +202,11 @@ satisfied at fixed point `(α_0, 0)`.
 """
 function det_el_residual(y_np1::AbstractVector, y_n::AbstractVector,
                          Δm::AbstractVector, s::AbstractVector,
-                         L_box, dt)
+                         L_box, dt;
+                         q_kind::Symbol = Q_KIND_NONE,
+                         c_q_quad::Real = 1.0,
+                         c_q_lin::Real  = 0.5,
+                         Γ_q::Real      = GAMMA_LAW_DEFAULT)
     N = length(Δm)
     @assert length(y_np1) == 4N
     @assert length(y_n) == 4N
@@ -225,6 +229,12 @@ function det_el_residual(y_np1::AbstractVector, y_n::AbstractVector,
     M̄vv = similar(y_np1, Tres, N)
     P̄xx = similar(y_np1, Tres, N)
     div̄u = similar(y_np1, Tres, N)
+    # Phase 5b: per-segment artificial viscous pressure q. Computed
+    # only when `q_kind != :none`; otherwise stays at zero so the
+    # Phase-5 residual is bit-identical.
+    q̄ = similar(y_np1, Tres, N)
+
+    use_q = q_active(q_kind)
 
     @inbounds for j in 1:N
         j_right = j == N ? 1 : j + 1
@@ -252,6 +262,19 @@ function det_el_residual(y_np1::AbstractVector, y_n::AbstractVector,
         P̄xx[j] = M̄vv[j] / J̄[j]
         # Eulerian strain at midpoint.
         div̄u[j] = (ū_right - ū_left) / Δx̄
+
+        if use_q
+            # Phase 5b: artificial viscous pressure (Kuropatenko / vNR).
+            ρ̄ = one(Tres) / J̄[j]
+            # Sound speed at midpoint: c_s = √(Γ M_vv) (linear term only).
+            # Guard against negative M_vv (cold limit) — clamp at zero.
+            c_s_bar = sqrt(max(Γ_q * M̄vv[j], zero(Tres)))
+            q̄[j] = compute_q_segment(div̄u[j], ρ̄, c_s_bar, Δx̄;
+                                     c_q_quad = c_q_quad,
+                                     c_q_lin  = c_q_lin)
+        else
+            q̄[j] = zero(Tres)
+        end
     end
 
     # Per-vertex / per-segment residuals.
@@ -266,12 +289,16 @@ function det_el_residual(y_np1::AbstractVector, y_n::AbstractVector,
         # F^x: x_dot = u
         F[4*(i-1) + 1] = (x_i_np1 - x_i_n) / dt - ū_i
 
-        # F^u: m̄_i u_dot = -(P_i - P_{i-1})
+        # F^u: m̄_i u_dot = -((P_xx + q)_i - (P_xx + q)_{i-1})
+        # The artificial viscous pressure q enters additively in the
+        # momentum equation, the standard Lagrangian-hydro form. With
+        # q ≡ 0 (q_kind = :none) this collapses to the Phase-5
+        # residual exactly.
         i_left = i == 1 ? N : i - 1
         m̄_i = (Δm[i_left] + Δm[i]) / 2
         F[4*(i-1) + 2] =
             (u_i_np1 - u_i_n) / dt +
-            (P̄xx[i] - P̄xx[i_left]) / m̄_i
+            ((P̄xx[i] + q̄[i]) - (P̄xx[i_left] + q̄[i_left])) / m̄_i
 
         # F^α and F^β at segment i (in the segment-major packing,
         # row i corresponds to segment i).

@@ -50,6 +50,13 @@ using Test
         # on (rho, u, Pxx, Pp) at t_end = 0.2, τ = 1e-3 (warm regime).
         include("test_phase5_sod_regression.jl")
     end
+    @testset verbose = true "Phase 5b: tensor-q" begin
+        # Opt-in artificial viscosity (Kuropatenko / vNR) added to the
+        # variational integrator. Default `q_kind = :none` reproduces
+        # Phase 5 bit-equally; with `q_kind = :vNR_linear_quadratic`
+        # the Sod L∞ rel error drops below 0.10 on (ρ, Pxx, Pp).
+        include("test_phase5b_artificial_viscosity.jl")
+    end
     @testset verbose = true "Phase 6: cold-sinusoid τ-scan" begin
         # Tier A.2 cold-sinusoid τ-scan. Generalizes the Phase-3
         # single-τ Zel'dovich match across six τ decades (10⁻³…10⁷),
