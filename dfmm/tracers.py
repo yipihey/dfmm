@@ -61,39 +61,55 @@ _DEFAULT_REFINE_RATIO = 1.5
 _GROW_FACTOR = 1.5
 
 
-def _seam_x_parabola(L1, x_centers, period):
-    """Sub-cell seam x location from a parabolic x(q) fit.
+def _seam_x_fit(L1, x_centers, period, degree=2):
+    """Sub-cell seam x location from a polynomial x(q) fit.
 
     Take the cell with the largest L1 value (`imax`), then the two
     cells to its right with periodic wrap (`(imax+1) % N`,
     `(imax+2) % N`). Build three (q, x) points where the first one
     has both its q (L1) and x shifted by `-period` so its q is
-    near-zero or slightly negative. Fit `x = a q^2 + b q + c`
-    (`numpy.polyfit` deg 2) and return `c = x(q=0)` wrapped into
-    `[0, period)`.
+    near-zero or slightly negative. Fit `x` as a polynomial in `q`
+    and return `x(q=0)` wrapped into `[0, period)`.
 
-    At t=0 with the L1 = x convention this is exact (the three
-    points lie on `x = q`, the parabola is degenerate-linear, and
-    `x(q=0) = 0`). After HLL diffusion smears the seam ramp the
-    fit becomes a true parabola whose root gives a sub-cell
-    estimate of the seam position.
+    `degree` selects the fit:
+      * `degree=2` (default) — full quadratic through all three
+        points; `numpy.polyfit(qs, xs, 2)`.
+      * `degree=1` — linear through the first two points only
+        (the shifted-largest cell and its immediate right
+        neighbour). The third cell is ignored. With the
+        `lagrangian_period` BC fix the L1 ramp is essentially
+        linear, so the linear and quadratic fits agree to
+        floating-point precision; the difference is mostly an
+        amplifier for L1-perturbation noise from the wave-pool
+        flow.
+
+    At t=0 with the L1 = x convention this is exact (the points
+    lie on `x = q`, both fits give `x(q=0) = 0`).
     """
     N = len(L1)
     imax = int(np.argmax(L1))
     q1 = L1[imax] - period
     x1 = x_centers[imax] - period
     i2 = (imax + 1) % N
-    i3 = (imax + 2) % N
     q2, x2 = L1[i2], x_centers[i2]
-    q3, x3 = L1[i3], x_centers[i3]
-    # Make x monotone in array order (pull cells across the wrap by
-    # +period as needed) so the polyfit sees a continuous curve.
     if x2 < x1: x2 += period
-    if x3 < x2: x3 += period
-    coeffs = np.polyfit(np.array([q1, q2, q3], dtype=float),
-                        np.array([x1, x2, x3], dtype=float), 2)
-    x_at_zero = float(coeffs[2])    # x(q=0) is the constant term
+    if degree == 1:
+        # Linear: x(q=0) = x1 - q1 * (x2 - x1) / (q2 - q1)
+        slope = (x2 - x1) / (q2 - q1)
+        x_at_zero = x1 - q1 * slope
+    else:
+        i3 = (imax + 2) % N
+        q3, x3 = L1[i3], x_centers[i3]
+        if x3 < x2: x3 += period
+        coeffs = np.polyfit(np.array([q1, q2, q3], dtype=float),
+                            np.array([x1, x2, x3], dtype=float), 2)
+        x_at_zero = float(coeffs[2])
     return x_at_zero % period
+
+
+# Back-compat shim for any external callers / tests using the old name.
+def _seam_x_parabola(L1, x_centers, period):
+    return _seam_x_fit(L1, x_centers, period, degree=2)
 
 
 def _seam_cell_index(L1, buffer=None):
@@ -262,6 +278,10 @@ class Tracers:
         # Such tracers are exempt from the buffer-zone lost-flag test
         # in update() — they live in the damaged zone by design.
         self._seam = np.zeros(capacity, dtype=bool)
+        # Per-tracer polynomial degree for the x(q=0) fit used to
+        # re-anchor seam tracers each step (1=linear, 2=quadratic).
+        # Ignored for non-seam tracers (default 0).
+        self._seam_fit_degree = np.zeros(capacity, dtype=np.int8)
         self._last_step_stats = None
         self.domain = (float(domain[0]), float(domain[1]))
         self.periodic = bool(periodic)
@@ -342,7 +362,7 @@ class Tracers:
         obj._idx_hint[:n_kept] = np.arange(b, N - b, dtype=np.int64)
         return obj
 
-    def add_seam_tracer(self, U, x_centers):
+    def add_seam_tracer(self, U, x_centers, fit='quadratic'):
         """Insert one tracer at the seam's `x(q=0)` location.
 
         For periodic BCs the L1 = x convention has a full-period jump
@@ -355,18 +375,28 @@ class Tracers:
 
         Instead the seam tracer is re-anchored each `update()` to a
         sub-cell estimate of the current seam location: take the
-        cell with the largest L1 value (`imax`) and the next two
-        cells to the right (with periodic wrap), shift the first
-        point's q and x by `-period` so its q is near zero, fit a
-        parabola through the three (q, x) pairs, and place the
-        tracer at `x(q=0)`. At t=0 (sharp L1 = x ramp) this
-        exactly recovers x = 0 = L; on the smeared ramp it
-        interpolates between the cells.
+        cell with the largest L1 value (`imax`) and the next cell(s)
+        to the right (with periodic wrap), shift the first point's
+        q and x by `-period` so its q is near zero, fit a polynomial
+        through the (q, x) points and place the tracer at `x(q=0)`.
 
-        This makes the seam tracer an Eulerian seam-tracking probe
-        rather than a Lagrangian particle; its `label` field is set
-        to 0 (the q value at which we evaluate). `seam=True` exempts
-        it from the buffer-zone lost-flag test in `update()`.
+        `fit` selects the polynomial degree:
+          * `'quadratic'` (default): fit `x = a q^2 + b q + c`
+            through three points (the shifted-largest cell and the
+            next two right neighbours).
+          * `'linear'`: fit `x = a q + c` through two points (the
+            shifted-largest cell and the immediate right neighbour),
+            ignoring the third cell. Less sensitive to perturbations
+            in the third cell's L1 value.
+
+        At t=0 (L1 = x ramp) both fits give x = 0 = L exactly. After
+        evolution they may differ — the comparison is the point of
+        having both. The fit choice is stored per-tracer; you can
+        run multiple seam tracers with different fit options
+        simultaneously to compare.
+
+        `seam=True` exempts the new tracer from the buffer-zone
+        lost-flag test in `update()`.
 
         Returns the index of the inserted tracer (i.e. its slot in
         the public `q`/`x`/`label`/... arrays), or -1 if the call is
@@ -374,14 +404,20 @@ class Tracers:
         """
         if not self.periodic:
             return -1
+        if fit == 'quadratic':
+            degree = 2
+        elif fit == 'linear':
+            degree = 1
+        else:
+            raise ValueError(f"fit must be 'quadratic' or 'linear', got {fit!r}")
         rho = U[IDX_RHO]
         L1 = U[IDX_L1] / np.maximum(rho, 1e-30)
         N = len(x_centers)
         if N < 2:
             return -1
         period = self.domain[1] - self.domain[0]
-        x_seam = _seam_x_parabola(L1, np.asarray(x_centers, dtype=float),
-                                   period)
+        x_seam = _seam_x_fit(L1, np.asarray(x_centers, dtype=float),
+                              period, degree=degree)
         # idx_hint is the cell whose center is closest to x_seam — only
         # used to give `sample()` a reasonable interpolation bracket.
         dx = float(x_centers[1] - x_centers[0])
@@ -399,6 +435,7 @@ class Tracers:
         self._lost[k] = False
         self._dx_step[k] = 0.0
         self._seam[k] = True
+        self._seam_fit_degree[k] = degree
         self._n += 1
         return k
 
@@ -507,20 +544,28 @@ class Tracers:
                      int(max_scan), self.periodic, period, x_min,
                      int(len(x_centers)), int(n))
 
-        # Re-anchor seam tracers to the current x(q=0) parabolic
-        # fit (see `_seam_x_parabola`). Label-based locate cannot
+        # Re-anchor seam tracers to the current x(q=0) polynomial-fit
+        # estimate (see `_seam_x_fit`). Label-based locate cannot
         # track a seam tracer because the original L1 value at the
         # seam smears away within a few steps; instead we recompute
-        # the sub-cell seam x each step from a quadratic x(q) fit
-        # through the largest-q cell and its two right-neighbours
-        # (periodic wrap).
+        # the sub-cell seam x each step from a polynomial x(q) fit
+        # through the largest-q cell and one (linear) or two (quadratic)
+        # right neighbours.  Each seam tracer carries its own fit
+        # degree so multiple variants can coexist in one `Tracers`.
         if self.periodic and np.any(self._seam[:n]):
             x_arr = np.asarray(x_centers, dtype=float)
-            x_seam = _seam_x_parabola(L1, x_arr, period)
-            seam_idx = int(np.floor((x_seam - x_min) / dx)) % len(x_centers)
-            for k in np.where(self._seam[:n])[0]:
+            seam_idxs = np.where(self._seam[:n])[0]
+            # Cache per-degree results so we evaluate each fit once
+            # even if multiple seam tracers share the same degree.
+            cache = {}
+            for k in seam_idxs:
+                deg = int(self._seam_fit_degree[k])
+                if deg not in cache:
+                    cache[deg] = _seam_x_fit(L1, x_arr, period, degree=deg)
+                x_seam = cache[deg]
                 self._x[k] = x_seam
                 self._label[k] = 0.0
+                seam_idx = int(np.floor((x_seam - x_min) / dx)) % len(x_centers)
                 self._idx_hint[k] = seam_idx
                 # Cell-fraction for sample(): position within the
                 # bracket [seam_idx, seam_idx+1].
@@ -644,6 +689,7 @@ class Tracers:
         q_buf = self._q; lab_buf = self._label; x_buf = self._x
         idx_buf = self._idx_hint; frac_buf = self._frac; lost_buf = self._lost
         dxs_buf = self._dx_step; seam_buf = self._seam
+        sfd_buf = self._seam_fit_degree
         for k in insert_indices[::-1]:
             # Shift [k+1 : n] right by 1, insert at slot k+1
             q_buf[k + 2:n + 1] = q_buf[k + 1:n]
@@ -654,6 +700,7 @@ class Tracers:
             lost_buf[k + 2:n + 1] = lost_buf[k + 1:n]
             dxs_buf[k + 2:n + 1] = dxs_buf[k + 1:n]
             seam_buf[k + 2:n + 1] = seam_buf[k + 1:n]
+            sfd_buf[k + 2:n + 1] = sfd_buf[k + 1:n]
             q_buf[k + 1] = 0.5 * (q_buf[k] + q_buf[k + 2])
             lab_buf[k + 1] = 0.5 * (lab_buf[k] + lab_buf[k + 2])
             x_buf[k + 1] = 0.5 * (x_buf[k] + x_buf[k + 2])
@@ -662,6 +709,7 @@ class Tracers:
             lost_buf[k + 1] = False       # let the next update() re-classify
             dxs_buf[k + 1] = 0.0
             seam_buf[k + 1] = False
+            sfd_buf[k + 1] = 0
             n += 1
         self._n = n
         return n_new
@@ -681,6 +729,7 @@ class Tracers:
         self._lost = grow(self._lost)
         self._dx_step = grow(self._dx_step)
         self._seam = grow(self._seam)
+        self._seam_fit_degree = grow(self._seam_fit_degree)
         self._capacity = new_capacity
 
     def __len__(self):

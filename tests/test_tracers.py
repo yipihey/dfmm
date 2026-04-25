@@ -354,6 +354,36 @@ def test_add_seam_tracer_transmissive_is_noop():
     assert tr.seam.sum() == 0
 
 
+def test_seam_tracer_linear_fit_t0_matches_quadratic():
+    """At t=0 the L1 = x ramp is linear, so the linear and quadratic
+    fits both return x(q=0) = 0 to machine precision and agree with
+    each other. Both seam tracers can coexist in one Tracers object."""
+    U0, x = _uniform_periodic_ic(N=128)
+    tr = Tracers.from_initial_conditions(U0, x, periodic=True,
+                                         boundary_buffer=8)
+    k_q = tr.add_seam_tracer(U0, x, fit='quadratic')
+    k_l = tr.add_seam_tracer(U0, x, fit='linear')
+    assert tr.seam.sum() == 2
+    # Both x(q=0) values are within machine epsilon of the wrap.
+    for k in (k_q, k_l):
+        d = min(tr.x[k], 1.0 - tr.x[k])
+        assert d < 1e-10
+    # They agree with each other at t=0 to machine precision.
+    diff = tr.x[k_q] - tr.x[k_l]
+    diff -= round(diff)
+    assert abs(diff) < 1e-10
+
+
+def test_seam_tracer_invalid_fit_raises():
+    """A bad `fit=` kwarg should raise immediately rather than silently
+    fall back to one of the modes."""
+    U0, x = _uniform_periodic_ic(N=32)
+    tr = Tracers.from_initial_conditions(U0, x, periodic=True,
+                                         boundary_buffer=2)
+    with pytest.raises(ValueError):
+        tr.add_seam_tracer(U0, x, fit='cubic')
+
+
 def test_seam_tracer_t0_exact_for_linear_ramp():
     """At t=0 the L1 = x convention gives a perfectly linear
     Lagrangian field; the parabolic x(q) fit through the
