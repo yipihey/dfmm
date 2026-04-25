@@ -50,6 +50,17 @@ using Test
         # on (rho, u, Pxx, Pp) at t_end = 0.2, τ = 1e-3 (warm regime).
         include("test_phase5_sod_regression.jl")
     end
+    @testset verbose = true "Phase 6: cold-sinusoid τ-scan" begin
+        # Tier A.2 cold-sinusoid τ-scan. Generalizes the Phase-3
+        # single-τ Zel'dovich match across six τ decades (10⁻³…10⁷),
+        # asserts pre-crossing density vs Zel'dovich to L∞ rel < 1e-3
+        # per τ, γ stays at machine-noise scale, conservation invariants
+        # hold, and renders the headline 6-panel τ-scan plot
+        # (`reference/figs/A2_cold_sinusoid_tauscan.png`). The post-
+        # crossing golden match is `@test_skip`'d pending Phase-5b
+        # shock-capturing — see `reference/notes_phase6_cold_sinusoid.md`.
+        include("test_phase6_cold_sinusoid_scan.jl")
+    end
     @testset "eos" begin
         include("test_eos.jl")
     end
