@@ -12,27 +12,49 @@ module dfmm
 # regression target at py-1d/. See HANDOFF.md "Milestone 1 plan" and
 # reference/MILESTONE_1_PLAN.md for the phase-by-phase breakdown.
 #
-# Phase 1 (this commit): Cholesky-sector variational integrator with
-# externally-supplied γ. See src/cholesky_sector.jl for the action
-# and discrete EL system.
+# Phase 1: Cholesky-sector variational integrator with externally
+# supplied γ. See `src/cholesky_sector.jl` for the action and discrete
+# EL system.
+#
+# Phase 2: full deterministic action L_det = ½ ẋ² + L_Ch on a
+# multi-segment periodic Lagrangian-mass mesh, with bulk position x,
+# velocity u, and frozen entropy s. See
+# `reference/notes_phase2_discretization.md` and `src/discrete_action.jl`
+# / `src/cholesky_sector.jl`'s `det_el_residual`.
 
+# Field types live first so downstream files (including eos.jl) can
+# refer to them via Mvv-method overloading.
 include("types.jl")
+
+# EOS is included before segment.jl so that segment.jl helpers
+# (`total_energy`) and the Phase-2 EL residual can reach the
+# `Mvv(J, s)` adiabat method.
+include("eos.jl")
+
 include("segment.jl")
 include("discrete_transport.jl")
+include("discrete_action.jl")
 include("cholesky_sector.jl")
 include("newton_step.jl")
 
-# Phase-1 API.
-export ChField, Mvv, gamma_from_Mvv
+# --- Phase 1 API ----------------------------------------------------------
+export ChField, gamma_from_Mvv
 export Segment, Mesh1D, single_segment_mesh
 export D_t_q
 export cholesky_one_step_action, cholesky_el_residual, cholesky_hamiltonian
 export cholesky_step, cholesky_run
 
+# --- Phase 2 API (multi-segment full deterministic) ------------------------
+export DetField
+export n_segments, vertex_mass, segment_length, segment_density,
+       total_mass, total_momentum, total_energy
+export discrete_action_sum, segment_cholesky_action, midpoint_strain, midpoint_J
+export det_el_residual
+export det_step!, det_run!, pack_state, pack_state!, unpack_state!
+
 # --- Track C/F infrastructure layer (Milestone 1, Agent C) -----------------
-# Pure infrastructure modules: EOS, diagnostics, I/O, plotting, calibration.
-# Track A (integrator) and Track B (regression tests) consume these.
-include("eos.jl")
+# Pure infrastructure modules: diagnostics, I/O, plotting, calibration.
+# (eos.jl is included higher up so Phase-2 segment.jl can use it.)
 include("diagnostics.jl")
 include("io.jl")
 include("calibration.jl")

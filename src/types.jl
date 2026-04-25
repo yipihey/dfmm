@@ -65,3 +65,68 @@ function gamma_from_Mvv(β::Real, M_vv::Real)
     g2 = M_vv - β^2
     return sqrt(max(g2, zero(g2)))
 end
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 2: full deterministic per-segment / per-vertex state
+# ──────────────────────────────────────────────────────────────────────
+#
+# Phase 2 lifts Phase 1 from a single autonomous (α, β) cell to a
+# multi-segment Lagrangian mesh with bulk position x, velocity u, and
+# specific entropy s. The deterministic Lagrangian density (v2 §3.2,
+# methods paper §3.2 / §9.4) is
+#
+#     L_det = ½ ẋ² + L_Ch(α, β, β̇; γ),
+#
+# with γ derived from the EOS via γ² = M_vv(J, s) − β². Phase 2 does
+# *not* yet include the deviatoric stress sector L_dev (Phase 5) or
+# the heat-flux Lagrange multiplier λ_Q (Phase 7).
+#
+# Variable layout (see `reference/notes_phase2_discretization.md`):
+#   - vertex variables:  x_i (positions), u_i (velocities) — charge 0
+#   - cell-centered:     α_j, β_j, s_j — charges 0, 1, 0 respectively
+#
+# `DetField` below is a *segment-centered* slice of the dynamical
+# state; `x` and `u` here represent the *left vertex* of the segment,
+# packaged with its (α, β, s) for convenient mesh-bookkeeping. The
+# `Mesh1D` constructor hides this packing detail so callers index by
+# segment, not by vertex.
+
+"""
+    DetField{T<:Real}
+
+Per-segment slice of the full deterministic state for the Phase-2
+multi-segment integrator. Bundles the segment's left-vertex `x` and
+`u` (charge 0) with the cell-centered Cholesky-sector `(α, β)` and
+specific entropy `s`. γ is *derived*, not stored —
+`γ = sqrt(max(M_vv(J, s) − β², 0))`.
+
+Fields:
+- `x::T` — position of the segment's left vertex (charge 0). For a
+  periodic mesh, the right vertex of segment `j` is `x[j+1]`, with
+  `x[N+1] ≡ x[1] + L_box`.
+- `u::T` — velocity at the left vertex (charge 0).
+- `α::T` — Cholesky 11-component, cell-centered (charge 0).
+- `β::T` — Cholesky 21-component, cell-centered (charge 1).
+- `s::T` — specific entropy in `c_v` units, cell-centered (charge 0).
+
+Phase 1 compatibility: setting `x = m * J_0`, `u = 0`, and reading
+`(α, β)` reproduces the Phase-1 single-cell state on a uniform mesh.
+"""
+struct DetField{T<:Real}
+    x::T
+    u::T
+    α::T
+    β::T
+    s::T
+end
+
+"""
+    DetField(x, u, α, β, s)
+
+Convenience constructor with element-type promotion.
+"""
+DetField(x, u, α, β, s) = DetField{promote_type(typeof(x), typeof(u),
+                                                typeof(α), typeof(β),
+                                                typeof(s))}(
+    promote(x, u, α, β, s)...,
+)

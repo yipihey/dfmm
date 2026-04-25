@@ -117,3 +117,184 @@ function cholesky_run(
     end
     return traj
 end
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 2: multi-segment deterministic Newton step
+# ──────────────────────────────────────────────────────────────────────
+
+"""
+    pack_state!(y, mesh::Mesh1D)
+
+Pack the mesh's `(x, u, α, β)` per segment into the flat `y` vector
+of length `4N` in segment-major order, in-place. Used by `det_step!`
+to prepare the Newton initial guess and to write the solver result
+back into the mesh.
+"""
+function pack_state!(y::AbstractVector, mesh::Mesh1D{T,DetField{T}}) where {T<:Real}
+    N = n_segments(mesh)
+    @assert length(y) == 4N
+    @inbounds for j in 1:N
+        seg = mesh.segments[j].state
+        y[4*(j-1) + 1] = seg.x
+        y[4*(j-1) + 2] = seg.u
+        y[4*(j-1) + 3] = seg.α
+        y[4*(j-1) + 4] = seg.β
+    end
+    return y
+end
+
+function pack_state(mesh::Mesh1D{T,DetField{T}}) where {T<:Real}
+    N = n_segments(mesh)
+    y = Vector{T}(undef, 4N)
+    pack_state!(y, mesh)
+    return y
+end
+
+"""
+    unpack_state!(mesh::Mesh1D, y)
+
+Write the Newton-solved `y` vector back into the mesh, preserving the
+segment ordering. Entropy `s` is *not* updated (frozen in Phase 2).
+"""
+function unpack_state!(mesh::Mesh1D{T,DetField{T}}, y::AbstractVector) where {T<:Real}
+    N = n_segments(mesh)
+    @assert length(y) == 4N
+    @inbounds for j in 1:N
+        seg = mesh.segments[j]
+        s_old = seg.state.s
+        seg.state = DetField{T}(
+            T(y[4*(j-1) + 1]),
+            T(y[4*(j-1) + 2]),
+            T(y[4*(j-1) + 3]),
+            T(y[4*(j-1) + 4]),
+            s_old,
+        )
+        # Refresh the cached half-step momentum diagnostic.
+        i_left = j == 1 ? N : j - 1
+        m̄ = (mesh.segments[i_left].Δm + mesh.segments[j].Δm) / 2
+        mesh.p_half[j] = m̄ * seg.state.u
+    end
+    return mesh
+end
+
+"""
+    det_step!(mesh::Mesh1D, dt; abstol=1e-13, reltol=1e-13, maxiters=50)
+
+Advance the multi-segment Phase-2 mesh by one timestep `dt`. Solves
+the discrete Euler–Lagrange residual `det_el_residual` for the new
+state via NonlinearSolve `NewtonRaphson()` with `AutoForwardDiff()`
+Jacobian. Mutates the mesh in place; returns the mesh for convenience.
+
+The initial guess is an explicit-Euler advance:
+  x_i^{n+1,(0)} = x_i^n + dt · u_i^n
+  u_i^{n+1,(0)} = u_i^n − dt · (P_i − P_{i-1})/m̄_i
+  α_j^{n+1,(0)} = α_j^n + dt · β_j^n
+  β_j^{n+1,(0)} = β_j^n + dt · (γ²_j/α_j^n − (∂_x u)_j · β_j^n)
+"""
+function det_step!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
+                   abstol::Real = 1e-13, reltol::Real = 1e-13,
+                   maxiters::Int = 50) where {T<:Real}
+    N = n_segments(mesh)
+    Δm_vec = T[seg.Δm for seg in mesh.segments]
+    s_vec  = T[seg.state.s for seg in mesh.segments]
+    L_box  = mesh.L_box
+
+    y_n = pack_state(mesh)
+    y0  = explicit_euler_guess(y_n, Δm_vec, s_vec, L_box, T(dt))
+
+    # Closure with parameters captured.
+    p = (y_n, Δm_vec, s_vec, L_box, T(dt))
+    f = (u, p_in) -> begin
+        y_n_in, Δm_in, s_in, L_box_in, dt_in = p_in
+        return det_el_residual(u, y_n_in, Δm_in, s_in, L_box_in, dt_in)
+    end
+
+    prob = NonlinearProblem(f, y0, p)
+    sol = solve(
+        prob,
+        NewtonRaphson(; autodiff = AutoForwardDiff());
+        abstol = abstol,
+        reltol = reltol,
+        maxiters = maxiters,
+    )
+    res = det_el_residual(sol.u, y_n, Δm_vec, s_vec, L_box, T(dt))
+    res_norm = maximum(abs, res)
+    # Newton may report `Stalled` retcode on smooth nearly-converged
+    # problems where the per-step descent falls below relative
+    # tolerance; the residual is still at round-off in such cases.
+    # Accept any residual within 1e4 × abstol regardless of retcode.
+    if res_norm > 1e4 * abstol && sol.retcode != ReturnCode.Success
+        error("det_step! Newton solve failed: retcode = $(sol.retcode), " *
+              "‖residual‖∞ = $res_norm")
+    end
+
+    unpack_state!(mesh, sol.u)
+    return mesh
+end
+
+"""
+    det_run!(mesh::Mesh1D, dt, N_steps; kwargs...)
+
+Convenience driver: run `N_steps` consecutive `det_step!` calls on
+`mesh`. Mutates `mesh` in place, returns `mesh`. Keyword arguments
+are forwarded to `det_step!`.
+"""
+function det_run!(mesh::Mesh1D{T,DetField{T}}, dt::Real, N_steps::Integer;
+                  kwargs...) where {T<:Real}
+    for _ in 1:N_steps
+        det_step!(mesh, dt; kwargs...)
+    end
+    return mesh
+end
+
+# Internal: explicit-Euler guess for the Newton solver.
+function explicit_euler_guess(y_n::AbstractVector{T}, Δm::Vector{T},
+                              s::Vector{T}, L_box::T, dt::T) where {T<:Real}
+    N = length(Δm)
+    y0 = similar(y_n)
+    @inline get_x(y, j) = y[4*(j-1) + 1]
+    @inline get_u(y, j) = y[4*(j-1) + 2]
+    @inline get_α(y, j) = y[4*(j-1) + 3]
+    @inline get_β(y, j) = y[4*(j-1) + 4]
+
+    # Pre-compute pressures and strains at time n.
+    P = Vector{T}(undef, N)
+    divu = Vector{T}(undef, N)
+    @inbounds for j in 1:N
+        j_right = j == N ? 1 : j + 1
+        wrap = (j == N) ? L_box : zero(T)
+        x_left   = get_x(y_n, j)
+        x_right  = get_x(y_n, j_right) + wrap
+        u_left   = get_u(y_n, j)
+        u_right  = get_u(y_n, j_right)
+        Δx = x_right - x_left
+        J = Δx / Δm[j]
+        Mvv_j = _mvv_ad(J, s[j])
+        P[j] = Mvv_j / J
+        divu[j] = (u_right - u_left) / Δx
+    end
+
+    @inbounds for i in 1:N
+        x_n_i = get_x(y_n, i)
+        u_n_i = get_u(y_n, i)
+        α_n_j = get_α(y_n, i)
+        β_n_j = get_β(y_n, i)
+        i_left = i == 1 ? N : i - 1
+        m̄ = (Δm[i_left] + Δm[i]) / 2
+
+        y0[4*(i-1) + 1] = x_n_i + dt * u_n_i
+        y0[4*(i-1) + 2] = u_n_i - dt * (P[i] - P[i_left]) / m̄
+        # γ²_n/α_n − (∂_x u)·β
+        # Use segment i's M_vv at time n.
+        x_left   = get_x(y_n, i)
+        i_right = i == N ? 1 : i + 1
+        wrap = (i == N) ? L_box : zero(T)
+        x_right  = get_x(y_n, i_right) + wrap
+        J_n = (x_right - x_left) / Δm[i]
+        Mvv_n = _mvv_ad(J_n, s[i])
+        γ²_n = max(Mvv_n - β_n_j^2, zero(T))
+        y0[4*(i-1) + 3] = α_n_j + dt * β_n_j
+        y0[4*(i-1) + 4] = β_n_j + dt * (γ²_n / α_n_j - divu[i] * β_n_j)
+    end
+    return y0
+end
