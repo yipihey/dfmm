@@ -112,4 +112,17 @@ export setup_sod, setup_cold_sinusoid, setup_steady_shock,
 include("regression.jl")
 export load_tier_a_golden
 
+# --- Phase 11 API (Tier B.5 passive scalar advection) ---------------------
+# A `TracerMesh` carries one or more passive-scalar fields per
+# Lagrangian segment, in parallel to a `Mesh1D`. In pure-Lagrangian
+# regions (Milestone 1) the advection step is a no-op: the tracer
+# matrix is never written to, so deterministic numerical diffusion
+# is exactly zero. See methods paper §7 for the structural argument
+# and `reference/notes_phase11_passive_tracer.md` for the benchmark.
+include("tracers.jl")
+export TracerMesh, advect_tracers!, add_tracer!, set_tracer!,
+       tracer_at_position, tracer_index,
+       n_tracer_fields, n_tracer_segments,
+       eulerian_upwind_advect!, interface_width
+
 end # module

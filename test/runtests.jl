@@ -94,4 +94,11 @@ using Test
     @testset "regression scaffold" begin
         include("test_regression_scaffold.jl")
     end
+    @testset verbose = true "Phase 11: passive tracer" begin
+        # Tier B.5 — passive scalar advection: bit-exact tracer
+        # preservation in pure-Lagrangian regions, multi-tracer
+        # support, and decade-level fidelity vs a reference Eulerian
+        # upwind scheme. See `reference/notes_phase11_passive_tracer.md`.
+        include("test_phase11_tracer_advection.jl")
+    end
 end
