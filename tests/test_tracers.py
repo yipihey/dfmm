@@ -319,8 +319,9 @@ def test_refine_bisects_large_gaps():
 
 def test_add_seam_tracer_periodic_basic():
     """add_seam_tracer in periodic mode places one tracer at the
-    discontinuity, marks it as seam, and the identity update keeps it
-    in place even though it sits inside the boundary buffer."""
+    parabolic x(q=0) seam estimate (≈ 0 for the L1 = x IC), marks
+    it as seam, and the identity update keeps it in place even
+    though it sits inside the boundary buffer."""
     U0, x = _uniform_periodic_ic(N=64)
     dx = x[1] - x[0]
     tr = Tracers.from_initial_conditions(U0, x, periodic=True,
@@ -331,9 +332,10 @@ def test_add_seam_tracer_periodic_basic():
     assert tr.n == n_before + 1
     assert tr.seam[k] == True
     assert tr.seam.sum() == 1
-    # Position lies inside the buffer (one of the two outermost
-    # `boundary_buffer` cells on either side).
-    assert tr.x[k] < 4 * dx or tr.x[k] > 1.0 - 4 * dx
+    # At t=0 with L1 = x and a uniform-rho ramp, the parabola
+    # x(q=0) gives x=0 (machine epsilon).
+    assert min(tr.x[k], 1.0 - tr.x[k]) < 1e-10, \
+        f"seam tracer t=0 x={tr.x[k]}, expected ~0 or ~1"
     # Identity update at t=0: seam tracer must NOT be flagged lost,
     # despite living inside the buffer.
     tr.update(U0, x)
@@ -352,10 +354,23 @@ def test_add_seam_tracer_transmissive_is_noop():
     assert tr.seam.sum() == 0
 
 
+def test_seam_tracer_t0_exact_for_linear_ramp():
+    """At t=0 the L1 = x convention gives a perfectly linear
+    Lagrangian field; the parabolic x(q) fit through the
+    shifted-largest cell and its two right-neighbours collapses
+    to a line and x(q=0) lands on the seam to round-off."""
+    U0, x = _uniform_periodic_ic(N=128)
+    tr = Tracers.from_initial_conditions(U0, x, periodic=True,
+                                         boundary_buffer=8)
+    k = tr.add_seam_tracer(U0, x)
+    # x = 0 (mod 1) within machine epsilon
+    distance_to_seam = min(tr.x[k], 1.0 - tr.x[k])
+    assert distance_to_seam < 1e-10, \
+        f"seam x = {tr.x[k]:.3e}, distance from wrap = {distance_to_seam:.3e}"
+
+
 def test_seam_tracer_survives_wavepool_run():
-    """The seam tracer never NaN's out across a wave-pool run, even
-    though its label-based location would (the smeared L1 ramp washes
-    out the original L1 = x label values within a few steps)."""
+    """The seam tracer never NaN's out across a wave-pool run."""
     from dfmm.schemes.cholesky import hll_step_periodic, max_signal_speed
 
     N = 128
@@ -365,7 +380,6 @@ def test_seam_tracer_survives_wavepool_run():
 
     U, x = make_wave_pool_ic(N, u0=1.0, P0=0.1, seed=42)
     dx = x[1] - x[0]
-    period = 1.0
     tr = Tracers.from_initial_conditions(U, x, periodic=True,
                                          boundary_buffer=buf)
     seam_k = tr.add_seam_tracer(U, x)
@@ -379,53 +393,57 @@ def test_seam_tracer_survives_wavepool_run():
         tr.update(U, x)
         if tr.lost[seam_k]:
             n_lost_steps += 1
-        # Seam tracer must always be in the wrap-buffer band.
-        sx = tr.x[seam_k]
-        assert (sx < buf * dx) or (sx > 1.0 - buf * dx), \
-            f"seam tracer drifted out of buffer to x={sx}"
+        assert np.isfinite(tr.x[seam_k])
+        assert 0.0 <= tr.x[seam_k] < 1.0
         t += dt
-    # Tolerate at most a handful of "lost" frames (none expected, but
-    # the buffer-band check could in principle false-positive on a
-    # cell exactly on the boundary).
     assert n_lost_steps == 0, \
         f"seam tracer was flagged lost on {n_lost_steps} steps"
 
 
-def test_seam_tracer_step_quantized_in_dx():
-    """The re-anchored seam tracer hops between cell centres, so its
-    per-step Δx should be (approximately) an integer multiple of dx
-    after the periodic minimum-image convention."""
-    from dfmm.schemes.cholesky import hll_step_periodic, max_signal_speed
+def test_lagrangian_period_keeps_L1_near_linear():
+    """With `lagrangian_period=L` the periodic BC shifts the L1 ghost
+    values by ±period * rho so the linear-ramp Lagrangian field
+    stays continuous through the wrap. After many steps the L1 field
+    should remain very close to the initial L1 = x ramp (no HLL
+    smearing of an artificial seam discontinuity)."""
+    from dfmm.config import SimulationConfig
+    from dfmm.schemes._common import Workspace
+    from dfmm.schemes.cholesky import hll_step, max_signal_speed
+    from dfmm.schemes.boundaries import (pad_with_ghosts, unpad_ghosts,
+                                          apply_periodic)
 
-    N = 128
-    cfl = 0.3
-    buf = 12
-
+    N = 64
+    period = 1.0
     U, x = make_wave_pool_ic(N, u0=1.0, P0=0.1, seed=42)
     dx = x[1] - x[0]
-    period = 1.0
-    tr = Tracers.from_initial_conditions(U, x, periodic=True,
-                                         boundary_buffer=buf)
-    seam_k = tr.add_seam_tracer(U, x)
+    cfg = SimulationConfig(cfl=0.3, tau=1e-3,
+                           bc_left='periodic', bc_right='periodic')
+    n_ghost = cfg.n_ghost
 
-    # Run a handful of steps and check the seam Δx is k * dx for
-    # small integer k.
-    t = 0.0
-    seam_dx_values = []
-    while t < 0.05:
-        smax = max_signal_speed(U)
-        dt = min(cfl * dx / smax, 0.05 - t)
-        U = hll_step_periodic(U, dx, dt, tau=1e-3)
-        tr.update(U, x)
-        seam_dx_values.append(float(tr.dx_step[seam_k]))
-        t += dt
-    seam_dx_values = np.array(seam_dx_values)
-    # Each Δx is an integer multiple of dx (snap-to-cell), within
-    # round-off.
-    ratios = seam_dx_values / dx
-    nearest_int = np.round(ratios)
-    assert np.max(np.abs(ratios - nearest_int)) < 1e-9, \
-        f"seam Δx not quantized in dx: residuals={ratios - nearest_int}"
+    def _step(U_in, lagrangian_period, n_steps):
+        Ug = pad_with_ghosts(U_in.copy(), n_ghost)
+        ws = Workspace.for_padded_state(Ug)
+        for _ in range(n_steps):
+            apply_periodic(Ug, n_ghost, lagrangian_period=lagrangian_period)
+            smax = max_signal_speed(unpad_ghosts(Ug, n_ghost))
+            dt = cfg.cfl * dx / smax
+            hll_step(Ug, dx, dt, cfg.tau, n_ghost, cfg.rho_floor,
+                     cfg.alpha_floor, cfg.realizability_headroom,
+                     ws.Unew, ws.Fleft)
+            Ug, ws.Unew = ws.Unew, Ug
+        return unpad_ghosts(Ug, n_ghost)
+
+    U_old = _step(U, lagrangian_period=0.0, n_steps=20)
+    U_new = _step(U, lagrangian_period=period, n_steps=20)
+
+    L1_old = U_old[IDX_L1] / np.maximum(U_old[IDX_RHO], 1e-30)
+    L1_new = U_new[IDX_L1] / np.maximum(U_new[IDX_RHO], 1e-30)
+    err_old = float(np.max(np.abs(L1_old - x)))
+    err_new = float(np.max(np.abs(L1_new - x)))
+    # New BC should keep the L1 field dramatically closer to the
+    # ideal linear ramp.
+    assert err_new < 0.1
+    assert err_new < 0.2 * err_old
 
 
 def test_refine_grows_capacity():

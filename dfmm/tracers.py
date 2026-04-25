@@ -61,6 +61,41 @@ _DEFAULT_REFINE_RATIO = 1.5
 _GROW_FACTOR = 1.5
 
 
+def _seam_x_parabola(L1, x_centers, period):
+    """Sub-cell seam x location from a parabolic x(q) fit.
+
+    Take the cell with the largest L1 value (`imax`), then the two
+    cells to its right with periodic wrap (`(imax+1) % N`,
+    `(imax+2) % N`). Build three (q, x) points where the first one
+    has both its q (L1) and x shifted by `-period` so its q is
+    near-zero or slightly negative. Fit `x = a q^2 + b q + c`
+    (`numpy.polyfit` deg 2) and return `c = x(q=0)` wrapped into
+    `[0, period)`.
+
+    At t=0 with the L1 = x convention this is exact (the three
+    points lie on `x = q`, the parabola is degenerate-linear, and
+    `x(q=0) = 0`). After HLL diffusion smears the seam ramp the
+    fit becomes a true parabola whose root gives a sub-cell
+    estimate of the seam position.
+    """
+    N = len(L1)
+    imax = int(np.argmax(L1))
+    q1 = L1[imax] - period
+    x1 = x_centers[imax] - period
+    i2 = (imax + 1) % N
+    i3 = (imax + 2) % N
+    q2, x2 = L1[i2], x_centers[i2]
+    q3, x3 = L1[i3], x_centers[i3]
+    # Make x monotone in array order (pull cells across the wrap by
+    # +period as needed) so the polyfit sees a continuous curve.
+    if x2 < x1: x2 += period
+    if x3 < x2: x3 += period
+    coeffs = np.polyfit(np.array([q1, q2, q3], dtype=float),
+                        np.array([x1, x2, x3], dtype=float), 2)
+    x_at_zero = float(coeffs[2])    # x(q=0) is the constant term
+    return x_at_zero % period
+
+
 def _seam_cell_index(L1, buffer=None):
     """Return the cell index at the centre of the L1 wrap-seam ramp.
 
@@ -308,27 +343,30 @@ class Tracers:
         return obj
 
     def add_seam_tracer(self, U, x_centers):
-        """Insert one tracer at the seam's steepest-gradient cell.
+        """Insert one tracer at the seam's `x(q=0)` location.
 
         For periodic BCs the L1 = x convention has a full-period jump
         at the wrap. We normally skip the `boundary_buffer` cells on
         each side because the HLL scheme smears that discontinuity
-        across them — turning the discontinuity into a smooth ramp
-        that sweeps L1 from ~L back to ~0. The standard label-based
-        locate cannot track a particle through the no-tracer gap
-        because the original "L1=0" label simply ceases to exist
-        once the ramp smears (every L1 value in the smeared region
-        is somewhere on (0, L)).
+        across them — turning the discontinuity into a smooth ramp.
+        The standard label-based locate cannot track a particle
+        through the no-tracer gap because the original "L1=0" label
+        simply ceases to exist once the ramp smears.
 
-        Instead the seam tracer is re-anchored each `update()` to
-        the current steepest-descent cell, identified by the most
-        negative *raw* (non-wrap-corrected) forward difference
-        `L1[i+1] - L1[i]` — at a sharp seam this is ~-period; on
-        a smeared ramp it picks out the centre of the ramp. This
-        makes the seam tracer an Eulerian seam-tracking probe rather
-        than a Lagrangian particle; its `label` field is updated each
-        step to the L1 value at that cell so downstream code can still
-        inspect it.
+        Instead the seam tracer is re-anchored each `update()` to a
+        sub-cell estimate of the current seam location: take the
+        cell with the largest L1 value (`imax`) and the next two
+        cells to the right (with periodic wrap), shift the first
+        point's q and x by `-period` so its q is near zero, fit a
+        parabola through the three (q, x) pairs, and place the
+        tracer at `x(q=0)`. At t=0 (sharp L1 = x ramp) this
+        exactly recovers x = 0 = L; on the smeared ramp it
+        interpolates between the cells.
+
+        This makes the seam tracer an Eulerian seam-tracking probe
+        rather than a Lagrangian particle; its `label` field is set
+        to 0 (the q value at which we evaluate). `seam=True` exempts
+        it from the buffer-zone lost-flag test in `update()`.
 
         Returns the index of the inserted tracer (i.e. its slot in
         the public `q`/`x`/`label`/... arrays), or -1 if the call is
@@ -341,24 +379,20 @@ class Tracers:
         N = len(x_centers)
         if N < 2:
             return -1
+        period = self.domain[1] - self.domain[0]
+        x_seam = _seam_x_parabola(L1, np.asarray(x_centers, dtype=float),
+                                   period)
+        # idx_hint is the cell whose center is closest to x_seam — only
+        # used to give `sample()` a reasonable interpolation bracket.
         dx = float(x_centers[1] - x_centers[0])
-
-        # Restrict the steepest-descent search to the wrap-buffer band
-        # if one was set, so that strong wavepool L1-compressions in
-        # the interior don't pull the probe off the seam ramp.
-        buffer = self._buffer if self._buffer > 0 else None
-        seam_idx = _seam_cell_index(L1, buffer=buffer)
-        label_seam = float(L1[seam_idx])
-        x_seam = float(x_centers[seam_idx])
-        mass_per_cell = rho * dx
-        cum = np.cumsum(mass_per_cell)
-        q_seam = float(cum[seam_idx] - 0.5 * mass_per_cell[seam_idx])
+        x_min = self.domain[0]
+        seam_idx = int(np.floor((x_seam - x_min) / dx)) % N
 
         if self._n + 1 > self._capacity:
             self._grow(self._n + 1)
         k = self._n
-        self._q[k] = q_seam
-        self._label[k] = label_seam
+        self._q[k] = 0.0                # the q value we evaluate the fit at
+        self._label[k] = 0.0
         self._x[k] = x_seam
         self._idx_hint[k] = seam_idx
         self._frac[k] = 0.0
@@ -473,19 +507,24 @@ class Tracers:
                      int(max_scan), self.periodic, period, x_min,
                      int(len(x_centers)), int(n))
 
-        # Re-anchor seam tracers to the current steepest-descent cell.
-        # The label-based locate cannot track a seam tracer (its
-        # original L1 value is smeared away within a few steps); we
-        # instead snap it to the cell of maximum negative dL1/dx,
-        # restricted to the wrap-buffer band.
+        # Re-anchor seam tracers to the current x(q=0) parabolic
+        # fit (see `_seam_x_parabola`). Label-based locate cannot
+        # track a seam tracer because the original L1 value at the
+        # seam smears away within a few steps; instead we recompute
+        # the sub-cell seam x each step from a quadratic x(q) fit
+        # through the largest-q cell and its two right-neighbours
+        # (periodic wrap).
         if self.periodic and np.any(self._seam[:n]):
-            buffer = self._buffer if self._buffer > 0 else None
-            seam_idx = _seam_cell_index(L1, buffer=buffer)
+            x_arr = np.asarray(x_centers, dtype=float)
+            x_seam = _seam_x_parabola(L1, x_arr, period)
+            seam_idx = int(np.floor((x_seam - x_min) / dx)) % len(x_centers)
             for k in np.where(self._seam[:n])[0]:
-                self._x[k] = float(x_centers[seam_idx])
-                self._label[k] = float(L1[seam_idx])
+                self._x[k] = x_seam
+                self._label[k] = 0.0
                 self._idx_hint[k] = seam_idx
-                self._frac[k] = 0.0
+                # Cell-fraction for sample(): position within the
+                # bracket [seam_idx, seam_idx+1].
+                self._frac[k] = ((x_seam - x_arr[seam_idx]) / dx) % 1.0
 
         # Flag tracers in the damaged zone or NaN'd. Seam tracers are
         # exempt from the buffer-zone test — they're placed there on
