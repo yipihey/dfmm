@@ -25,6 +25,22 @@ using Test
             include("test_phase2_acoustic.jl")
         end
     end
+    @testset verbose = true "Phase 3" begin
+        # Tier B.2 cold-limit reduction — the central unification test
+        # of the methods paper. Order: Zel'dovich pre-crossing match,
+        # then Hessian-degeneracy diagnostic (also writes the
+        # `reference/figs/phase3_hessian_degen.png` plot), then energy /
+        # mass / momentum conservation.
+        @testset "Phase 3: Zel'dovich pre-crossing" begin
+            include("test_phase3_zeldovich.jl")
+        end
+        @testset "Phase 3: Hessian degeneracy" begin
+            include("test_phase3_hessian_degen.jl")
+        end
+        @testset "Phase 3: energy / mass / momentum drift" begin
+            include("test_phase3_energy_drift.jl")
+        end
+    end
     @testset "eos" begin
         include("test_eos.jl")
     end
