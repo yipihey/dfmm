@@ -31,4 +31,7 @@ using Test
         include("test_burst_stats.jl")
         include("test_self_consistency.jl")
     end
+    @testset "setups" begin
+        include("test_setups.jl")
+    end
 end

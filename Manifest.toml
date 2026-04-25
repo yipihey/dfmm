@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "b8e1ece9129dafe5c6a7c7cde4980cbd58934bc6"
+project_hash = "48431eb9eedde41ee2e0c733dfa2321595ad5980"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -3244,7 +3244,7 @@ uuid = "b2a88e68-78e7-5e94-8c20-c02986ec140e"
 version = "0.2.10+0"
 
 [[deps.dfmm]]
-deps = ["CairoMakie", "DifferentiationInterface", "Distributions", "Enzyme", "ForwardDiff", "GeometricIntegrators", "GeometricalPredicates", "HDF5", "JLD2", "LinearSolve", "NPZ", "NonlinearSolve", "OrdinaryDiffEq", "QuadGK", "Random", "SpecialFunctions", "StaticArrays", "StatsBase", "WriteVTK"]
+deps = ["CairoMakie", "DifferentiationInterface", "Distributions", "Enzyme", "ForwardDiff", "GeometricIntegrators", "GeometricalPredicates", "HDF5", "JLD2", "LinearSolve", "NPZ", "NonlinearSolve", "OrdinaryDiffEq", "Printf", "QuadGK", "Random", "SpecialFunctions", "StaticArrays", "StatsBase", "WriteVTK"]
 path = "."
 uuid = "3fe8d9ee-2bda-457c-82d7-3afede950fc2"
 version = "0.1.0"
