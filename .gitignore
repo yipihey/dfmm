@@ -1,0 +1,44 @@
+# OS / editor junk
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Python (carry-overs from the pre-restructure layout; the canonical
+# Python project lives under py-1d/ which has its own .gitignore)
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.coverage
+.hypothesis/
+.pytest_cache/
+
+# Julia
+/deps/build.log
+/docs/build/
+/docs/site/
+*.cov
+.julia/
+LocalPreferences.toml
+
+# Generated outputs (large simulation artifacts; small ones can be
+# tracked under reference/ explicitly)
+*.h5
+*.hdf5
+*.jld2
+*.vtu
+*.vti
+*.vtp
+*.pvd
+
+# Generated paper artifacts (top-level; py-1d has its own copy)
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.toc
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.synctex.gz

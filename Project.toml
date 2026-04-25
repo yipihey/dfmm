@@ -1,0 +1,29 @@
+name = "dfmm"
+uuid = "3fe8d9ee-2bda-457c-82d7-3afede950fc2"
+authors = ["Tom Abel"]
+version = "0.1.0"
+
+[deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+DifferentiationInterface = "a0c0ee7d-e4b9-4e03-894e-1c5f64a51d63"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+GeometricIntegrators = "dcce2d33-59f6-5b8d-9047-0defad88ae06"
+GeometricalPredicates = "fd0ad045-b25c-564e-8f9c-8ef5c5f21267"
+HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+LinearSolve = "7ed4a6bd-45f5-4d41-b270-4a48e9bafcae"
+NonlinearSolve = "8913a72c-1f9b-4ce2-8d82-65094dcecaec"
+OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+WriteVTK = "64499a7a-5c06-52f2-abe2-ccb03c286192"
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

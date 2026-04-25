@@ -1,0 +1,1207 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\D}{\mathrm{D}}
+\newcommand{\half}{\tfrac{1}{2}}
+\newcommand{\Tr}{\operatorname{Tr}}
+\newcommand{\Kn}{\mathrm{Kn}}
+\newcommand{\Ma}{\mathrm{Ma}}
+\newcommand{\bx}{\bm{x}}
+\newcommand{\bu}{\bm{u}}
+\newcommand{\bv}{\bm{v}}
+\newcommand{\bmlab}{\bm{m}}
+\newcommand{\bq}{\bm{q}}
+
+\title{A variational unification of moderate-Knudsen hydrodynamics with
+  the phase-space sheet:\\
+  the dfmm framework in 1D and 2D, with action-based AMR and
+  variance-gamma stochastic dressing}
+\author{T.~Abel\\Kavli Institute for Particle Astrophysics and Cosmology\\
+  Stanford University and SLAC National Accelerator Laboratory}
+\date{Design document, draft of \today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We develop a variational discretization of moderate-Knudsen
+hydrodynamics that unifies the dfmm one-dimensional moment scheme with
+the phase-space sheet picture of collisionless dynamics. The primary
+variable is the $4\times 4$ phase-space Cholesky factor $L$ over a
+Lagrangian mass-coordinate mesh in two spatial dimensions; in 1D it
+reduces to dfmm's existing eight-field scheme. The deterministic
+action has connection-form structure with the strain-group $GL(d)$ as
+the structure group: covariant derivatives respect tensor weights, and
+the Cholesky sector carries a weighted symplectic form $\omega = \alpha^2
+\dd\alpha\wedge\dd\beta$ with $\alpha$-local Hamiltonian
+$\mathcal{H}_{\rm Ch} = -\half\alpha^2\gamma^2$, generalized to 2D via
+principal-axis rotation as $\omega_{2D} = \sum_a \alpha_a^2 \dd\alpha_a
+\wedge \dd\beta_a + \omega_{\rm rot}$. The cold-limit reduction is
+exact: the action collapses to the mass-coordinate dust action of
+Abel--Hahn--Kaehler, and the Hessian degeneracy at $\gamma\to 0$ is
+the variational signature of phase-space rank collapse. Stochastic
+dressing is added via a generalized Kramers--Moyal action whose
+noise variance is variance-gamma distributed; the shape parameter
+$\lambda$ is empirically related to the gamma-distribution shape of
+compression burst durations, providing a runtime self-consistency
+check between the deterministic and stochastic sectors. Bayesian
+remap onto an Eulerian quadtree mesh, computed exactly via the r3d
+polynomial-moment kernel with curved-element dimension lifting,
+implements the law of total cumulants and converts coarse-graining
+entropy production into physical phase-space spreading rather than
+numerical dissipation. Adaptive mesh refinement is driven by local
+discrete action error, unifying shock detection, shell-crossing
+detection, and turbulence-cascade detection in a single criterion.
+Passive scalar advection is exact at the discrete level by structural
+identification with parcel labels. The framework extends naturally to
+two-fluid systems via the dfmm modular cross-coupling operator. We
+specify the discrete scheme in detail, present a comprehensive
+validation hierarchy spanning 1D regression against dfmm benchmarks
+through 2D novelty tests including dust-trapping in vortices and
+Zel'dovich pancake collapse, and discuss the methods paper structure.
+\end{abstract}
+
+\tableofcontents
+
+\section{Introduction}
+\label{sec:intro}
+
+Between strictly hydrodynamic and strictly kinetic descriptions of a
+fluid lies an intermediate regime of considerable astrophysical
+interest. Post-shock relaxation layers, weakly collisional intracluster
+plasmas, the cold streams that feed galactic halos, and the multi-stream
+regions of cosmological dark matter structure all share a feature: a
+local distribution function that is not Maxwellian but also not
+arbitrarily structured. Moment closures handle this regime in
+principle, but their failure modes are typically invisible to the
+scheme itself. The dfmm framework~\cite{dfmm-paper} addresses this
+by instrumenting a one-dimensional moment scheme so that closure
+quality is reported as part of the output, with three diagnostics
+(heat-flux deviation, Cholesky rank-collapse $\gamma$, standardized
+skewness $|s|$) that fire on physically distinct failure modes.
+
+This paper extends dfmm in two directions simultaneously. First, we
+develop a \emph{variational} formulation in which the deterministic
+moment evolution arises as the Euler--Lagrange equations of an action
+with connection-form structure, and the stochastic dressing arises
+as a generalized Kramers--Moyal MSRJD action with variance-gamma noise
+vertices. Second, we extend to two spatial dimensions via the natural
+$4\times 4$ phase-space Cholesky factor over Lagrangian space, with
+principal-axis decomposition giving a clean structural reduction.
+
+The variational unification has three structural payoffs that are not
+available in the original dfmm formulation. (i) The cold-limit
+reduction is exact and analytically clean: the action collapses to
+the Abel--Hahn--Kaehler mass-coordinate dust action when velocity
+dispersion vanishes, and the diagnostic $\gamma\to 0$ acquires a
+sharp variational interpretation as Hessian degeneracy of the
+deterministic action. (ii) Bayesian remap with the law of total
+cumulants converts coarse-graining entropy production into physical
+phase-space spreading rather than numerical dissipation, with
+exactness through the r3d polynomial-moment kernel. (iii) Passive
+scalar advection becomes exact at the discrete level by structural
+identification of tracers with parcel labels, addressing a
+long-standing pain point of Eulerian schemes in cosmological and
+ISM applications.
+
+The paper is structured as follows. Section~\ref{sec:framework}
+establishes the variable hierarchy: the $4\times 4$ phase-space
+covariance, its Cholesky factorization, and the strain group as a
+structure group on the bundle over Lagrangian space.
+Section~\ref{sec:action} develops the deterministic action in
+connection form, presents the cold-limit reduction, and identifies
+the Hessian-degeneracy interpretation of phase-space rank collapse.
+Section~\ref{sec:stochastic} develops the generalized Kramers--Moyal
+stochastic dressing, derives the variance-gamma noise distribution
+from the gamma-distributed burst-duration empirical structure, and
+predicts the residual-kurtosis self-consistency check.
+Section~\ref{sec:matrix-lift} works out the 2D matrix lift via
+principal-axis decomposition. Section~\ref{sec:remap} establishes
+the Bayesian remap with law of total cumulants and the r3d
+implementation. Section~\ref{sec:tracer} discusses passive scalar
+advection. Section~\ref{sec:discrete} specifies the discrete scheme
+in 1D and 2D, including polynomial reconstruction with positivity,
+discrete Euler-Lagrange equations, action-based AMR, and the implicit
+Newton iteration. Section~\ref{sec:two-fluid} extends to two-fluid
+systems. Section~\ref{sec:validation} presents the validation
+hierarchy and test problem specifications.
+Section~\ref{sec:conclusions} summarizes and discusses extensions.
+
+Throughout, we treat the 1D dfmm scheme as the established reference
+that the 2D extension must reduce to in the appropriate limits, and
+the test-problem hierarchy reflects this: regression against dfmm
+benchmarks in 1D mode is a non-negotiable acceptance criterion before
+2D claims are made.
+
+\section{Framework: the $4\times 4$ phase-space Cholesky over Lagrangian
+  space}
+\label{sec:framework}
+
+\subsection{Mass-coordinate Lagrangian space}
+
+Lagrangian space $\mathcal{L}$ is a $d$-dimensional manifold with mass
+coordinates $\bmlab{m}\in\mathcal{L}$ ($d=1,2,3$). The fundamental
+spacetime field is the position map
+\begin{equation}
+  \bx(\bmlab,t):\mathcal{L}\times\mathbb{R}\to\mathbb{R}^d,
+\end{equation}
+with deformation gradient $J^i_{\,j} = \partial x^i/\partial m^j$ and
+volume Jacobian $J = \det(J^i_{\,j}) = 1/\rho$. Mass per parcel is
+fixed: $\dd m = \rho_0 \dd\xi$ in initial conditions, and
+$\rho(\bx,t) = \rho_0/J$ is derived, never stored.
+
+The Lagrangian frame velocity is $\bu = \dot\bx$ at fixed $\bmlab$. The
+Eulerian velocity gradient is the connection 1-form on Lagrangian space:
+\begin{equation}
+  G^i_{\,j}(\bx,t) = \frac{\partial v^i}{\partial x^j}
+  = \frac{\partial u^i}{\partial m^k}(J^{-1})^k_{\,j}.
+\end{equation}
+
+\subsection{The $4\times 4$ phase-space covariance}
+
+Over each Lagrangian point we attach a phase-space fiber, characterized
+at second-moment order by the $2d\times 2d$ covariance matrix
+\begin{equation}
+  M = \begin{pmatrix} M_{xx} & M_{xv} \\ M_{xv}^\top & M_{vv}\end{pmatrix},
+  \qquad M\succeq 0,
+  \label{eq:M}
+\end{equation}
+with each block $d\times d$. Realizability is $M\succeq 0$. The
+Cholesky factorization $M = LL^\top$ with $L$ block-lower-triangular
+\begin{equation}
+  L = \begin{pmatrix} L_1 & 0 \\ L_2 & L_3 \end{pmatrix},
+  \quad
+  L_1, L_3\in\mathbb{R}^{d\times d}\text{ lower-tri (positive diagonal)},\
+  L_2\in\mathbb{R}^{d\times d},
+  \label{eq:L-block}
+\end{equation}
+makes realizability manifest: $M_{xx} = L_1 L_1^\top$,
+$M_{xv} = L_1 L_2^\top$, $M_{vv} = L_2 L_2^\top + L_3 L_3^\top$.
+
+In dfmm's 1D specialization, $L_1 = \alpha$, $L_2 = \beta$, $L_3 = \gamma$,
+all scalars; the dynamical fields are $(\alpha,\beta)$ with
+$\gamma = \sqrt{M_{vv}-\beta^2}$ derived from the EOS. In 2D, $L$ is
+a $4\times 4$ lower-triangular matrix with 10 independent components.
+
+\subsection{The strain group as a structure group}
+
+The phase-space covariance transforms as a tensor under the velocity
+strain group $GL(d)_v$. Each velocity index carries one factor of
+$G$:
+\begin{align}
+  \mathcal{D}_t M_{xx} &= \dot{M}_{xx}, \notag\\
+  \mathcal{D}_t M_{xv} &= \dot{M}_{xv} - G\,M_{xv}, \notag\\
+  \mathcal{D}_t M_{vv} &= \dot{M}_{vv} - G\,M_{vv} - M_{vv} G^\top,
+  \label{eq:Liouville-cov}
+\end{align}
+where $\dot{} = \partial_t$ at fixed $\bmlab$. In tensor language, $M_{xx}$
+has weight $(0,0)$ under $GL(d)_v$, $M_{xv}$ has weight $(0,1)$,
+$M_{vv}$ has weight $(1,1)$. Liouville evolution under collisionless
+free streaming is
+\begin{equation}
+  \mathcal{D}_t M_{xx} = M_{xv} + M_{xv}^\top,\qquad
+  \mathcal{D}_t M_{xv} = M_{vv},\qquad
+  \mathcal{D}_t M_{vv} = 0.
+  \label{eq:Liouville-clean}
+\end{equation}
+Right-hand sides are algebraic; all strain coupling is absorbed into
+the covariant derivative.
+
+\subsection{Specialization to 1D}
+
+With $d=1$, $G = \partial_x u$, weights become integer charges
+$q\in\{0,1,2\}$. Charges of the Cholesky factors: $\alpha = L_1$ has
+charge $0$, $\beta = L_2$ has charge 1, $\gamma = L_3$ has charge 1.
+The covariant derivative is
+\begin{equation}
+  \mathcal{D}_t^{(q)}\phi = \dot\phi + q (\partial_x u)\phi.
+  \label{eq:Dt-1D}
+\end{equation}
+The dfmm Cholesky equations~\cite{dfmm-paper} become
+\begin{equation}
+  \mathcal{D}_t^{(0)}\alpha = \beta,\qquad
+  \mathcal{D}_t^{(1)}\beta = \frac{\gamma^2}{\alpha} = \frac{M_{vv}(J,s)-\beta^2}{\alpha},
+  \label{eq:dfmm-cov}
+\end{equation}
+recovering the bare-derivative form
+\begin{equation}
+  \dot\alpha = \beta,\qquad \dot\beta + (\partial_x u)\beta = \gamma^2/\alpha.
+  \label{eq:dfmm-bare}
+\end{equation}
+
+\subsection{Liouville invariant}
+
+Under collisionless dynamics, the per-parcel phase-space volume
+$\sqrt{\det M} = \det L$ is conserved. In 1D this is
+$\alpha\gamma = \det L$. In 2D it's the determinant of the $4\times 4$
+Cholesky factor. Mass per parcel is fixed by definition, so the full
+phase-space volume invariant per unit reference mass is exactly
+$\det L$. This is the Liouville invariant we use to characterize the
+deterministic dynamics and to bound the Bayesian remap's
+entropy-production behavior (Section~\ref{sec:remap}).
+
+\section{The deterministic action in connection form}
+\label{sec:action}
+
+\subsection{Cholesky sector: weighted symplectic structure}
+
+The dfmm Cholesky flow on $(\alpha,\beta)$ is \emph{not} Hamiltonian
+under the canonical symplectic form $\dd\alpha\wedge\dd\beta$; one
+finds the integrability condition fails. It \emph{is} Hamiltonian
+under the weighted form
+\begin{equation}
+  \omega_{1D} = \alpha^2\,\dd\alpha\wedge\dd\beta,
+  \label{eq:omega-1D}
+\end{equation}
+with $\alpha$-local Hamiltonian density
+\begin{equation}
+  \mathcal{H}^{1D}_{\rm Ch}(\alpha,\beta;J,s)
+  = -\half\,\alpha^2\,\gamma^2
+  = -\half\,\alpha^2\bigl(M_{vv}(J,s) - \beta^2\bigr).
+  \label{eq:H-Ch-1D}
+\end{equation}
+The factor $\alpha^2 = M_{xx}$ in $\omega_{1D}$ is precisely the gauge
+weight of the symplectic potential under the strain group: $\omega_{1D}$
+has total charge $0+1=1$, which is the charge needed for Hamilton's
+equations to produce charge-correct covariant time derivatives.
+
+\paragraph{Verification.} Hamilton's equations for the weighted form
+$\omega = f\,\dd\alpha\wedge\dd\beta$ with Hamiltonian $\mathcal{H}$
+are
+\begin{equation}
+  \mathcal{D}_t\alpha = \frac{1}{f}\frac{\partial\mathcal{H}}{\partial\beta},\qquad
+  \mathcal{D}_t\beta = -\frac{1}{f}\frac{\partial\mathcal{H}}{\partial\alpha}.
+\end{equation}
+With $f = \alpha^2$ and $\mathcal{H}_{\rm Ch}$ from~\eqref{eq:H-Ch-1D}:
+$\partial\mathcal{H}_{\rm Ch}/\partial\beta = \alpha^2\beta$ gives
+$\mathcal{D}_t\alpha = \beta$;
+$\partial\mathcal{H}_{\rm Ch}/\partial\alpha = -\alpha\gamma^2$ gives
+$\mathcal{D}_t\beta = \gamma^2/\alpha$.
+Both equations match~\eqref{eq:dfmm-cov}. \checkmark
+
+\paragraph{Symplectic potential.} A 1-form $\theta$ with $\dd\theta =
+\omega_{1D}$ is e.g.\ $\theta = (\alpha^3/3)\,\dd\beta$, giving the
+Hamilton--Pontryagin action density
+\begin{equation}
+  \mathcal{L}_{\rm Ch} = \frac{\alpha^3}{3}\,\mathcal{D}_t^{(1)}\beta - \mathcal{H}_{\rm Ch}.
+  \label{eq:L-Ch}
+\end{equation}
+The strain coupling $-(\partial_x u)\beta$ in~\eqref{eq:dfmm-bare}
+is generated entirely by $\mathcal{D}_t^{(1)}\beta$
+in~\eqref{eq:L-Ch}; $\mathcal{H}_{\rm Ch}$ contains no strain term.
+The discrete scheme will treat the strain as a parallel-transport
+operator, not a non-local source.
+
+\subsection{Bulk and entropy sectors}
+
+Bulk position $\bx$ and specific entropy $s$ are scalars (charge 0)
+under the strain group. The full deterministic action density is
+\begin{equation}
+  \mathcal{L}_{\rm det}
+  = \half|\dot\bx|^2
+  + \mathcal{L}_{\rm Ch}
+  + \mathcal{L}_{\rm dev}
+  + \lambda_Q\bigl(\dot Q + Q/\tau - \mathcal{S}_Q\bigr),
+  \label{eq:Ldet}
+\end{equation}
+with $\mathcal{L}_{\rm dev}$ the deviatoric stress sector
+(\S\ref{sec:deviatoric}) and the heat-flux constraint enforced as a
+hard Lagrange multiplier (soft-constraint form deferred to
+\S\ref{sec:appendix-soft}).
+
+Variation of $\bx$ gives the bulk momentum equation
+\begin{equation}
+  \ddot\bx = -\partial_{\bmlab} P_{xx} \quad\Longleftrightarrow\quad
+  \rho\,\D\bu/\D t = -\partial_{\bx} P_{xx},
+\end{equation}
+the standard Euler equation. Variation of $s$ gives parcel-wise
+entropy conservation $\dot s = 0$ in the deterministic adiabatic
+limit.
+
+\subsection{Deviatoric stress as a dynamical variable}
+\label{sec:deviatoric}
+
+In 1D the only relevant deviatoric DOF is the $P_{xx}/P_\perp$ split.
+In 2D and 3D the deviatoric stress is a traceless symmetric tensor
+\begin{equation}
+  \pi_{ij} = M_{vv,ij} - \frac{1}{d}M_{vv,kk}\delta_{ij},
+\end{equation}
+with Lagrangian-frame evolution
+\begin{equation}
+  \mathcal{D}_t\pi = -\pi/\tau_\pi - 2\eta\,S^{\rm dev} + \mathcal{Q}(\pi,S),
+\end{equation}
+where $S^{\rm dev}$ is the deviatoric strain rate, $\eta$ a viscosity
+coefficient, $\tau_\pi$ a relaxation timescale, and $\mathcal{Q}$
+collects nonlinear couplings (Burnett-level terms). This is the
+Israel--Stewart structure with its own Cholesky factorization for
+realizability. In 1D, $\pi$ degenerates to a single scalar
+$\Pi = P_{xx} - P_\perp$ relaxing under BGK at rate $1/\tau$.
+
+\subsection{Cold-limit reduction}
+
+At $s\to-\infty$: $M_{vv}\to 0$, $\beta\to 0$, $\gamma\to 0$, $\Pi\to 0$.
+$\mathcal{H}_{\rm Ch}\to 0$, $\mathcal{L}_{\rm dev}\to 0$, and the
+action collapses to
+\begin{equation}
+  S_{\rm cold} = \int\dd t\int\dd^d m\;\half|\dot\bx|^2,
+  \label{eq:S-cold}
+\end{equation}
+the mass-coordinate pressureless-dust action of Abel--Hahn--Kaehler.
+EL equations: $\ddot\bx = 0$, ballistic free streaming. Adding
+self-gravity is a single term $-\int\dd m\,\Phi(\bx(\bmlab,t),t)$ with
+Poisson's equation as a constraint; the phase-space sheet tessellation
+framework follows directly. \checkmark
+
+\subsection{Hessian degeneracy at $\gamma\to 0$}
+\label{sec:hessian}
+
+The symplectic form $\omega_{1D} = \alpha^2\,\dd\alpha\wedge\dd\beta$
+remains non-degenerate as long as $\alpha > 0$. But the Hessian of
+$\mathcal{H}_{\rm Ch}$ on the $(\alpha,\beta)$ tangent space is
+\begin{equation}
+  \mathrm{Hess}(\mathcal{H}_{\rm Ch}) = \begin{pmatrix} -\gamma^2 & 2\alpha\beta \\ 2\alpha\beta & \alpha^2\end{pmatrix},
+  \quad\det = -\alpha^2(\gamma^2 + 4\beta^2)
+  \xrightarrow{\gamma\to 0,\beta\to 0} 0.
+  \label{eq:hessian}
+\end{equation}
+At $\gamma=0$ \emph{and} $\beta=0$ (rank-one phase-space ridge with
+no shear), the Hessian is rank-1. This is the variational signature
+of phase-space rank collapse: the deterministic action loses
+linear-stability structure at the caustic. The stochastic dressing of
+\S\ref{sec:stochastic} re-opens the gap by adding a positive-definite
+noise vertex.
+
+\subsection{Heat flux gauge structure}
+
+The heat flux $Q_{ijk} = \langle (v-u)_i(v-u)_j(v-u)_k\rangle$ has
+three velocity indices, hence weight $(1,1,1)$ under the strain
+group. The covariant derivative is
+\begin{equation}
+  \mathcal{D}_t Q_{ijk} = \dot Q_{ijk} - G^a_{\,i}Q_{ajk} - G^a_{\,j}Q_{iak} - G^a_{\,k}Q_{ija}.
+\end{equation}
+In 1D this reduces to $\mathcal{D}_t^{(3)}Q = \dot Q + 3(\partial_x u)Q$,
+matching dfmm's existing scalar treatment under appropriate
+relabeling. In 2D, $Q_{ijk}$ has 4 independent components after
+symmetrization and the gauge structure is non-trivial.
+
+\section{Stochastic dressing: variance-gamma from intermittent compression}
+\label{sec:stochastic}
+
+\subsection{Empirical foundation}
+
+Wave-pool calibration~\cite{action-note-v3} establishes three
+empirical facts that constrain the stochastic dressing:
+\begin{enumerate}
+\item Compression burst durations are gamma-distributed with shape
+parameter $k\approx 2.5$--$2.8$, robust across compression thresholds
+(Kolmogorov-Smirnov rejects exponential at $p\to 0$).
+\item Conditioned on compressive flow, the closure-error residual
+$\eta = (\epsilon - b\,\dd t)/\sqrt{\sigma^2\dd t}$ is well-fit by a
+variance-gamma distribution with shape $\lambda \approx 1$--$1.6$
+(production calibration vs.\ small-data fit).
+\item The drift coefficient $C_A\approx 0.34$ (production) decomposes
+as $C_A = b_{\rm It\hat o} + b_{\rm closure}$; the split requires the
+Lagrangian-frame density disambiguation that small-data calibration
+lacks.
+\end{enumerate}
+
+\subsection{Variance-gamma from variance mixing}
+
+Drop the assumption that burst durations are exponential. Compression
+bursts arrive as a Poisson process at rate $\lambda_b$, each with
+random duration $T_b\sim\Gamma(k,\theta_T)$ and intensity $\kappa_b$.
+Noise variance accumulated in a save interval is
+\begin{equation}
+  V = C_B^2 \sum_{n=1}^{N(T_{\rm save})}\kappa_n T_n,
+  \quad N(T_{\rm save})\sim\mathrm{Poisson}(\lambda_b T_{\rm save}),
+\end{equation}
+which is gamma-distributed at fixed $\kappa$, modified to
+variance-gamma by the multiplicative cascade structure of $\kappa$.
+
+\paragraph{Theorem (variance-gamma from variance mixing).} If
+$\epsilon | V \sim \mathcal{N}(0,V)$ with $V\sim\Gamma(\lambda,\theta)$,
+then $\epsilon\sim\mathrm{VG}(\lambda,\theta)$ with density
+\begin{equation}
+  f(\epsilon) = \frac{1}{\sqrt\pi\,\Gamma(\lambda)}
+  \frac{1}{(2\theta)^{\lambda-1/2}}|\epsilon|^{\lambda-1/2}
+  K_{\lambda-1/2}\bigl(|\epsilon|/\sqrt\theta\bigr),
+  \label{eq:VG}
+\end{equation}
+with $K_\nu$ the modified Bessel function of the second kind. Special
+cases: $\lambda=1$ gives Laplace; $\lambda\to\infty$ (with $\theta$
+scaled) gives Gaussian. Excess kurtosis is $3/\lambda$.
+
+\subsection{The MSRJD action with variance-gamma vertices}
+
+The stochastic-action contribution generalizes from quadratic to the
+variance-gamma cumulant generating function:
+\begin{equation}
+  \mathcal{K}_{\rm VG}(\hat\epsilon; V_{\rm typ})
+  = -\lambda\log\bigl(1 - \theta\hat\epsilon^2/2\bigr)
+  = \half\lambda\theta\hat\epsilon^2 + \frac{1}{4}\lambda\theta^2\hat\epsilon^4
+  + O(\hat\epsilon^6).
+  \label{eq:K-VG}
+\end{equation}
+The leading term is the Gaussian noise vertex (recovering MSRJD at
+quadratic order); higher-order vertices encode the heavy tails. For
+empirical $\lambda\sim 1$--$2$, only the quartic correction is
+numerically relevant.
+
+\subsection{Self-consistency check}
+
+The framework predicts a measurable consistency relation between the
+deterministic and stochastic sectors:
+\begin{equation}
+  \boxed{\quad\lambda_{\rm residual} = (\text{gamma-shape of compression burst durations})\quad}
+  \label{eq:self-consistency}
+\end{equation}
+This is a runtime self-consistency check: the implementation monitors
+both burst-duration shape (from compression-detector statistics) and
+residual kurtosis (from closure-error vs.\ deterministic prediction),
+and warns if they disagree. This is a closure-quality diagnostic on
+the \emph{stochastic} dressing, parallel to the dfmm closure
+diagnostics on the deterministic moments.
+
+\subsection{2D extension: noise per compressive principal axis}
+
+In 2D the strain rate tensor $S_{ij} = \half(\partial_i u_j +
+\partial_j u_i)$ has principal-axis decomposition with eigenvalues
+$\lambda_1\geq\lambda_2$ and eigenvectors $\hat e_1,\hat e_2$. The
+prediction is independent variance-gamma noise on each compressive
+principal axis:
+\begin{equation}
+  \sigma_a^2 = C_B^2\,\max(-\lambda_a,0),\quad a=1,2.
+\end{equation}
+Pure incompressible 2D shear flow has $\lambda_1=-\lambda_2\neq 0$,
+giving \emph{one} compressive direction only --- the framework predicts
+noise on one axis, not both. This is a falsifiable signature for any
+2D wave-pool calibration; it distinguishes the principal-axis noise
+prediction from any trace-based or isotropic alternative.
+
+\subsection{Drift decomposition}
+
+The drift coefficient $C_A\approx 0.34$ from the wave-pool calibration
+decomposes as $C_A = b_{\rm It\hat o} + b_{\rm closure}$, with
+$b_{\rm It\hat o} = \half\partial_u\sigma^2/\sigma^2\cdot|\sigma|$
+the It\^o-Stratonovich shift and $b_{\rm closure}$ the genuine mean
+closure error. The split (predicted $\sim 0.15+\sim 0.19$) is
+testable from production calibration data with the Lagrangian-frame
+density disambiguation. The framework accepts whatever decomposition
+emerges; the structural claim that $C_A$ has these two components is
+robust.
+
+\section{The 2D matrix lift via principal-axis decomposition}
+\label{sec:matrix-lift}
+
+\subsection{Why direct tensor pairing fails}
+
+The natural conjecture from the 1D form is
+\begin{equation}
+  \omega_{2D}^{\rm naive}\stackrel{?}{=} (\det L_1)^2\,\Tr(\dd L_1\wedge\dd L_2^\top),
+\end{equation}
+with $L_1$ the lower-tri Cholesky of $M_{xx}$. Working out the 2D
+Liouville equations for the entries of $L_1, L_2$ reveals that the
+off-diagonal entry of $L_2$ couples to $L_1$ entries through ratios
+that the naive trace pairing does not reproduce. The off-diagonal
+entry is dynamical (it generates cross-axis coupling) but the trace
+pairing leaves it algebraic. The naive form is incomplete.
+
+\subsection{Principal-axis rotation as the structural fix}
+
+Work in the local principal-axis basis of $M_{xx}$: rotate to
+coordinates where $L_1$ is diagonal, $L_1 = \mathrm{diag}(\alpha_1,
+\alpha_2)$. The two principal axes carry independent 1D Cholesky
+structures, and cross-axis coupling enters via the Maurer--Cartan
+1-form of the rotation $R(t)\in SO(2)$:
+\begin{equation}
+  \omega_{2D} = \alpha_1^2\,\dd\alpha_1\wedge\dd\beta_1
+  + \alpha_2^2\,\dd\alpha_2\wedge\dd\beta_2 + \omega_{\rm rot}(\alpha_a,\beta_a,\theta_R),
+  \label{eq:omega-2D}
+\end{equation}
+where $\theta_R$ is the rotation angle of the principal-axis frame
+and $\omega_{\rm rot}$ is the Berry-curvature-like contribution.
+
+The first two terms are exactly two copies of the 1D weighted
+symplectic form; reduction to 1D (set $\alpha_2=\alpha_1$,
+$\beta_2=\beta_1$, $\theta_R=0$) recovers $\omega_{1D}$ correctly.
+The Berry-connection term $\omega_{\rm rot}$ requires further
+derivation; its specific form is flagged for the 2D extension paper.
+
+\subsection{Why this is the right structural choice}
+
+\begin{itemize}
+\item \textbf{1D reduction is automatic.} The 1D scheme is a single
+principal-axis specialization of the 2D action; no separate 1D code
+path needed.
+\item \textbf{Noise structure aligns naturally.} The variance-gamma
+noise prediction (per compressive principal axis) lives on the same
+principal-axis decomposition as the symplectic form. Deterministic
+and stochastic sectors are both axis-diagonal in this frame.
+\item \textbf{Rotation angle is a physical observable.} It tracks how
+the local $M_{xx}$ ellipsoid orients itself relative to the strain
+eigenframe. At shell crossing, principal axes align with the caustic
+direction and $\omega_{\rm rot}$ carries the rotation that brings $L_1$
+to a singular limit.
+\item \textbf{3D extension is straightforward.} Replace $SO(2)$ with
+$SO(3)$ and three principal axes; same structure with three diagonal
+1D-form contributions plus a Berry curvature on $SO(3)$.
+\end{itemize}
+
+\subsection{Hamiltonian and equations of motion}
+
+The 2D Cholesky Hamiltonian on the principal-axis basis is
+\begin{equation}
+  \mathcal{H}^{2D}_{\rm Ch} = -\half\bigl(\alpha_1^2\gamma_1^2 + \alpha_2^2\gamma_2^2\bigr) + \mathcal{H}_{\rm rot}(\theta_R),
+  \label{eq:H-2D}
+\end{equation}
+with the Berry-connection contribution to the rotation Hamiltonian
+flagged for further derivation. Hamilton's equations on the diagonal
+sectors give two independent copies of the 1D dfmm Cholesky
+evolution, one per principal axis. The rotation sector evolves on
+$SO(2)$ driven by the misalignment between the $M_{xx}$ principal
+axes and the strain principal axes.
+
+\section{Bayesian remap with the law of total cumulants}
+\label{sec:remap}
+
+\subsection{Setup}
+
+The Lagrangian mesh deforms with the flow; periodic projection to a
+fixed Eulerian quadtree mesh is needed for diagnostics, force
+evaluation (gravity), and coarsening. Standard remaps (mass-weighted
+linear interpolation) lose information about sub-cell velocity
+spread; the Bayesian remap captures this via the law of total
+cumulants and converts what would be numerical dissipation into
+physical phase-space spreading.
+
+\subsection{Geometric overlap via r3d}
+
+For each Lagrangian cell $T_i$ (deformed) and Eulerian cell $C_j$,
+compute the polygonal overlap $T_i\cap C_j$ exactly. Using the
+r3d~\cite{r3d-paper} polynomial-moment kernel, integrate polynomial
+moments of the field reconstructions $\bx(\bq), \bu(\bq), L(\bq),
+s(\bq), Q(\bq)$ over the overlap region. For curved-element
+reconstructions (cubic or higher), use the dimension-lifting
+approach: lift each curved-edge constraint to a coordinate hyperplane
+in extended space (typically 5D for triangle-quad overlap with cubic
+edges), where the overlap region is a polytope and r3d gives exact
+moments.
+
+\subsection{Law of total covariance}
+
+For new Eulerian cell $C_j$ receiving mass fractions $w_{ij}$ from
+source Lagrangian cells $T_i$:
+\begin{align}
+  m_j^{\rm new} &= \sum_i m_{ij},\\
+  \bu_j^{\rm new} &= \sum_i w_{ij}\bu_i,\\
+  M_j^{\rm new} &= \underbrace{\sum_i w_{ij} M_i}_{\text{averaged}}
+  + \underbrace{\sum_i w_{ij}\,(\Delta\phi_i)(\Delta\phi_i)^\top}_{\text{coarse-graining contribution}},
+  \label{eq:LTC}
+\end{align}
+where $\phi=(\bx,\bu)$ is the phase-space mean and $\Delta\phi_i =
+\phi_i - \phi_j^{\rm new}$. The block structure of the coarse-graining
+contribution is:
+\begin{itemize}
+\item $\Delta\bx\,\Delta\bx^\top$ contribution to $M_{xx}^{\rm new}$:
+geometric, automatically absorbed by the larger extent of the new
+Eulerian cell.
+\item $\Delta\bx\,\Delta\bu^\top$ contribution to $M_{xv}^{\rm new}$:
+informative, captures the cross-correlation between source-cell mean
+positions and velocities.
+\item $\Delta\bu\,\Delta\bu^\top$ contribution to $M_{vv}^{\rm new}$:
+informative, captures velocity-spread variance from coarse-graining.
+\end{itemize}
+The two informative contributions are precisely what standard remaps
+lose to numerical dissipation; the Bayesian remap converts them into
+physical phase-space spreading.
+
+\subsection{Higher cumulants}
+
+The law of total cumulants extends to higher moments. For the heat
+flux $Q$ at third moment:
+\begin{align}
+  Q_j^{\rm new} = \sum_i w_{ij} Q_i &+ \sum_i w_{ij}(\Delta\bu_i)\otimes M_{vv,i}+\text{symms.}\notag\\
+  &+ \sum_i w_{ij}(\Delta\bu_i)^{\otimes 3},
+\end{align}
+appropriately symmetrized. Higher cumulants follow the same pattern.
+
+\subsection{Liouville behavior}
+
+\paragraph{Theorem (Liouville monotonicity).} Under the Bayesian
+remap, the per-parcel phase-space volume $\det L = \sqrt{\det M}$
+is monotonically non-decreasing, with equality if and only if the
+remap is trivial (one-to-one).
+
+\paragraph{Sketch.} The Minkowski determinant inequality gives
+$\det(\sum w_i M_i)^{1/(2d)}\geq\sum w_i (\det M_i)^{1/(2d)}$, with
+equality iff all $M_i$ equal. The coarse-graining contribution
+$\sum w_i(\Delta\phi_i)(\Delta\phi_i)^\top$ is positive semidefinite,
+adding to $\det M_j^{\rm new}$. Hence $\det M_j^{\rm new}\geq\sum w_i\det M_i$,
+with equality iff all source $M_i$ equal and all $\Delta\phi_i = 0$.
+
+\paragraph{Physical interpretation.} The phase-space volume increase
+through the remap is the entropy production from coarse-graining ---
+exactly the H-theorem statement. The Bayesian remap is the
+\emph{minimum-entropy-producing} remap consistent with mass,
+momentum, and energy conservation. Standard remaps lose the same
+entropy into numerical dissipation; the Bayesian remap converts it
+to physical phase-space spreading, capturable in the moment
+hierarchy.
+
+\section{Passive scalar advection: exact at the discrete level}
+\label{sec:tracer}
+
+A passive scalar $T(x,t)$ satisfying $\partial_t T + \bu\cdot\nabla T
+= 0$ is, in the variational framework, identified with a function of
+the parcel label $\bmlab$. In the Lagrangian frame the evolution is
+trivial: $T(\bmlab,t) = T_0(\bmlab)$ for all $t$, since the parcel label
+itself is conserved by definition.
+
+\paragraph{Discrete consequence.} In the deterministic Lagrangian
+phase of the scheme, passive-scalar advection is \emph{exact}: no
+flux computation, no slope limiter, no upwinding scheme is needed.
+The tracer value at each parcel is fixed forever. The Bayesian remap
+onto the Eulerian mesh redistributes tracer values according to the
+same r3d-based geometric overlap that handles mass and momentum,
+with the law of total cumulants applied to the tracer field. In
+pure-Lagrangian regions (no remap), tracer diffusion is exactly
+zero. Through the remap, tracer diffusion is bounded by the
+polynomial reconstruction order; with cubic reconstruction,
+fourth-order accuracy of tracer transport.
+
+\paragraph{Comparison to Eulerian schemes.} Standard Eulerian schemes
+suffer notorious numerical diffusion of passive tracers, particularly
+through shocks and across vortex sheets. Cosmological simulations
+tracking metallicity, ISM simulations tracking chemical species,
+and shocked-flow simulations with multi-component tracers all suffer
+from this. The unified scheme's structural identification of tracers
+with parcel labels eliminates the deterministic source of this
+diffusion, leaving only the bounded remap contribution.
+
+\paragraph{Multi-tracer extension.} An arbitrary number of passive
+scalars can be carried at no additional cost in the deterministic
+phase: each is a function of $\bmlab$ evaluated at the cell's parcel
+locations. The Bayesian remap applies independently to each tracer.
+
+\section{The discrete scheme}
+\label{sec:discrete}
+
+\subsection{Mesh structure}
+
+The 2D scheme uses two coupled meshes:
+
+\paragraph{Lagrangian mesh.} A simplicial triangulation of the
+$\bmlab$-domain $\Omega_{\bmlab}\subset\mathbb{R}^2$. Triangles have fixed
+Lagrangian topology (vertex labels, edge connectivity) but vertex
+\emph{positions} in physical $\bx$-space evolve with the flow. Each
+triangle carries a frame-field reconstruction.
+
+\paragraph{Eulerian mesh.} A quadtree refinement of a base 2D quad
+mesh covering $\Omega_{\bx}$. Cells refine adaptively based on local
+action error.
+
+The two meshes are connected by r3d-based remap operators.
+
+\subsection{Primary variables per Lagrangian triangle}
+
+Each triangle carries polynomial-reconstruction fields of order $p$
+(cubic, $p=3$, is the natural choice):
+\begin{itemize}
+\item Position $\bx(\bq,t)$: vector polynomial, 2 components.
+\item Velocity $\bu(\bq,t)$: vector polynomial, 2 components.
+\item Cholesky factor $L(\bq,t)$: $4\times 4$ block-lower-tri matrix
+polynomial, 10 independent components, in principal-axis form
+$(\alpha_a, \beta_a, \theta_R)$ with $a=1,2$.
+\item Specific entropy $s(\bq,t)$: scalar polynomial.
+\item Heat flux $Q(\bq,t)$: 4 independent components in 2D.
+\item Deviatoric stress $\pi_{ij}$: 2 independent components in 2D.
+\item Passive scalars $T_k(\bq,t)$: as many as needed; each is a
+scalar polynomial.
+\end{itemize}
+Total field count per triangle interior point: $\sim 21$ scalar
+fields plus passive tracers. For $p=3$ on a triangle (10 polynomial
+coefficients per scalar), $\sim 210$ numbers per triangle base state.
+
+\subsection{Polynomial reconstruction with positivity}
+
+Two distinct positivity conditions:
+\begin{enumerate}
+\item $\det F > 0$ everywhere on the triangle (no shell crossing).
+\item Cholesky positivity: $L_{ii}(\bq) > 0$ everywhere on the
+triangle for each diagonal entry.
+\end{enumerate}
+
+For (i), use Bernstein-basis positivity certificates: rewrite
+$\det F(\bq)$ in Bernstein coefficients over the triangle; positivity
+of all Bernstein coefficients is sufficient for $\det F > 0$
+throughout. When violated, reduce reconstruction order locally to the
+highest at which positivity holds, treating the residual as the
+shell-crossing onset signal.
+
+For (ii), parameterize $L_{ii}(\bq) = \exp(\lambda_i(\bq))$ with
+$\lambda_i$ a polynomial; positivity is automatic. Off-diagonal
+entries are reconstructed without sign constraint.
+
+\subsection{Discrete action}
+
+The discrete action is
+\begin{equation}
+  S_d = \sum_n\sum_i \Delta S_{i,n},\quad
+  \Delta S_{i,n} = \int_{t_n}^{t_{n+1}}\dd t\int_{T_i}\dd^2 q\,\rho_0(\bq)[T-U],
+\end{equation}
+with kinetic and potential energy from~\eqref{eq:Ldet}. Spatial
+integration is via Gauss quadrature on the triangle (sufficient for
+polynomial integrands of order $2p$); time integration uses the
+discrete Hamilton--Pontryagin form with parallel transport on the
+charged sectors.
+
+\subsection{Discrete Euler-Lagrange equations}
+
+Varying $S_d$ with respect to all polynomial coefficients at time
+step $n+1$, with step-$n$ values fixed, gives an implicit linear
+system whose structure matches the triangle adjacency graph. The
+system is solved via Newton iteration with quadratic convergence,
+typically 2--3 iterations per step.
+
+\paragraph{Discrete parallel transport.} For charge-$q$ fields,
+the discrete covariant derivative across a time step is
+\begin{equation}
+  \mathcal{D}_t^{(q)}\phi|_{n+1/2} \approx
+  \frac{\phi_{n+1} - \phi_n}{\Delta t} + q\,\overline{(\partial_x u)}_{n+1/2}\,\overline\phi_{n+1/2},
+\end{equation}
+where the strain rate and field are evaluated at the half-step.
+This implements parallel transport on the principal $GL(d)$ bundle
+between time slices.
+
+\paragraph{Conservation properties.} By construction, the discrete
+EL system conserves discrete mass exactly (mass per triangle fixed),
+discrete momentum exactly (translational invariance of $S_d$),
+discrete angular momentum exactly (rotational invariance of $S_d$),
+and discrete energy to bounded oscillation (no secular drift) via
+the symplectic integrator. Liouville: $\det L$ per parcel is
+conserved by the discrete dynamics by the connection-form structure.
+
+\subsection{Stochastic injection}
+
+Per Lagrangian triangle, per time step:
+\begin{enumerate}
+\item Compute strain rate $S_{ij}$ at triangle centroid;
+diagonalize symmetric part: $S_{\rm sym} = R\Lambda R^\top$ with
+$\Lambda = \mathrm{diag}(\lambda_1,\lambda_2)$.
+\item For each compressive principal axis ($\lambda_a < 0$):
+  \begin{itemize}
+  \item Drift: $\delta(\rho u)_a^{\rm drift} = C_A\rho\lambda_a\Delta t$
+  \item Noise: $\delta(\rho u)_a^{\rm noise} = C_B\rho\sqrt{|\lambda_a|\Delta t}\,\eta_a$
+where $\eta_a\sim\mathrm{VG}(\lambda,\theta)$ with $\lambda$ the
+empirically-fit shape parameter.
+  \end{itemize}
+\item Transform back to lab frame: $\delta(\rho\bu) = R[\delta(\rho u)_1, \delta(\rho u)_2]^\top$.
+\item Apply paired-pressure debit (energy conservation): $\Delta KE = \bu\cdot\delta(\rho\bu) + |\delta(\rho\bu)|^2/(2\rho)$ debited from $M_{vv}$ trace proportionally.
+\item Spatial smoothing: 2D Gaussian kernel of correlation length $\ell_{\rm corr}\approx 2$ cells.
+\end{enumerate}
+
+\paragraph{Self-consistency monitoring.} At each output cadence,
+compute (a) the empirical residual kurtosis from comparison of
+predicted vs.\ observed velocity changes, and (b) the gamma-shape
+parameter from compression burst statistics. Warn if the two
+disagree by more than a factor of $\sim 2$, indicating either
+calibration drift or breakdown of the cascade-derived noise structure.
+
+\subsection{Action-based AMR refinement}
+
+The local discrete action error per Eulerian cell is
+\begin{equation}
+  \Delta S_{\rm cell} = \bigl|S_d^{(p+1)}|_{\rm cell} - S_d^{(p)}|_{\rm cell}\bigr| + \text{(EL residual)}^2,
+  \label{eq:DS-cell}
+\end{equation}
+the difference between the cell's contribution at order $p+1$ vs.\
+order $p$ reconstruction, plus an EL-residual penalty as a
+discretization-error proxy. Refinement triggers when $|\Delta
+S_{\rm cell}|$ exceeds an adaptive threshold; coarsening triggers
+when all four siblings are below a coarsening threshold (with
+hysteresis $\tau_{\rm coarsen}<\tau_{\rm refine}/4$).
+
+\paragraph{Unified detection.} $\Delta S_{\rm cell}$ unifies:
+\begin{itemize}
+\item Shock detection: $\mathcal{L}_{\rm det}$ jumps across shock front.
+\item Shell-crossing detection: $\mathcal{H}_{\rm Ch}$ Hessian
+degenerates, EL residual grows.
+\item Turbulence-cascade detection: stochastic injection variance
+grows with cascade depth.
+\end{itemize}
+The supplementary diagnostics $\gamma_a$ (rank collapse) and $|s|$
+(realizability boundary) remain computed and reported, but
+$\Delta S_{\rm cell}$ is the refinement primary.
+
+\subsection{Algorithm summary (per timestep)}
+
+\begin{enumerate}
+\item Lagrangian dynamics step (implicit, Newton-iterated):
+solve discrete EL for new $\bx, \bu, L, s, Q, \pi$ on Lagrangian
+mesh; verify positivity constraints.
+\item Stochastic injection: principal-axis decomposition, variance-gamma
+noise on compressive axes, spatial smoothing, energy debit.
+\item Diagnostic computation: $\gamma_a$, $|s|$, $\Delta S_{\rm cell}$
+after remap.
+\item Periodic remap to Eulerian mesh (every $k_{\rm remap}$ steps):
+r3d geometric overlap, Bayesian moment projection.
+\item Adaptive refinement: refine/coarsen Eulerian quadtree on
+$\Delta S_{\rm cell}$; refine Lagrangian triangulation on local
+distortion / rank-collapse.
+\item Mesh regeneration check (rare): if Lagrangian mesh distortion
+exceeds threshold, regenerate from Eulerian state via reverse remap.
+\item Self-consistency monitoring: residual-kurtosis vs.\
+burst-shape comparison.
+\item Output / checkpoint (configurable).
+\end{enumerate}
+
+\section{Two-fluid extension}
+\label{sec:two-fluid}
+
+The dfmm two-fluid framework extends naturally to 2D. Each species
+carries its own variable hierarchy with self-relaxation timescales
+$\tau_{AA}, \tau_{BB}$; cross-coupling is implemented through a
+modular operator with application-specific kernels.
+
+\subsection{Cross-coupling operator in 2D}
+
+Momentum exchange:
+\begin{equation}
+  \partial_t(\rho^A\bu^A)|_{AB} = -\frac{\rho^A\rho^B}{\rho^A + \rho^B}\nu^p_{AB}(\bu^A - \bu^B),
+\end{equation}
+with the slip vector $\bu^A - \bu^B$ now 2-dimensional.
+
+Thermal equilibration:
+\begin{equation}
+  \partial_t T^A|_{\rm th} = -\frac{n^B}{n^A+n^B}\nu^T_{AB}(T^A - T^B),
+\end{equation}
+with $\nu^T_{AB} = \frac{2 m^A m^B}{(m^A+m^B)^2}\nu^p_{AB}$.
+
+\subsection{Cross-coupling kernels (preserved from dfmm)}
+
+The four kernels of dfmm's two-fluid framework apply unchanged to 2D:
+Epstein drag (dust in gas), Coulomb collisions (electron-ion plasma),
+hard-sphere neutrals, and self-interacting dark matter. The kernel
+returns the rates $(\nu^p_{AB}, \nu^T_{AB})$ as functions of local
+species state; the cross-coupling operator is identical across
+applications.
+
+\subsection{Two-fluid diagnostics in 2D}
+
+Per-species single-fluid diagnostics $\gamma_a^s$ (per principal
+axis, per species) and $|s^s|$. Two cross-species diagnostics:
+\begin{equation}
+  \Ma_{AB} = \frac{|\bu^A - \bu^B|}{c_s},\qquad
+  \Delta_T = \frac{|T^A - T^B|}{T^*}.
+\end{equation}
+The 2D version of $\gamma_a^s$ adds the new content of \emph{directional}
+shell-crossing: dust can shell-cross along axis 1 while remaining
+regular along axis 2, while gas remains rank-full throughout. This
+is genuinely new physics that 1D dfmm cannot probe.
+
+\section{Validation hierarchy and test problems}
+\label{sec:validation}
+
+\subsection{Validation hierarchy}
+
+Validation is structured in five tiers:
+
+\paragraph{Tier A: 1D regression against dfmm.} Reproduce dfmm
+benchmark results bit-level (deterministic limit) or statistically
+(stochastic limit). Acceptance criterion before any 2D claims.
+
+\paragraph{Tier B: 1D extension.} New 1D tests exercising the
+variational structure and the cold-limit reduction. Includes
+empirical verification of the variance-gamma derivation.
+
+\paragraph{Tier C: 2D consistency.} 2D tests reducing to known limits
+(1D dfmm, plane-symmetric Euler). Verifies dimension lift correctness.
+
+\paragraph{Tier D: 2D novelty.} 2D tests where novel content (anisotropic
+strain, principal-axis stochastic injection, Bayesian remap on
+$4\times 4$ covariance, two-fluid 2D diagnostics, tracer fidelity)
+is the dominant physics.
+
+\paragraph{Tier E: Stress tests.} Extreme parameter regimes where
+the scheme reports its own failure cleanly.
+
+\subsection{Tier A: 1D regression}
+
+\begin{itemize}
+\item \textbf{A.1 Sod shock tube.} Reproduce dfmm Fig.\ 2 across
+three $\tau$ regimes.
+\item \textbf{A.2 Cold sinusoid across six $\tau$ decades.} Reproduce
+dfmm Fig.\ 3; $\gamma$ drops by $\sim 6$ decades at caustics.
+\item \textbf{A.3 Steady shock Mach scan.} Reproduce dfmm Fig.\ 4;
+Rankine-Hugoniot to 3 decimal places at $M_1\in\{1.5,\ldots,10\}$.
+\item \textbf{A.4 KM-LES wave-pool spectra.} Reproduce dfmm Fig.\ 8;
+spectral distance table at line 410 of dfmm paper.
+\item \textbf{A.5 Two-fluid dust-in-gas.} Reproduce dfmm Fig.\ 11;
+per-species $\gamma$ selectivity.
+\item \textbf{A.6 Coulomb plasma equilibration.} Reproduce dfmm Fig.\ 12;
+mass-ratio scaling of thermal vs.\ momentum relaxation.
+\end{itemize}
+
+\subsection{Tier B: 1D extension}
+
+\begin{itemize}
+\item \textbf{B.1 Variational integrator energy drift.} Long-time
+($10^5$ steps) energy budget; variational scheme drift $<10^{-8}$
+relative, standard scheme accumulates $>10^{-4}$.
+\item \textbf{B.2 Cold-limit reduction to phase-space sheet.} 1D
+Zel'dovich-like initial conditions; pre-crossing matches Zel'dovich
+analytic, Hessian degenerates at predicted location at predicted
+time, post-crossing regularization via stochastic injection.
+\textbf{Central unification test.}
+\item \textbf{B.3 Action-based AMR vs.\ gradient-based AMR.} Off-center
+blast wave; action AMR uses 20--50\% fewer cells at fixed $L^2$
+accuracy.
+\item \textbf{B.4 Compression-burst statistics.} Wave-pool with
+instrumented compression detector; burst durations gamma-distributed
+with shape $k$, residual kurtosis matches $\lambda = k$ prediction.
+\textbf{Verifies stochastic-derivation cascade structure.}
+\item \textbf{B.5 Passive scalar advection through shock.} Zero
+deterministic numerical diffusion; bounded remap diffusion. Compare
+to PPM, WENO. Tracer fidelity 1--3 orders of magnitude better.
+\textbf{Verifies tracer-exactness claim.}
+\item \textbf{B.6 Tracer fidelity in 1D wave-pool turbulence.}
+Multi-tracer fidelity vs.\ fine DNS; sharp interface preservation.
+\end{itemize}
+
+\subsection{Tier C: 2D consistency}
+
+\begin{itemize}
+\item \textbf{C.1 1D-symmetric 2D Sod.} Solution exactly $y$-independent
+to numerical precision.
+\item \textbf{C.2 1D-symmetric cold sinusoid.} Per-axis $\gamma$
+diagnostic correctly distinguishes 1D shell-crossing within 2D flow:
+$\gamma_1\to 10^{-5}$, $\gamma_2\to O(1)$.
+\item \textbf{C.3 Plane wave at arbitrary direction.} Rotational
+invariance to plotting precision.
+\end{itemize}
+
+\subsection{Tier D: 2D novelty}
+
+\begin{itemize}
+\item \textbf{D.1 2D Kelvin-Helmholtz.} Per-principal-axis noise
+prediction: incompressible shear has noise on \emph{one} (compressive)
+axis, not both. KH linear growth rate matches analytic.
+\textbf{Falsifiable noise-structure prediction.}
+\item \textbf{D.2 2D cylindrical blast.} Cylindrical symmetry
+preserved to grid scale; reference comparison to FLASH/Athena.
+\item \textbf{D.3 Oblique shock interaction.} Mach reflection
+geometry, anisotropic post-shock stress structure.
+\item \textbf{D.4 2D Zel'dovich pancake collapse.}
+\textbf{Central novel test.} Pre-pancake matches Zel'dovich analytic;
+$\gamma_1\to 0$ at pancake formation while $\gamma_2\sim 1$;
+stochastic injection regularizes shell-crossing without spurious
+$y$-direction noise; second crossing produces filament with both
+$\gamma\to 0$. Compared to ColDICE 2D and PM N-body references.
+\item \textbf{D.5 2D wave-pool noise calibration.} 2D KM-LES
+calibration with axis-decomposed coefficients
+$C_A^\parallel, C_A^\perp, C_B^\parallel, C_B^\perp$;
+verify $C_B^\perp\approx 0$ in pure-shear regions; verify
+variance-gamma residuals per axis with self-consistency on
+burst-shape parameter.
+\item \textbf{D.6 2D dust-in-gas cold sinusoid.} Per-species
+per-axis diagnostics: directional shell-crossing in dust,
+gas remains rank-full. \textbf{Genuinely new 2D two-fluid physics.}
+\item \textbf{D.7 2D dust-trapping in vortices.} KH instability
+with passive dust; vortex-center accumulation matches reference
+codes (PencilCode, AREPO with dust); per-species diagnostics fire
+selectively. \textbf{Realistic astrophysical test:
+proto-planetary disk dust traps.}
+\item \textbf{D.8 2D plasma equilibration with anisotropy.}
+Spatially uniform plasma, anisotropic initial $T_{ij}$; intra-species
+isotropization via $\tau_P$ vs.\ inter-species via $\nu^T_{AB}$.
+\textbf{Verifies separation of intra- and inter-species relaxation in 2D.}
+\item \textbf{D.9 Tracer fidelity in 2D Kelvin-Helmholtz.} Sharp-interface
+preservation 2--3$\times$ better than standard schemes.
+\item \textbf{D.10 ISM-like 2D problem with metallicity tracking.}
+Multi-tracer 2D shocked turbulence; metallicity PDF and spatial
+structure consistent with Lagrangian methods (SPH, AREPO);
+significantly better than Eulerian methods.
+\textbf{Methods-paper community-impact test.}
+\end{itemize}
+
+\subsection{Tier E: Stress tests}
+
+\begin{itemize}
+\item \textbf{E.1 High-Mach 2D shocks.} $|s|$ approaches realizability
+bound; scheme reports failure cleanly.
+\item \textbf{E.2 Severe shell-crossing geometries.} Multiple
+intersecting caustics; Hessian degeneracy at all caustic locations.
+\item \textbf{E.3 Very low Knudsen.} Stiff timescales handled by
+implicit Newton; reduces to Navier-Stokes.
+\item \textbf{E.4 Cosmological initial conditions.} CDM-style 2D
+collapse with self-gravity; comparison to ColDICE and PM N-body.
+\end{itemize}
+
+\subsection{Acceptance criteria}
+
+The methods paper has its central demonstration if:
+\begin{enumerate}[label=(\arabic*)]
+\item All Tier A tests pass (regression complete).
+\item B.2 passes (variational unification works).
+\item B.4 passes (variance-gamma derivation verified).
+\item B.5 passes (tracer-exactness claim verified).
+\item All Tier C tests pass (dimension lift correct).
+\item D.1 passes (per-principal-axis noise verified).
+\item D.4 passes (central novel 2D test).
+\item D.7 passes (realistic two-fluid 2D test).
+\item D.10 passes (community-impact tracer test).
+\item Tier E tests pass in graceful-degradation mode.
+\end{enumerate}
+
+\section{Conclusions and outlook}
+\label{sec:conclusions}
+
+We have developed a variational unification of dfmm's
+moderate-Knudsen moment scheme with the phase-space-sheet picture of
+collisionless dynamics, in two spatial dimensions. The deterministic
+action has connection-form structure on the principal $GL(d)$ bundle
+over Lagrangian space, with the phase-space Cholesky factor as the
+primary variable; the cold-limit reduction to mass-coordinate dust is
+exact, and the diagnostic $\gamma\to 0$ acquires a sharp variational
+interpretation as Hessian degeneracy. The stochastic dressing arises
+from a generalized Kramers-Moyal MSRJD action with variance-gamma
+noise vertices, derived from gamma-distributed compression burst
+statistics; this provides a runtime self-consistency check between
+deterministic and stochastic sectors. Bayesian remap with the law of
+total cumulants, computed exactly via r3d on curved elements, converts
+coarse-graining entropy production into physical phase-space spreading
+rather than numerical dissipation. Adaptive mesh refinement is driven
+by local discrete action error, unifying shock, shell-crossing, and
+turbulence-cascade detection in one criterion. Passive scalar
+advection is exact at the discrete level by structural identification
+with parcel labels.
+
+\subsection{What this framework provides}
+
+\begin{enumerate}
+\item Variational structure throughout, with all conservation
+properties (mass, momentum, angular momentum, Liouville volume)
+emerging from Noether symmetries of a single action.
+\item Reduction to dfmm in 1D mode (with the variational structure
+made explicit); reduction to phase-space-sheet hydrodynamics in the
+cold limit.
+\item Falsifiable predictions: per-principal-axis noise structure
+in 2D, residual-kurtosis vs.\ burst-shape consistency, exact tracer
+advection in pure-Lagrangian regions.
+\item Two-fluid extension via dfmm's modular cross-coupling kernel
+framework, with new directional-shell-crossing diagnostics in 2D.
+\item Implementation roadmap with tractable polynomial-reconstruction
+geometry via r3d, implicit Newton iteration with quadratic
+convergence, and self-monitoring diagnostics.
+\end{enumerate}
+
+\subsection{What this framework does not yet provide}
+
+\begin{enumerate}
+\item The Berry-connection $\omega_{\rm rot}$ in the 2D matrix lift
+is sketched but not explicitly derived. The 1D reduction is verified;
+the full 2D form requires further work.
+\item The 3D extension via $SO(3)$ rotation is structurally clear but
+not specified in detail.
+\item The cosmological self-gravity coupling is sketched (Poisson on
+the Eulerian quadtree, interpolation to Lagrangian) but not
+detailed; production cosmology applications need careful treatment of
+boundary conditions, force softening, and time-step control.
+\item The boundary conditions for non-periodic problems (reflecting
+walls, inflow/outflow) are standard but not specified here.
+\end{enumerate}
+
+\subsection{Implementation milestones}
+
+The framework is designed for staged implementation:
+\begin{description}
+\item[Milestone 1.] 1D Rust implementation of the unified scheme
+matching dfmm interface. Tier A regression complete. Estimated 2--3
+months from this design document.
+\item[Milestone 2.] 1D Tier B validation including variance-gamma
+verification and tracer-exactness. Estimated 1--2 months after
+Milestone 1.
+\item[Milestone 3.] 2D Rust implementation. Tier C consistency tests
+complete. Estimated 3--4 months after Milestone 2.
+\item[Milestone 4.] 2D Tier D novelty tests. Methods-paper-ready
+demonstrations. Estimated 3--4 months after Milestone 3.
+\item[Milestone 5.] 2D Tier E stress tests, two-fluid extensions,
+tracer applications. Estimated 2--3 months after Milestone 4.
+\end{description}
+Total: 12--18 months from this design document to methods-paper
+submission.
+
+\subsection{Outlook}
+
+Three natural extensions:
+
+\paragraph{3D extension.} Replace $SO(2)$ with $SO(3)$ in the
+principal-axis decomposition; the structural skeleton is identical.
+The $6\times 6$ phase-space Cholesky factor has 21 independent
+components; field count per Lagrangian point reaches $\sim 50$
+including all moments. Octree Eulerian mesh, tetrahedral Lagrangian
+mesh, r3d for 3D polyhedral overlap. Mostly mechanical from the 2D
+structure; the genuinely new content is the $SO(3)$ Berry connection.
+
+\paragraph{Cosmological self-gravity.} Multigrid Poisson on the
+Eulerian quadtree, interpolation to Lagrangian vertices. The
+Zel'dovich pancake test (D.4) requires this; production cosmology
+needs careful handling of the cosmological-volume periodic boundary
+conditions and the proper-time vs.\ scale-factor evolution.
+
+\paragraph{Plasma physics with magnetic field.} The framework
+extends to magnetohydrodynamics by adding the magnetic field as a
+charge-1 vector under the strain group, with its own connection-form
+evolution and Israel--Stewart-style relaxation toward force-free or
+ideal-MHD limits. The closure-quality diagnostics generalize: rank
+collapse in magnetic field corresponds to current sheet formation, a
+known difficulty for moment-truncated MHD.
+
+\paragraph{Hybrid kinetic-fluid coupling.} The framework's defining
+feature is honest self-reporting of closure validity. Cells where
+the diagnostics fire can be flagged for transition to a kinetic
+solver (PIC, Vlasov, or multi-stream phase-space sheet), with the
+moment-tower handing off to the kinetic representation seamlessly.
+The cross-coupling structure for two-fluid systems provides the
+template for fluid-kinetic coupling.
+
+\section*{Acknowledgments}
+
+This framework builds on dfmm~\cite{dfmm-paper}, the r3d
+polynomial-moment kernel~\cite{r3d-paper}, and the Abel-Hahn-Kaehler
+phase-space sheet formulation~\cite{ahk-paper}. The variational
+structure was developed in iterative working notes (v1, v2, v3) with
+checkpoint feedback at each stage; the v3 empirical findings on
+gamma-distributed burst durations and the principal-axis matrix lift
+are due to the working-note iteration on dfmm's existing wave-pool
+calibration data.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{99}
+\bibitem{dfmm-paper}
+T.~Abel, ``A Lagrangian-coordinate-aware moment scheme with built-in
+closure diagnostics for moderate-Knudsen flows,'' \emph{In preparation};
+code repository \texttt{https://github.com/yipihey/dfmm}.
+
+\bibitem{r3d-paper}
+D.~M.~Powell and T.~Abel, ``An exact general remeshing scheme applied
+to physically conservative voxelization,''
+\emph{J.~Comput.~Phys.\ }\textbf{297} (2015) 340--356;
+code repository \texttt{https://github.com/devonmpowell/r3d}.
+
+\bibitem{ahk-paper}
+T.~Abel, O.~Hahn, R.~Kaehler, ``Tracing the dark matter sheet in
+phase space,'' \emph{Mon.~Not.~R.~Astron.~Soc.}\ \textbf{427} (2012) 61--76.
+
+\bibitem{action-note-v3}
+Working note v3 (this design document), April 2026.
+\end{thebibliography}
+
+\end{document}

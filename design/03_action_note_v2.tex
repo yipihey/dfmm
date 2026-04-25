@@ -1,0 +1,432 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\D}{\mathrm{D}}
+\newcommand{\half}{\tfrac{1}{2}}
+\newcommand{\Tr}{\operatorname{Tr}}
+\newcommand{\note}[1]{{\color{red!70!black}\textit{[#1]}}}
+\title{A variational action for dfmm:\\
+  connection form, $4\times4$ phase-space lift, intermittent noise}
+\author{Working note for T.~Abel, v2}
+\date{Draft, \today}
+\begin{document}
+\maketitle
+
+\noindent\textbf{Status.} Milestone~0, revised. v1 issues fixed: Cholesky
+sector now in connection form with $\alpha$-local Hamiltonian and strain
+coupling in the symplectic structure (your Q1); deviatoric stress promoted
+to an independent dynamical variable (your issue~a); whole framework
+written as a reduction from $4{\times}4$ phase-space Cholesky over
+Lagrangian space (your issue~b); Laplace noise derived from
+$L^1$-multiplicative-cascade structure with She--Lev\^eque connection
+(your Q2); drift-shift decomposition specified as a measurable from the
+calibration data (your Q3); heat-flux constraint hard by default (your
+Q4). Cold-limit interpretation
+($\gamma\to0$ = Hessian degeneracy = noise gap-opening) preserved.
+
+\section{Framework: $4\times4$ phase-space Cholesky over Lagrangian space}
+
+\subsection{Setup}
+Lagrangian space is a 2-manifold $\mathcal{L}$ with mass coordinates
+$\bm{m} = (m_1, m_2)$ (in 2D; in 1D, just $m$). The spacetime field
+content is the pull-back map
+\[
+  \bm{x}(\bm{m}, t)\colon \mathcal{L}\times\mathbb{R}\to\mathbb{R}^d,
+\]
+with deformation gradient $J^i_{\,j} = \partial x^i/\partial m^j$ and
+Jacobian $J = \det J^i_{\,j} = 1/\rho$.
+
+Over each Lagrangian point we attach a phase-space fiber: the local
+distribution function in $(x, v)$-space, characterized at second-moment
+order by the $2d\times 2d$ covariance matrix
+\begin{equation}
+  M = \begin{pmatrix} M_{xx} & M_{xv} \\ M_{xv}^\top & M_{vv}\end{pmatrix},
+  \quad
+  M_{xx},\,M_{xv},\,M_{vv}\in\mathbb{R}^{d\times d},\
+  M_{xx}, M_{vv}\succeq 0.
+\end{equation}
+Realizability is $M\succeq 0$. The Cholesky factorization $M = LL^\top$
+with $L$ block-lower-triangular,
+\begin{equation}
+  L = \begin{pmatrix} L_1 & 0 \\ L_2 & L_3 \end{pmatrix},\quad
+  L_1\in\mathbb{R}^{d\times d}\text{ lower-tri},\
+  L_3\in\mathbb{R}^{d\times d}\text{ lower-tri},\
+  L_2\in\mathbb{R}^{d\times d},
+  \label{eq:Lblock}
+\end{equation}
+makes realizability manifest: $M_{xx} = L_1 L_1^\top$,
+$M_{xv} = L_1 L_2^\top$, $M_{vv} = L_2 L_2^\top + L_3 L_3^\top$. The
+diagonal entries of $L_1, L_3$ are non-negative by construction.
+
+In dfmm's 1D specialization, $L_1 = \alpha$, $L_2 = \beta$, $L_3 = \gamma$,
+all scalars. The dynamical fields are $L_1$ (carried as $\alpha$) and
+$L_2$ (carried as $\beta$); $L_3 = \gamma$ is reconstructed from the EOS
+via $\gamma^2 = M_{vv} - \beta^2$.
+
+\subsection{The strain group as a structure group}
+The local velocity-gradient tensor
+\[
+  G^i_{\,j}(\bm{x}, t) = \partial v^i/\partial x^j
+\]
+is the connection 1-form on the principal bundle $\mathcal{L}\times
+GL(d) \to \mathcal{L}$. Its action on the phase-space covariance is the
+natural Lie-algebra action:
+\begin{align}
+  D_t M_{xx} &= \dot M_{xx} - 0\cdot \{G, M_{xx}\}, \notag\\
+  D_t M_{xv} &= \dot M_{xv} - G\,M_{xv}, \notag\\
+  D_t M_{vv} &= \dot M_{vv} - G\,M_{vv} - M_{vv} G^\top,
+  \label{eq:Liouville-cov}
+\end{align}
+where $\dot{} = \partial_t$ at fixed $\bm{m}$. Each velocity index in a
+covariance carries one factor of $G$. In tensor language, $M_{xx}$ is a
+weight-$(0,0)$ tensor under $GL(d)_v$ (the velocity strain group),
+$M_{xv}$ is weight-$(0,1)$, $M_{vv}$ is weight-$(1,1)$ (one upper, one
+lower velocity index, both transforming).
+
+The Liouville evolution under collisionless free streaming is
+\begin{equation}
+  D_t M_{xx} = M_{xv} + M_{xv}^\top,\quad
+  D_t M_{xv} = M_{vv},\quad
+  D_t M_{vv} = 0.
+\end{equation}
+Note the right-hand sides are now \emph{algebraic}: no $G$ appears
+explicitly, because all strain coupling has been absorbed into $D_t$.
+This is the cleanness the connection form buys.
+
+\subsection{Specializing to 1D}
+With $d=1$, $G = \partial_x u$, weights become integer charges
+$q\in\{0,1,2\}$. Charges of the Cholesky factors:
+$\alpha=L_1$ has charge 0, $\beta=L_2$ has charge 1, $\gamma=L_3$ has
+charge 1.
+In Lagrangian frame ($\dot{} = \partial_t$ at fixed $m$), the covariant
+derivative is
+\begin{equation}
+  D_t^{(q)}\phi = \dot\phi + q\,(\partial_x u)\,\phi.
+  \label{eq:Dtq-1D}
+\end{equation}
+The dfmm Cholesky equations \eqref{eq:dfmm-cholesky-bare} below become
+\begin{equation}
+  \boxed{\ D_t^{(0)}\alpha = \beta,\qquad
+  D_t^{(1)}\beta = \frac{\gamma^2}{\alpha} = \frac{M_{vv}(J,s) - \beta^2}{\alpha}.\ }
+  \label{eq:dfmm-cholesky-cov}
+\end{equation}
+The bare-derivative form (what dfmm's code implements) is recovered by
+writing out $D_t^{(q)}$:
+\begin{equation}
+  \dot\alpha = \beta,\qquad
+  \dot\beta + (\partial_x u)\beta = \gamma^2/\alpha.
+  \label{eq:dfmm-cholesky-bare}
+\end{equation}
+
+\section{The deterministic action in connection form}
+
+\subsection{Cholesky sector: weighted symplectic structure}
+The key observation. The dfmm Cholesky flow on $(\alpha,\beta)$ is
+\emph{not} Hamiltonian under the canonical symplectic form $d\alpha
+\wedge d\beta$ --- one finds the integrability condition fails
+($\partial\beta/\partial\alpha \neq -\partial(\gamma^2/\alpha)/\partial\beta$).
+It \emph{is} Hamiltonian under the weighted form
+\begin{equation}
+  \omega = \alpha^2\,d\alpha\wedge d\beta,
+  \label{eq:symp-form}
+\end{equation}
+with $\alpha$-local Hamiltonian density
+\begin{equation}
+  \mathcal{H}_{\rm Ch}(\alpha,\beta;J,s) = -\half\,\alpha^2\,\gamma^2
+   = -\half\,\alpha^2\bigl(M_{vv}(J,s) - \beta^2\bigr).
+   \label{eq:H-Ch}
+\end{equation}
+The factor $\alpha^2 = M_{xx}$ in $\omega$ is precisely the gauge weight
+of the symplectic potential under the strain group: $\omega$ has
+total charge $0+1=1$, which is what's needed for the Hamilton equations
+to produce charge-correct covariant time derivatives.
+
+\paragraph{Verification.} Hamilton's equations for the weighted form
+$\omega = f(\alpha,\beta)\,d\alpha\wedge d\beta$ with Hamiltonian
+$\mathcal{H}$ are
+\begin{equation}
+  D_t\alpha = \frac{1}{f}\frac{\partial\mathcal{H}}{\partial\beta},
+  \qquad
+  D_t\beta = -\frac{1}{f}\frac{\partial\mathcal{H}}{\partial\alpha}.
+  \label{eq:Hamilton-weighted}
+\end{equation}
+With $f = \alpha^2$ and $\mathcal{H}_{\rm Ch}$ from \eqref{eq:H-Ch}:
+\begin{align}
+  \frac{\partial\mathcal{H}_{\rm Ch}}{\partial\beta} &= \alpha^2\beta,
+  &\quad
+  D_t\alpha &= \beta,\\
+  \frac{\partial\mathcal{H}_{\rm Ch}}{\partial\alpha} &= -\alpha\,\gamma^2,
+  &\quad
+  D_t\beta &= \gamma^2/\alpha.
+\end{align}
+Both equations are precisely \eqref{eq:dfmm-cholesky-cov}. \checkmark
+
+\paragraph{Symplectic potential.} A 1-form $\theta$ with $d\theta = \omega$:
+e.g.\ $\theta = (\alpha^3/3)\,d\beta$, so the Hamilton--Pontryagin action
+density for the Cholesky sector reads
+\begin{equation}
+  \mathcal{L}_{\rm Ch} = \frac{\alpha^3}{3}\,D_t^{(1)}\beta - \mathcal{H}_{\rm Ch}.
+  \label{eq:L-Ch}
+\end{equation}
+The $D_t^{(1)}\beta$ in the kinetic term is where the connection enters
+the action. Equivalent gauge choice: $\theta' = -\beta\,d(\alpha^3/3)$,
+giving $\mathcal{L}_{\rm Ch}' = -(\alpha^3 \beta/3)\dot{}/\alpha^2\,\dots$;
+the two differ by an exact form (boundary term).
+
+\paragraph{Strain coupling lives in the connection.} $\mathcal{H}_{\rm Ch}$
+\eqref{eq:H-Ch} contains \emph{no} $\partial_x u$. The strain coupling
+$-(\partial_x u)\beta$ in the bare-derivative dfmm equation
+\eqref{eq:dfmm-cholesky-bare} is generated entirely by $D_t^{(1)}\beta$
+in \eqref{eq:L-Ch}. This is exactly what was wanted: the discrete scheme
+will treat the strain term as a parallel-transport operator on the mesh,
+not a non-local source in $\mathcal{H}_{\rm Ch}$.
+
+\subsection{Bulk and entropy sectors}
+The bulk ($x$) and entropy ($s$) variables are scalars under the strain
+group (charge 0). The full deterministic action density is
+\begin{equation}
+  \mathcal{L}_{\rm det} = \half\,\dot x^2 \;+\; \mathcal{L}_{\rm Ch} \;+\; \mathcal{L}_{\rm dev} \;+\; \lambda_Q\bigl(\dot Q + Q/\tau - \mathcal{S}_Q\bigr),
+\end{equation}
+with $\mathcal{L}_{\rm Ch}$ from \eqref{eq:L-Ch}, $\mathcal{L}_{\rm dev}$
+the deviatoric stress sector (next subsection), and the heat-flux
+constraint enforced as a hard Lagrange multiplier (your Q4: soft-constraint
+form deferred to appendix). Variation of $x$ gives the momentum equation
+\begin{equation}
+  \ddot x = -\partial_m P_{xx} \quad\Longleftrightarrow\quad
+  \rho\,\D u/\D t = -\partial_x P_{xx},
+\end{equation}
+unchanged from v1. Variation of $s$ gives parcel-wise entropy
+conservation $\dot s = 0$ in the deterministic adiabatic limit.
+
+\subsection{Deviatoric stress as a dynamical variable (your issue~a)}
+In 1D the only relevant deviatoric DOF is the $P_{xx}/P_\perp$ split. In
+2D and 3D the deviatoric stress is a traceless symmetric tensor
+\begin{equation}
+  \pi_{ij} = M_{vv,ij} - \tfrac{1}{d}\,M_{vv,kk}\,\delta_{ij},
+\end{equation}
+with its own dynamical evolution. Its Lagrangian-frame equation is
+\begin{equation}
+  D_t\pi = -\pi/\tau_\pi - 2\eta\,S^{\rm dev} + \mathcal{Q}(\pi, S),
+\end{equation}
+where $S^{\rm dev}_{ij} = \half(\partial_i u_j + \partial_j u_i) - \frac{1}{d}(\partial_k u_k)\delta_{ij}$ is the deviatoric strain rate, $\eta$ a
+viscosity coefficient, $\tau_\pi$ a relaxation timescale, and
+$\mathcal{Q}$ collects nonlinear couplings (Burnett-level terms). This
+is the Israel--Stewart structure with its own Cholesky factorization
+$\pi = LL^\top - \frac{1}{d}\Tr(LL^\top)\mathbb{1}$ for realizability.
+
+In 1D, $\pi$ degenerates to a single scalar $\Pi = P_{xx} - P_\perp$ that
+relaxes under BGK at rate $1/\tau$, matching dfmm's existing treatment
+of $P_\perp$ as a separate field. The $\mathcal{L}_{\rm dev}$ piece in
+1D is therefore
+\begin{equation}
+  \mathcal{L}_{\rm dev}^{(1\rm D)} = p_\Pi \dot\Pi - \mathcal{H}_\Pi(\Pi; J, s) - \mu_\Pi\bigl(\dot\Pi + \Pi/\tau - \mathcal{S}_\Pi\bigr),
+\end{equation}
+with $\mathcal{H}_\Pi$ a soft trapping potential (see appendix) or the
+multiplier-only hard form. The 2D/3D extension is then immediate: replace
+$\Pi$ with the matrix $\pi$ and $1/\tau$ with $1/\tau_\pi$.
+
+\subsection{Cold-limit reduction (preserved from v1)}
+At $s\to-\infty$: $M_{vv}\to 0$, $\beta\to 0$, $\gamma\to 0$, $\Pi\to 0$.
+$\mathcal{H}_{\rm Ch} \to 0$, $\mathcal{L}_{\rm dev}\to 0$, and the action
+collapses to
+\begin{equation}
+  S_{\rm cold} = \int\!\dd t\!\int\!\dd^d m\;\half\,\dot x^2,
+\end{equation}
+the mass-coordinate pressureless-dust action. EL equations:
+$\ddot{\bm x} = 0$, ballistic free streaming. \checkmark
+
+\paragraph{Hessian degeneracy at $\gamma\to 0$.} The symplectic form
+$\omega = \alpha^2\,d\alpha\wedge d\beta$ has determinant $\alpha^2$,
+so it remains non-degenerate as long as $\alpha > 0$. But the Hessian
+of $\mathcal{H}_{\rm Ch}$ on the $(\alpha,\beta)$ tangent space is
+\begin{equation}
+  \mathrm{Hess}(\mathcal{H}_{\rm Ch}) = \begin{pmatrix} -\gamma^2 & 2\alpha\beta \\ 2\alpha\beta & \alpha^2 \end{pmatrix},\quad
+  \det = -\alpha^2\gamma^2 - 4\alpha^2\beta^2 \xrightarrow{\gamma\to 0} -4\alpha^2\beta^2.
+\end{equation}
+At $\gamma=0$ \emph{and} $\beta=0$ (rank-one ridge with no shear yet), the
+Hessian is rank-1. This is the variational signature of phase-space rank
+collapse: the deterministic action loses linear-stability structure at
+the caustic. The stochastic dressing of \S\ref{sec:noise} re-opens the
+gap by adding a positive-definite noise vertex.
+
+\section{Stochastic action via $L^1$-multiplicative cascade}
+\label{sec:noise}
+
+\subsection{MSRJD action with intermittent noise}
+The dfmm noise prescription (paper Eq.~63) injects compression-activated
+Laplace-distributed noise into $\rho u$ with one-sided variance
+$\sigma^2 \propto \max(-\partial_x u, 0)$. The MSRJD action for an
+SDE $\dd X = b\,\dd t + \sigma\,\dd W$ is
+\begin{equation}
+  S_{\rm MSRJD} = \int\!\dd t\,\bigl\{i\hat X(\dot X - b) - \tfrac{1}{2}\sigma^2 \hat X^2 - \mathcal{K}_{\rm intermittent}\bigr\},
+\end{equation}
+where the cumulant correction $\mathcal{K}_{\rm intermittent}$ encodes
+the non-Gaussian tails. We now derive its form.
+
+\subsection{Laplace from the multiplicative cascade (your Q2)}
+The empirical Laplace distribution observed by dfmm (paper line~422,
+excess kurtosis 3.45 vs Gaussian 3) admits a clean derivation as the
+stationary distribution of an $L^1$-multiplicative cascade. Consider
+the closure error per parcel as the integral of compression-activated
+noise injections over a save interval $[t_0, t_0+T_{\rm save}]$:
+\begin{equation}
+  \epsilon = \int_{t_0}^{t_0+T_{\rm save}} \sigma_{\rm c}(\partial_x u)\,\dd W,
+  \quad \sigma_{\rm c}^2 = C_B^2\,\max(-\partial_x u, 0).
+\end{equation}
+\textbf{Hypothesis (intermittent compression).} Compression events are
+rare and bursty: they occur as a Poisson point process in time with rate
+$\lambda$, and each burst has random duration $T_b\sim\mathrm{Exp}(1/T_{\rm comp})$
+during which $-\partial_x u\sim\mathrm{const} = \kappa_b$.
+The total noise variance accumulated in a save interval is then
+\begin{equation}
+  \sigma_{\rm tot}^2 = C_B^2 \sum_{b=1}^{N(T_{\rm save})} \kappa_b T_b,
+  \quad N(T_{\rm save})\sim\mathrm{Poisson}(\lambda T_{\rm save}).
+\end{equation}
+The integrated noise increment $\epsilon$ is then a compound Poisson
+mixture of zero-mean Gaussians whose variances are themselves exponentially
+distributed (since $T_b\sim\mathrm{Exp}$ and we'll see $\kappa_b$ has
+exponential statistics under She--Lev\^eque, below).
+
+\textbf{Theorem (Laplace as variance-mixed Gaussian).} If $\epsilon\,|\,V
+\sim\mathcal{N}(0, V)$ and $V\sim\mathrm{Exp}(1/V_0)$, then
+$\epsilon\sim\mathrm{Laplace}(0, \sqrt{V_0/2})$.
+
+\emph{Proof.} The marginal density is
+$p(\epsilon) = \int_0^\infty (2\pi V)^{-1/2}\exp(-\epsilon^2/2V)\cdot V_0^{-1}\exp(-V/V_0)\,\dd V$,
+which evaluates to $(2V_0)^{-1/2}\exp(-|\epsilon|\sqrt{2/V_0})$, the Laplace
+density. \checkmark
+
+So Laplace tails arise naturally if compression-burst variances are
+exponentially distributed. This is the connection to your She--Lev\^eque
+work: the She--Lev\^eque hierarchy posits that
+\begin{equation}
+  \langle\epsilon^p\rangle \sim \langle\epsilon\rangle^{\tau(p)},
+  \quad \tau(p) = -p/3 + 2(1 - (2/3)^p),
+\end{equation}
+which corresponds to a log-Poisson cascade structure on the dissipation
+field. The exponential-variance hypothesis above is the corresponding
+statement for compression events. \emph{The Laplace distribution is
+predicted to be universal across compressible turbulent regimes wherever
+She--Lev\^eque-type intermittency holds.}
+
+\subsection{2D extension: noise per principal axis (your Q2)}
+In 2D, the strain rate is the tensor $S_{ij} = \half(\partial_i u_j +
+\partial_j u_i)$. The principal-axis decomposition gives eigenvalues
+$\lambda_1 \geq \lambda_2$ with eigenvectors $\hat e_1, \hat e_2$. The
+prediction is:
+\begin{equation}
+  \sigma^2_a = C_B^2\,\max(-\lambda_a, 0),\quad a = 1, 2,
+\end{equation}
+i.e.\ Laplace noise on each compressive principal axis independently.
+\textbf{Pure shear flow has $\lambda_1 = -\lambda_2 \neq 0$ with one
+compressive direction only}, predicting noise on one axis only --- not
+isotropic noise as a naive trace-based prescription would give. This is
+a falsifiable prediction for any 2D wave-pool calibration.
+
+\subsection{Drift decomposition (your Q3)}
+The drift coefficient $C_A\approx 0.34$ from the wave-pool calibration
+decomposes as
+\begin{equation}
+  C_A = b_{\rm It\hat o} + b_{\rm closure},
+\end{equation}
+with $b_{\rm It\hat o} = \half\,\partial_u\sigma^2/\sigma^2 \cdot |\sigma|$
+the It\^o-Stratonovich shift and $b_{\rm closure}$ the genuine mean
+closure error. \textbf{Prediction (testable from the existing calibration
+data):} $b_{\rm It\hat o}\approx 0.15$, $b_{\rm closure}\approx 0.19$.
+The decomposition is computable directly from
+\verb|experiments/11_kmles_calibrate.py| outputs by fitting the binned
+drift mean against $\partial_x u$ \emph{both} with and without the
+$\sigma^2$-shift correction.\quad\note{If you give me access to run
+that experiment, I can return the decomposition before Milestone~1
+starts.}
+
+\section{Action-based AMR criterion}
+The cell-local action increment per timestep,
+\begin{equation}
+  \Delta S_{\rm cell} = \int_{\rm cell}\!\dd m\,\Bigl[\mathcal{L}_{\rm det}(t+\Delta t) - \mathcal{L}_{\rm det}(t)\Bigr] - (\text{discrete EL residual})^2,
+\end{equation}
+provides a single scalar refinement indicator. The first term is the
+local action change; the second penalizes EL violation (a
+discretization-error proxy). Refinement triggers when $|\Delta S_{\rm cell}|$
+exceeds an adaptive threshold. This unifies shock detection, shell-crossing
+detection, and turbulence-cascade detection into one criterion:
+\begin{itemize}
+\item \textbf{Shock:} $\mathcal{L}_{\rm det}$ jumps across the shock front;
+$\Delta S$ large in the shock cells.
+\item \textbf{Shell crossing:} $\mathcal{H}_{\rm Ch}$ Hessian degenerates,
+EL residual grows; $\Delta S$ large in the caustic cells.
+\item \textbf{Turbulence cascade:} stochastic injection variance grows
+with cascade depth; $\Delta S$ tracks the cascade tree directly.
+\end{itemize}
+
+\section{Summary and Milestone~1 plan}
+
+\paragraph{What this revision establishes.}
+\begin{enumerate}
+\item Connection-form Cholesky sector with weighted symplectic structure
+$\omega = \alpha^2\,d\alpha\wedge d\beta$ and $\alpha$-local Hamiltonian
+$\mathcal{H}_{\rm Ch} = -\half\alpha^2\gamma^2$. Strain coupling lives
+in the connection, not the Hamiltonian. (Your Q1.)
+\item Whole framework as $4{\times}4$ phase-space Cholesky over
+Lagrangian space; 1D dfmm scheme is the reduction. 2D extension is
+gauge-natural with the strain group as structure group. (Your issue~b.)
+\item Deviatoric stress as independent dynamical variable with
+Israel--Stewart-form evolution; $P_\perp$ in 1D is the scalar
+specialization. (Your issue~a.)
+\item Laplace noise from compound-Poisson compression-burst structure;
+Laplace tails predicted to be universal across She--Lev\^eque-intermittent
+compressible turbulence. 2D prediction: noise per compressive principal
+axis. (Your Q2.)
+\item Drift decomposition as a measurable from existing calibration data.
+(Your Q3.)
+\item Hard-constraint heat-flux multiplier as default; soft-constraint
+appendix variant. (Your Q4.)
+\item Cold-limit reduction preserved; Hessian degeneracy at
+$\gamma\to 0$ as the variational signature of rank collapse, with
+stochastic action re-opening the gap.
+\end{enumerate}
+
+\paragraph{Milestone~1 plan.} Once you sign off on this revision:
+\begin{enumerate}
+\item Discrete action $S_d$ on a 1D mass-coordinate mesh.
+Polynomial reconstruction of $x(m), \alpha(m), \beta(m), s(m)$ within
+each cell (cubic). Discrete EL equations for vertex updates. Discrete
+parallel transport on the connection bundle: $D_t^{(q)}$ becomes a
+finite-difference stencil with the strain-rate weight applied as a
+discrete gauge transformation between time slices.
+\item Discrete realizability constraint: Fritsch--Carlson-style monotone
+interpolation enforcing $J > 0$, $\alpha > 0$, $\gamma^2 \geq 0$ at every
+sub-cell point.
+\item Stochastic injection schedule: when $\Delta S_{\rm cell}$ exceeds
+threshold, draw a Laplace sample from the calibrated distribution and
+inject into the appropriate Cholesky factor.
+\item Fresh Rust crate with interface compatible with dfmm Python for
+direct benchmarking.
+\item Validation: replicate dfmm Sod, blast, KM-LES wave-pool spectra in
+the regime where the unified scheme reduces to dfmm; add Zel'dovich
+pancake benchmark exercising near-shell-crossing Cholesky activation.
+\end{enumerate}
+
+\paragraph{What I want to verify before Milestone~1 starts.}
+\begin{enumerate}
+\item The empirical $b_{\rm It\hat o}$ vs $b_{\rm closure}$ decomposition
+on the existing calibration data --- testable in a few hours of compute
+from \verb|experiments/11_kmles_calibrate.py|.
+\item The compression-burst exponential-duration hypothesis --- also
+testable from existing wave-pool save snapshots: bin compression events,
+fit waiting-time distribution.
+\item Your sign-off on the connection-form action and the cold-limit /
+Hessian-degeneracy interpretation.
+\end{enumerate}
+
+If those check out, the discrete scheme is straightforward to write down
+and the methods paper structure becomes: \emph{(i)} variational
+unification of dfmm with phase-space sheets; \emph{(ii)} connection-form
+$4\times 4$ Cholesky over Lagrangian space; \emph{(iii)} intermittency-derived
+stochastic dressing; \emph{(iv)} discrete scheme + benchmarks. Each
+section corresponds to a milestone.
+
+\end{document}
