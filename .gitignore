@@ -34,6 +34,13 @@ LocalPreferences.toml
 *.vtp
 *.pvd
 
+# Tier-A regression goldens are tracked when ≤ 5 MiB (see
+# reference/golden/SCHEMA.md "Size policy"). The matching .h5.regen
+# stubs are tracked unconditionally and tell CI how to rebuild a
+# golden whose .h5 was suppressed by the size budget.
+!reference/golden/*.h5
+!reference/golden/*.h5.regen
+
 # Generated paper artifacts (top-level; py-1d has its own copy)
 paper/*.aux
 paper/*.log
