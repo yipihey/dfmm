@@ -41,6 +41,9 @@ using Test
             include("test_phase3_energy_drift.jl")
         end
     end
+    @testset verbose = true "Phase 4: energy drift" begin
+        include("test_phase4_energy_drift.jl")
+    end
     @testset "eos" begin
         include("test_eos.jl")
     end
