@@ -246,10 +246,8 @@ function det_el_residual(y_np1::AbstractVector, y_n::AbstractVector,
 
         Δx̄ = x̄_right - x̄_left
         J̄[j] = Δx̄ / Δm[j]
-        # EOS midpoint M_vv at frozen entropy.
-        # Use the AD-friendly variant (Track-C's `Mvv(J, s)` declares
-        # `::Float64` and would strip ForwardDiff `Dual` tags).
-        M̄vv[j] = _mvv_ad(J̄[j], s[j])
+        # EOS midpoint M_vv at frozen entropy (Track-C `Mvv(J, s)`).
+        M̄vv[j] = Mvv(J̄[j], s[j])
         # Pressure ρ M_vv = M_vv / J.
         P̄xx[j] = M̄vv[j] / J̄[j]
         # Eulerian strain at midpoint.

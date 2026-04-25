@@ -47,15 +47,16 @@ Velocity-variance closure for an ideal gas:
 * `J <= 0` is unphysical and returns `NaN` (caller's bug).
 """
 function Mvv(J::Real, s::Real; Gamma::Real = GAMMA_LAW_DEFAULT,
-             cv::Real = CV_DEFAULT)::Float64
+             cv::Real = CV_DEFAULT)
     if !(J > 0)
-        return NaN
+        return oftype(float(J + s), NaN)
     end
     # Compose log(M_vv) = (1 - Gamma) * log(J) + s/cv to keep the
-    # cold-limit underflow well-behaved.
+    # cold-limit underflow well-behaved. Return type follows the
+    # input type (so ForwardDiff `Dual` tags pass through cleanly).
     log_Mvv = (1 - Gamma) * log(J) + s / cv
     if log_Mvv < -700  # exp(-700) underflows to 0.0 in Float64
-        return 0.0
+        return zero(log_Mvv)
     end
     return exp(log_Mvv)
 end
@@ -68,8 +69,8 @@ The `max` clamps to zero across the realizability boundary so the
 square root is always real; callers needing a violation marker should
 use `realizability_marker(...)` from `diagnostics.jl`.
 """
-gamma_from_state(Mvv_val::Real, beta::Real)::Float64 =
-    sqrt(max(Float64(Mvv_val) - Float64(beta)^2, 0.0))
+gamma_from_state(Mvv_val::Real, beta::Real) =
+    sqrt(max(Mvv_val - beta^2, zero(Mvv_val - beta^2)))
 
 """
     Mvv_from_pressure(rho, P) -> Float64
@@ -78,13 +79,12 @@ Kinetic-moment shortcut: `M_vv = P_xx / rho` (py-1d convention,
 `schemes/_common.py` and `diagnostics.py` line 43). Returns `Inf`
 when `rho == 0`.
 """
-Mvv_from_pressure(rho::Real, P::Real)::Float64 =
-    rho == 0 ? Inf : Float64(P) / Float64(rho)
+Mvv_from_pressure(rho::Real, P::Real) =
+    rho == 0 ? oftype(float(P / one(rho)), Inf) : P / rho
 
 """
     pressure_from_Mvv(rho, Mvv_val) -> Float64
 
 Inverse: `P_xx = rho * M_vv`.
 """
-pressure_from_Mvv(rho::Real, Mvv_val::Real)::Float64 =
-    Float64(rho) * Float64(Mvv_val)
+pressure_from_Mvv(rho::Real, Mvv_val::Real) = rho * Mvv_val

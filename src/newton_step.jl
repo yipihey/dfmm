@@ -269,7 +269,7 @@ function explicit_euler_guess(y_n::AbstractVector{T}, Δm::Vector{T},
         u_right  = get_u(y_n, j_right)
         Δx = x_right - x_left
         J = Δx / Δm[j]
-        Mvv_j = _mvv_ad(J, s[j])
+        Mvv_j = Mvv(J, s[j])
         P[j] = Mvv_j / J
         divu[j] = (u_right - u_left) / Δx
     end
@@ -291,7 +291,7 @@ function explicit_euler_guess(y_n::AbstractVector{T}, Δm::Vector{T},
         wrap = (i == N) ? L_box : zero(T)
         x_right  = get_x(y_n, i_right) + wrap
         J_n = (x_right - x_left) / Δm[i]
-        Mvv_n = _mvv_ad(J_n, s[i])
+        Mvv_n = Mvv(J_n, s[i])
         γ²_n = max(Mvv_n - β_n_j^2, zero(T))
         y0[4*(i-1) + 3] = α_n_j + dt * β_n_j
         y0[4*(i-1) + 4] = β_n_j + dt * (γ²_n / α_n_j - divu[i] * β_n_j)

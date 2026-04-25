@@ -23,27 +23,6 @@
 using StaticArrays: SVector
 
 """
-    _mvv_ad(J, s; Gamma=5/3, cv=1.0)
-
-AD-friendly variant of the Track-C EOS adiabat
-`M_vv = J^(1-Γ) exp(s/cv)`. Phase-2 ForwardDiff Jacobians on the EL
-residual carry `Dual` numbers through `J`, but Track-C's
-`Mvv(J::Real, s::Real)` declares `::Float64` return type which would
-strip the dual tape. We therefore inline the same expression here
-without forcing a `Float64` conversion. Numerical agreement with
-`Mvv(J, s)` is bit-identical for `Float64` inputs.
-
-Cold-limit underflow guard mirrors `eos.jl`: when
-`(1-Γ) log(J) + s/cv < -700` the result is zero (exp underflow).
-"""
-@inline function _mvv_ad(J, s;
-                         Gamma::Real = 5.0/3.0,
-                         cv::Real = 1.0)
-    log_Mvv = (1 - Gamma) * log(J) + s / cv
-    return log_Mvv < -700 ? zero(log_Mvv) : exp(log_Mvv)
-end
-
-"""
     midpoint_strain(u_n, u_np1, x_n, x_np1)
 
 Cell-centered midpoint strain rate `(∂_x u)_j^{n+1/2}` for one segment,
@@ -154,7 +133,7 @@ function discrete_action_sum(mesh_state_n::Vector{DetField{T}},
         J_mid = midpoint_J(x_left_n, x_right_n, x_left_np1, x_right_np1, T(Δm_vec[j]))
         # Use Track-C EOS at midpoint J, segment-frozen entropy.
         s_j = mesh_state_n[j].s   # frozen
-        Mvv_mid = _mvv_ad(J_mid, s_j)
+        Mvv_mid = Mvv(J_mid, s_j)
 
         ΔS_Ch = segment_cholesky_action(mesh_state_n[j].α, mesh_state_n[j].β,
                                         mesh_state_np1[j].α, mesh_state_np1[j].β,
