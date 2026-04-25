@@ -1,7 +1,16 @@
 using dfmm
 using Test
 
-@testset "dfmm" begin
+@testset verbose = true "dfmm" begin
+    @testset verbose = true "Phase 1: zero-strain" begin
+        include("test_phase1_zero_strain.jl")
+    end
+    @testset verbose = true "Phase 1: uniform-strain" begin
+        include("test_phase1_uniform_strain.jl")
+    end
+    @testset verbose = true "Phase 1: symplectic" begin
+        include("test_phase1_symplectic.jl")
+    end
     @testset "eos" begin
         include("test_eos.jl")
     end
