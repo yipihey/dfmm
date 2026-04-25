@@ -48,4 +48,7 @@ using Test
     @testset "setups" begin
         include("test_setups.jl")
     end
+    @testset "regression scaffold" begin
+        include("test_regression_scaffold.jl")
+    end
 end

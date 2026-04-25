@@ -93,4 +93,10 @@ include("setups.jl")
 export setup_sod, setup_cold_sinusoid, setup_steady_shock,
        setup_kmles_wavepool, setup_dust_in_gas, setup_eion
 
+# Tier-A regression-scaffold: HDF5 golden loader. The full
+# integrator-vs-golden comparison enters at Phase 5; this module
+# lands the loader plumbing in advance.
+include("regression.jl")
+export load_tier_a_golden
+
 end # module
