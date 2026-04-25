@@ -17,4 +17,9 @@ using Test
     @testset "plotting" begin
         include("test_plotting.jl")
     end
+    @testset "Track D — Stochastic dressing primitives" begin
+        include("test_vg_sampler.jl")
+        include("test_burst_stats.jl")
+        include("test_self_consistency.jl")
+    end
 end
