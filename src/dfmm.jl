@@ -1,6 +1,6 @@
 module dfmm
 
-# 2D Julia implementation of the unified dfmm framework.
+# 1D / 2D Julia implementation of the unified dfmm framework.
 #
 # Design corpus:
 #   HANDOFF.md
@@ -9,7 +9,25 @@ module dfmm
 #   specs/05_julia_ecosystem_survey.md
 #
 # Milestone 1 scope: a 1D Julia implementation reproducing the
-# regression target at py-1d/. See HANDOFF.md "Milestone 1 plan".
+# regression target at py-1d/. See HANDOFF.md "Milestone 1 plan" and
+# reference/MILESTONE_1_PLAN.md for the phase-by-phase breakdown.
+#
+# Phase 1 (this commit): Cholesky-sector variational integrator with
+# externally-supplied γ. See src/cholesky_sector.jl for the action
+# and discrete EL system.
+
+include("types.jl")
+include("segment.jl")
+include("discrete_transport.jl")
+include("cholesky_sector.jl")
+include("newton_step.jl")
+
+# Phase-1 API.
+export ChField, Mvv, gamma_from_Mvv
+export Segment, Mesh1D, single_segment_mesh
+export D_t_q
+export cholesky_one_step_action, cholesky_el_residual, cholesky_hamiltonian
+export cholesky_step, cholesky_run
 
 # --- Track C/F infrastructure layer (Milestone 1, Agent C) -----------------
 # Pure infrastructure modules: EOS, diagnostics, I/O, plotting, calibration.
