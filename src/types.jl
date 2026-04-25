@@ -96,8 +96,9 @@ end
 
 Per-segment slice of the full deterministic state for the Phase-2
 multi-segment integrator. Bundles the segment's left-vertex `x` and
-`u` (charge 0) with the cell-centered Cholesky-sector `(α, β)` and
-specific entropy `s`. γ is *derived*, not stored —
+`u` (charge 0) with the cell-centered Cholesky-sector `(α, β)`,
+specific entropy `s`, and (Phase 5) the perpendicular pressure
+`Pp = P_⊥`. γ is *derived*, not stored —
 `γ = sqrt(max(M_vv(J, s) − β², 0))`.
 
 Fields:
@@ -108,6 +109,14 @@ Fields:
 - `α::T` — Cholesky 11-component, cell-centered (charge 0).
 - `β::T` — Cholesky 21-component, cell-centered (charge 1).
 - `s::T` — specific entropy in `c_v` units, cell-centered (charge 0).
+- `Pp::T` — perpendicular pressure `P_⊥`, cell-centered. Carries
+  charge 1 in the mass-density sense (`P_⊥/ρ` is conserved along
+  Lagrangian trajectories during the hyperbolic step). Phase 5
+  introduces it; Phase 1/2 callers that don't need it use the
+  legacy 5-arg `DetField(x, u, α, β, s)` constructor below, which
+  defaults `Pp = ρ · M_vv(J, s)` (the isotropic-Maxwellian initial
+  condition that makes the Phase-1/2 tests insensitive to its
+  presence).
 
 Phase 1 compatibility: setting `x = m * J_0`, `u = 0`, and reading
 `(α, β)` reproduces the Phase-1 single-cell state on a uniform mesh.
@@ -118,15 +127,35 @@ struct DetField{T<:Real}
     α::T
     β::T
     s::T
+    Pp::T
 end
+
+"""
+    DetField(x, u, α, β, s, Pp)
+
+Convenience 6-arg constructor with element-type promotion.
+"""
+DetField(x, u, α, β, s, Pp) = DetField{promote_type(typeof(x), typeof(u),
+                                                    typeof(α), typeof(β),
+                                                    typeof(s), typeof(Pp))}(
+    promote(x, u, α, β, s, Pp)...,
+)
 
 """
     DetField(x, u, α, β, s)
 
-Convenience constructor with element-type promotion.
+Phase-1/2 compatibility constructor. Leaves `Pp = NaN` as a
+sentinel: callers that do not pass `Pp` are running pre-Phase-5
+tests where `P_⊥` is not part of the state, and the integrator
+will not read it. For Phase 5+ tests, pass `Pp` explicitly.
+
+Implementation note: `NaN` would propagate into any computation
+that reads `Pp`, so this 5-arg constructor is *only* for legacy
+Phase-1/2 paths. The Phase-5 driver
+`Mesh1D(...; Pps = ...)` requires explicit `Pp` per segment.
 """
 DetField(x, u, α, β, s) = DetField{promote_type(typeof(x), typeof(u),
                                                 typeof(α), typeof(β),
                                                 typeof(s))}(
-    promote(x, u, α, β, s)...,
+    promote(x, u, α, β, s, NaN)...,
 )

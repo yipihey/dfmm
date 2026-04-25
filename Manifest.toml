@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "48431eb9eedde41ee2e0c733dfa2321595ad5980"
+project_hash = "9f8f90a0657128e3a438c1a176023bdd9ca4d32b"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -2758,6 +2758,26 @@ deps = ["Libdl", "LinearAlgebra", "Random", "Serialization", "SuiteSparse_jll"]
 uuid = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 version = "1.12.0"
 
+[[deps.SparseConnectivityTracer]]
+deps = ["ADTypes", "DocStringExtensions", "FillArrays", "LinearAlgebra", "Random", "SparseArrays"]
+git-tree-sha1 = "590b72143436e443888124aaf4026a636049e3f5"
+uuid = "9f842d2f-2579-4b1d-911e-f412cf18a3f5"
+version = "1.2.1"
+
+    [deps.SparseConnectivityTracer.extensions]
+    SparseConnectivityTracerChainRulesCoreExt = "ChainRulesCore"
+    SparseConnectivityTracerLogExpFunctionsExt = "LogExpFunctions"
+    SparseConnectivityTracerNNlibExt = "NNlib"
+    SparseConnectivityTracerNaNMathExt = "NaNMath"
+    SparseConnectivityTracerSpecialFunctionsExt = "SpecialFunctions"
+
+    [deps.SparseConnectivityTracer.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    LogExpFunctions = "2ab3a3ac-af41-5b50-aa03-7779005ae688"
+    NNlib = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
+    NaNMath = "77ba4419-2d1f-58cd-9bb1-8ffee604a2e3"
+    SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
+
 [[deps.SparseMatrixColorings]]
 deps = ["ADTypes", "DocStringExtensions", "LinearAlgebra", "PrecompileTools", "Random", "SparseArrays"]
 git-tree-sha1 = "f63d76c7b7c329cf11badd564fd8ba877b09c3fe"
@@ -3244,7 +3264,7 @@ uuid = "b2a88e68-78e7-5e94-8c20-c02986ec140e"
 version = "0.2.10+0"
 
 [[deps.dfmm]]
-deps = ["CairoMakie", "DifferentiationInterface", "Distributions", "Enzyme", "ForwardDiff", "GeometricIntegrators", "GeometricalPredicates", "HDF5", "JLD2", "LinearSolve", "NPZ", "NonlinearSolve", "OrdinaryDiffEq", "Printf", "QuadGK", "Random", "SpecialFunctions", "StaticArrays", "StatsBase", "WriteVTK"]
+deps = ["CairoMakie", "DifferentiationInterface", "Distributions", "Enzyme", "ForwardDiff", "GeometricIntegrators", "GeometricalPredicates", "HDF5", "JLD2", "LinearSolve", "NPZ", "NonlinearSolve", "OrdinaryDiffEq", "Printf", "QuadGK", "Random", "SparseArrays", "SparseConnectivityTracer", "SparseMatrixColorings", "SpecialFunctions", "StaticArrays", "StatsBase", "WriteVTK"]
 path = "."
 uuid = "3fe8d9ee-2bda-457c-82d7-3afede950fc2"
 version = "0.1.0"

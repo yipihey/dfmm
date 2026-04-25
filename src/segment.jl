@@ -146,6 +146,7 @@ function Mesh1D(
     βs::AbstractVector,
     ss::AbstractVector;
     Δm::AbstractVector,
+    Pps::Union{AbstractVector,Nothing} = nothing,
     L_box::Union{Real,Nothing} = nothing,
     periodic::Bool = true,
 )
@@ -157,6 +158,9 @@ function Mesh1D(
     @assert length(Δm) == N
     @assert N ≥ 2 "Phase-2 multi-segment mesh requires at least 2 segments"
     @assert periodic "Phase 2 implements periodic BC only"
+    if Pps !== nothing
+        @assert length(Pps) == N
+    end
 
     T = promote_type(eltype(positions), eltype(velocities),
                      eltype(αs), eltype(βs), eltype(ss),
@@ -182,8 +186,26 @@ function Mesh1D(
     for j in 1:N
         m_center = cum_m + T(Δm[j]) / 2
         cum_m += T(Δm[j])
+        # Phase 5: Pp tracked as a per-segment field. Default value
+        # (Pps === nothing): isotropic Maxwellian, Pp = ρ · M_vv(J, s).
+        # Phase 1/2 callers leave Pps unset, getting an isotropic IC
+        # that the integrator does not read and the diagnostics
+        # (`total_energy`) treat consistently.
+        if Pps === nothing
+            # Compute Pp from the IC. Use the cell's J = (Δx)/Δm with
+            # Δx_j = x_{j+1} - x_j (cyclic on the periodic box).
+            j_right = j == N ? 1 : j + 1
+            wrap = (j == N) ? L : zero(T)
+            Δx_j = T(positions[j_right]) + wrap - T(positions[j])
+            J_j = Δx_j / T(Δm[j])
+            Mvv_j = Mvv(J_j, T(ss[j]))
+            ρ_j = one(T) / J_j
+            Pp_init = ρ_j * Mvv_j
+        else
+            Pp_init = T(Pps[j])
+        end
         det = DetField{T}(T(positions[j]), T(velocities[j]),
-                          T(αs[j]), T(βs[j]), T(ss[j]))
+                          T(αs[j]), T(βs[j]), T(ss[j]), Pp_init)
         segments[j] = Segment{T,DetField{T}}(m_center, T(Δm[j]), det)
     end
 
@@ -291,6 +313,55 @@ function total_energy(mesh::Mesh1D)
         γ² = max(Mvv_j - det.β^2, zero(T))
         H_Ch = -T(0.5) * det.α^2 * γ²
         E += seg.Δm * H_Ch
+    end
+    return E
+end
+
+"""
+    total_internal_energy(mesh::Mesh1D)
+
+Total internal (thermal) energy on the mesh:
+`E_int = Σ_j Δm_j · (P_xx + 2 P_⊥)/(2 ρ_j)`,
+i.e. the trace of the pressure tensor weighted by `Δm/(2ρ) = Δx/2`.
+This matches py-1d's `extract_diagnostics` "P_iso" definition with
+the standard `e_int = (3/2) P_iso/ρ` for a 3-DOF ideal gas. Phase 5
+diagnostic; conserved (along with kinetic) by the Sod evolution
+modulo BGK heat distribution between Pxx and P_⊥.
+
+Returns 0 when any segment has `Pp` set to its sentinel (NaN),
+which only happens on Phase-1/2 mesh paths that do not initialize
+Pp; the result then *should* not be relied on by the caller.
+"""
+function total_internal_energy(mesh::Mesh1D{T,DetField{T}}) where {T<:Real}
+    E = zero(T)
+    N = n_segments(mesh)
+    @inbounds for j in 1:N
+        seg = mesh.segments[j]
+        ρ = segment_density(mesh, j)
+        J = one(T) / ρ
+        Mvv_j = Mvv(J, seg.state.s)
+        Pxx = ρ * Mvv_j
+        Pp = seg.state.Pp
+        # Trace of pressure tensor / (2 ρ) = (Pxx + 2 Pp)/(2 ρ).
+        E += seg.Δm * (Pxx + 2 * Pp) / (2 * ρ)
+    end
+    return E
+end
+
+"""
+    total_kinetic_energy(mesh::Mesh1D) -> Real
+
+Bulk-flow kinetic energy `Σ_i ½ m̄_i u_i²`. Phase-5 diagnostic
+companion to `total_internal_energy`.
+"""
+function total_kinetic_energy(mesh::Mesh1D)
+    T = eltype(mesh.p_half)
+    E = zero(T)
+    N = n_segments(mesh)
+    @inbounds for i in 1:N
+        m̄ = vertex_mass(mesh, i)
+        u_i = mesh.p_half[i] / m̄
+        E += T(0.5) * m̄ * u_i^2
     end
     return E
 end

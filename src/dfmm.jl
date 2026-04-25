@@ -35,6 +35,8 @@ include("segment.jl")
 include("discrete_transport.jl")
 include("discrete_action.jl")
 include("cholesky_sector.jl")
+# Phase 5: deviatoric / P_⊥ BGK update (used by det_step!).
+include("deviatoric.jl")
 include("newton_step.jl")
 
 # --- Phase 1 API ----------------------------------------------------------
@@ -47,10 +49,15 @@ export cholesky_step, cholesky_run
 # --- Phase 2 API (multi-segment full deterministic) ------------------------
 export DetField
 export n_segments, vertex_mass, segment_length, segment_density,
-       total_mass, total_momentum, total_energy
+       total_mass, total_momentum, total_energy,
+       total_internal_energy, total_kinetic_energy
 export discrete_action_sum, segment_cholesky_action, midpoint_strain, midpoint_J
 export det_el_residual
 export det_step!, det_run!, pack_state, pack_state!, unpack_state!
+
+# --- Phase 5 API (deviatoric / P_⊥ BGK relaxation) -------------------------
+export deviatoric_bgk_step, deviatoric_bgk_step_exponential,
+       pperp_advect_lagrangian, bgk_relax_pressures, pperp_step
 
 # --- Track C/F infrastructure layer (Milestone 1, Agent C) -----------------
 # Pure infrastructure modules: diagnostics, I/O, plotting, calibration.
