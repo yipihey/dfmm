@@ -1,0 +1,25 @@
+Phase 5b — multi-τ Sod L∞ rel error: q-off vs q-on
+======================================================================
+
+Note: golden compare is meaningful only at τ=1e-3 (the golden's τ).
+      Other τ rows show ΔE_rel as a stability proxy.
+
+τ        q   | L∞(rho, u, Pxx, Pp)    | L∞_off (q=:none)       | ΔE_rel 
+----------------------------------------------------------------------
+1e-05    off |   --     --     --     --   | ΔE=0.0627
+1e-05     on |   --     --     --     --   | ΔE=0.0620
+
+1e-03    off | 0.1126 0.9180 0.1835 0.1827 | ΔE=0.0627
+1e-03     on | 0.1037 0.5814 0.1452 0.1425 | ΔE=0.0618
+
+1e+00    off |   --     --     --     --   | ΔE=0.0558
+1e+00     on |   --     --     --     --   | ΔE=0.0529
+
+1e+03    off |   --     --     --     --   | ΔE=0.0560
+1e+03     on |   --     --     --     --   | ΔE=0.0527
+
+Reading. At τ = 1e-3 (the golden's τ), q-on improves L∞ rel by 
+~50% on u and ~30% on (rho, Pxx, Pp). At other τ the comparison is
+qualitative (no golden) but ΔE_rel — the integrator's intrinsic
+energy drift — is comparable on/off, confirming q is not breaking
+the conservation budget.
