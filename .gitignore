@@ -4,6 +4,9 @@
 .idea/
 *.swp
 
+# Claude Code agent worktrees (created with isolation:"worktree")
+.claude/
+
 # Python (carry-overs from the pre-restructure layout; the canonical
 # Python project lives under py-1d/ which has its own .gitignore)
 __pycache__/
