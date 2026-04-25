@@ -44,6 +44,12 @@ using Test
     @testset verbose = true "Phase 4: energy drift" begin
         include("test_phase4_energy_drift.jl")
     end
+    @testset verbose = true "Phase 5: Sod" begin
+        # Tier A.1 Sod regression vs py-1d golden. Adds the deviatoric
+        # P_⊥ sector with BGK relaxation and asserts L∞ rel error < 0.05
+        # on (rho, u, Pxx, Pp) at t_end = 0.2, τ = 1e-3 (warm regime).
+        include("test_phase5_sod_regression.jl")
+    end
     @testset "eos" begin
         include("test_eos.jl")
     end
