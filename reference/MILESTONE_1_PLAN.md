@@ -1,5 +1,14 @@
 # Milestone 1 implementation plan
 
+> **Status (2026-04-25):** Phases 0-11 + 5b complete. **1801 + 1
+> deferred tests** on main, full suite ~2m25s. The two methods-paper
+> central claims (Tier B.2 cold-limit unification, Tier B.5 tracer
+> exactness) are verified. Tier A.1/A.2/A.3 land qualitatively;
+> Phase 6's post-crossing golden L∞ is `@test_skip`'d pending
+> shock-capturing improvement. Phases 10/12/13 not started (10 needs
+> Open #4 fixed; 12/13 are two-fluid extensions). See
+> `reference/MILESTONE_1_STATUS.md` for the synthesis.
+
 **Scope.** A 1D Julia implementation of the unified variational dfmm
 framework, built foundationally on the connection-form action so that
 the variational structure is primary and the dfmm regression match is
@@ -60,7 +69,7 @@ proportional to lines-of-code in the regression target.
 
 ---
 
-## Phase 0 — Foundations *(largely done)*
+## Phase 0 — Foundations *(✓ done)*
 
 **Status:** repo restructured; Julia package activates and tests
 pass on Julia 1.12.6; `py-1d/` regression target installed and its
@@ -101,7 +110,7 @@ memory and explain why the strain term has to live in $\mathcal{D}_t$.
 
 ---
 
-## Phase 1 — Cholesky-sector variational integrator (deterministic, no bulk)
+## Phase 1 — Cholesky-sector variational integrator (deterministic, no bulk) *(✓ done)*
 
 **Goal.** A standalone Julia module implementing the discrete
 Hamilton–Pontryagin integrator for the Cholesky sector $(\alpha, \beta)$
@@ -146,7 +155,7 @@ the boxed equations.
 
 ---
 
-## Phase 2 — Bulk + entropy coupling (full deterministic action)
+## Phase 2 — Bulk + entropy coupling (full deterministic action) *(✓ done)*
 
 **Goal.** Add position $x$, velocity $u$ (charge-0), and entropy $s$
 (charge-0). The full deterministic Lagrangian (methods-paper eq.
@@ -185,7 +194,7 @@ properties" claims exactness by construction; verify it.
 
 ---
 
-## Phase 3 — Cold-limit reduction (Tier B.2) — *central unification test*
+## Phase 3 — Cold-limit reduction (Tier B.2) — *central unification test* *(✓ done — methods-paper claim verified)*
 
 **Goal.** Cold sinusoid through shell-crossing, deterministic only.
 This is the "is the framework right at all" test. Per HANDOFF
@@ -232,7 +241,7 @@ note's §3.4 on the Hessian-degeneracy interpretation.
 
 ---
 
-## Phase 4 — Long-time energy drift (Tier B.1)
+## Phase 4 — Long-time energy drift (Tier B.1) *(✓ literal pass; t¹ secular open — see notes_phase4)*
 
 **Goal.** Run a smooth periodic acoustic-wave problem for $10^5$
 timesteps with the full deterministic integrator from Phases 1–3.
@@ -255,7 +264,7 @@ Demonstrate variational structure produces no secular energy drift.
 
 ---
 
-## Phase 5 — Tier A.1 Sod (warm-limit dfmm regression)
+## Phase 5 — Tier A.1 Sod (warm-limit dfmm regression) *(✓ qualitative; L∞ ~10-20%, L1 ~3-4% — see notes_phase5)*
 
 **Goal.** Reproduce dfmm's Sod profile in the deterministic warm
 limit. The first regression test against `py-1d/`.
@@ -288,7 +297,7 @@ is an EL-discretization error, not a physics error.
 
 ---
 
-## Phase 6 — Tier A.2 cold sinusoid across six $\tau$ decades
+## Phase 6 — Tier A.2 cold sinusoid across six $\tau$ decades *(✓ pre-crossing across 6 decades; 1 deferred test — see notes_phase6)*
 
 **Goal.** Same setup as B.2 (Phase 3), but parameterized over the
 $\tau$ scan and now matching dfmm Fig. 3. Verifies the warm-to-cold
@@ -302,7 +311,7 @@ match `py-1d`'s `experiments/02_sine_shell_crossing.py`.
 
 ---
 
-## Phase 7 — Tier A.3 steady shock Mach scan (+heat flux)
+## Phase 7 — Tier A.3 steady shock Mach scan (+heat flux) *(✓ R-H to ≥3 decimals at all M_1; long-horizon limited — see notes_phase7)*
 
 **Goal.** Reproduce dfmm Fig. 4 across $M_1 \in \{1.5, \ldots, 10\}$.
 Rankine–Hugoniot to 3 decimal places.
@@ -319,7 +328,7 @@ form first (per v2 footnote: soft-constraint deferred to appendix).
 
 ---
 
-## Phase 8 — Stochastic injection (variance-gamma)
+## Phase 8 — Stochastic injection (variance-gamma) *(✓ infrastructure; calibration mismatch + long-time instability open — see notes_phase8)*
 
 **Goal.** Implement compression-activated variance-gamma noise per
 methods paper §4 (replacing v2's Laplace special case) and §9.6
@@ -368,7 +377,7 @@ don't try to resolve in Milestone 1.
 
 ---
 
-## Phase 9 — Tier B.4 compression-burst statistics
+## Phase 9 — Tier B.4 compression-burst statistics *(✓ bundled into Phase 8 — self-consistency monitor working)*
 
 **Goal.** Run a wave-pool problem (Phase 8 active) with instrumented
 burst detection. Verify the cascade structure: empirical
@@ -382,7 +391,7 @@ fits gamma; residual kurtosis is $3 + 3/\lambda \approx 3 + 3/k$.
 
 ---
 
-## Phase 10 — Tier A.4 KM-LES wave-pool spectra
+## Phase 10 — Tier A.4 KM-LES wave-pool spectra *(not started — depends on Phase 8 long-time stability fix)*
 
 **Goal.** Reproduce dfmm Fig. 8 spectra in the stochastic regime.
 Spectral distance to dfmm output below the table-410 threshold.
@@ -396,7 +405,7 @@ helper in `src/spectra.jl`.
 
 ---
 
-## Phase 11 — Tier B.5 passive scalar advection through shock
+## Phase 11 — Tier B.5 passive scalar advection through shock *(✓ done — L∞ tracer change = 0.0 literally; methods-paper claim verified)*
 
 **Goal.** Tracer fidelity 1–3 decades better than PPM/WENO in
 pure-Lagrangian regions; bounded remap diffusion only.
@@ -414,7 +423,7 @@ intersection").
 
 ---
 
-## Phase 12 — Tier A.5 two-fluid dust-in-gas
+## Phase 12 — Tier A.5 two-fluid dust-in-gas *(not started — two-fluid Track A extension)*
 
 **Goal.** Two species with separate Cholesky factors and the
 cross-coupling kernels from `py-1d/dfmm/schemes/two_fluid.py`.
@@ -428,7 +437,7 @@ $\gamma \to 0$, gas $\gamma \sim 1$).
 
 ---
 
-## Phase 13 — Tier A.6 Coulomb plasma equilibration
+## Phase 13 — Tier A.6 Coulomb plasma equilibration *(not started — two-fluid Track A extension)*
 
 **Goal.** Reproduce dfmm Fig. 12: thermal-vs.-momentum relaxation
 mass-ratio scaling.
@@ -440,7 +449,7 @@ plasma case from `py-1d/dfmm/schemes/two_fluid.py`.
 
 ---
 
-## Phase 14 — Wrap-up: handoff to Milestone 2
+## Phase 14 — Wrap-up: handoff to Milestone 2 *(in progress — see MILESTONE_1_STATUS.md)*
 
 **Deliverables:**
 - All Tier-A tests green; B.1, B.2, B.4, B.5 green.

@@ -130,4 +130,10 @@ using Test
         # upwind scheme. See `reference/notes_phase11_passive_tracer.md`.
         include("test_phase11_tracer_advection.jl")
     end
+    @testset verbose = true "Cross-phase smoke (defensive integration)" begin
+        # Catches inter-phase regressions that per-phase tests miss
+        # — e.g. struct extension without updating mutation call sites.
+        # See test/test_integration_all_phases.jl docstring.
+        include("test_integration_all_phases.jl")
+    end
 end
