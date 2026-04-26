@@ -31,7 +31,7 @@ two sides independently and is the usual entry point called from
 import numpy as np
 import numba as nb
 
-from ._common import IDX_MOM, IDX_M3
+from ._common import IDX_MOM, IDX_M3, IDX_RHO, IDX_L1
 
 # BC type codes — integers for Numba branch-safety.
 BC_PERIODIC = 0
@@ -58,10 +58,22 @@ def bc_code(name):
 
 
 @nb.njit(cache=True)
-def apply_periodic(U_ghost, n_ghost):
+def apply_periodic(U_ghost, n_ghost, lagrangian_period=0.0):
     """Periodic BC: left ghosts copy from the right-most interior cells,
-    right ghosts from the left-most interior cells. Independent of
-    field content."""
+    right ghosts from the left-most interior cells.
+
+    With `lagrangian_period > 0` the L1 ghost values are shifted so
+    the Lagrangian-coordinate field (`U[IDX_L1] = rho * L1`) appears
+    continuous through the wrap rather than jumping by `period`.
+    Specifically:
+
+        L1_ghost_left  = L1_interior - lagrangian_period
+        L1_ghost_right = L1_interior + lagrangian_period
+
+    so the conserved-form copy adjusts U[IDX_L1] by
+    `± lagrangian_period * rho`. Pass 0 (the default) to keep the
+    classical "wrap as-is" behaviour.
+    """
     n_fields, N_tot = U_ghost.shape
     N = N_tot - 2 * n_ghost
     for g in range(n_ghost):
@@ -70,6 +82,15 @@ def apply_periodic(U_ghost, n_ghost):
             U_ghost[k, g] = U_ghost[k, n_ghost + N - n_ghost + g]
             # Right ghost <- interior index g
             U_ghost[k, n_ghost + N + g] = U_ghost[k, n_ghost + g]
+        if lagrangian_period != 0.0:
+            # L1 = U[IDX_L1] / rho lives on a Lagrangian coordinate
+            # that grows by `lagrangian_period` per box. Shift the
+            # ghost L1 conserved value by ± period * rho so the
+            # ramp stays continuous (no spurious L1 jump for HLL
+            # to diffuse).
+            U_ghost[IDX_L1, g] -= lagrangian_period * U_ghost[IDX_RHO, g]
+            U_ghost[IDX_L1, n_ghost + N + g] += (
+                lagrangian_period * U_ghost[IDX_RHO, n_ghost + N + g])
 
 
 @nb.njit(cache=True)
@@ -128,7 +149,8 @@ def apply_dirichlet(U_ghost, n_ghost, state_left, state_right):
 
 
 def apply_mixed(U_ghost, n_ghost, bc_left, bc_right,
-                state_left=None, state_right=None):
+                state_left=None, state_right=None,
+                lagrangian_period=0.0):
     """Dispatch per-side. `bc_left` / `bc_right` are BC name strings
     (`'periodic'`, `'transmissive'`, `'reflective'`, `'dirichlet'`).
 
@@ -138,9 +160,14 @@ def apply_mixed(U_ghost, n_ghost, bc_left, bc_right,
 
     For `'dirichlet'`, the corresponding `state_left` / `state_right`
     kwarg must be a length-`n_fields` array.
+
+    `lagrangian_period` (default 0) is forwarded to `apply_periodic` —
+    when non-zero the L1 ghost values are shifted by `± period * rho`
+    so the Lagrangian-coordinate ramp stays continuous through the wrap.
+    Only meaningful when both sides are periodic.
     """
     if bc_left == 'periodic' and bc_right == 'periodic':
-        apply_periodic(U_ghost, n_ghost)
+        apply_periodic(U_ghost, n_ghost, lagrangian_period)
         return
     if bc_left == 'periodic' or bc_right == 'periodic':
         raise ValueError("periodic BC must be applied on both sides")

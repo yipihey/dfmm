@@ -27,7 +27,7 @@ _LIMITER_CODES = {'minmod': 0, 'mc': 1, 'van_leer': 2}
 
 
 def run_to(U, t_end, cfl=None, tau=None, save_times=None, checkpoint_dt=None,
-           bc="periodic", cfg=None):
+           bc="periodic", cfg=None, lagrangian_period=0.0):
     """Integrate a state forward to `t_end`, saving at requested times.
 
     Parameters
@@ -102,7 +102,8 @@ def run_to(U, t_end, cfl=None, tau=None, save_times=None, checkpoint_dt=None,
         # edges uses the correct ghost neighbour).
         apply_mixed(U_curr, n_ghost, cfg.bc_left, cfg.bc_right,
                     state_left=cfg.bc_state_left,
-                    state_right=cfg.bc_state_right)
+                    state_right=cfg.bc_state_right,
+                    lagrangian_period=lagrangian_period)
         smax = max_signal_speed(unpad_ghosts(U_curr, n_ghost))
         dt = min(cfg.cfl * dx / smax, next_save - t, t_end - t)
         if dt <= 1e-14:
