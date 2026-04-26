@@ -299,6 +299,22 @@ in~\eqref{eq:L-Ch}; $\mathcal{H}_{\rm Ch}$ contains no strain term.
 The discrete scheme will treat the strain as a parallel-transport
 operator, not a non-local source.
 
+\paragraph{Note on the symplectic-potential sign convention.} The
+discrete Euler--Lagrange machinery in \S\ref{sec:discrete} is
+sign-sensitive: applying the standard EL convention
+$\delta\mathcal{L}/\delta q - \dd/\dd t\,(\delta\mathcal{L}/\delta\dot
+q) = 0$ to~\eqref{eq:L-Ch} reproduces the boxed Hamilton equations
+only if the symplectic potential is taken as $\theta =
+-(\alpha^3/3)\,\dd\beta$ (equivalently, the wedge order in
+$\omega_{1D}$ is reversed). The Milestone-1 implementation in
+\verb|src/cholesky_sector.jl| (header lines 36--43) writes
+$\mathcal{L}_{\rm Ch} = -(\alpha^3/3)\,\mathcal{D}_t^{(1)}\beta -
+\mathcal{H}_{\rm Ch}$ for this reason. The two conventions describe
+the same physics; downstream EL machinery must use the matched
+convention. This discrepancy with the v2 design note (Track A
+\verb|design/03_action_note_v2.tex| §3.1) is recorded here for
+archival reference.
+
 \subsection{Bulk and entropy sectors}
 
 Bulk position $\bx$ and specific entropy $s$ are scalars (charge 0)
@@ -378,6 +394,20 @@ linear-stability structure at the caustic. The stochastic dressing of
 \S\ref{sec:stochastic} re-opens the gap by adding a positive-definite
 noise vertex.
 
+\paragraph{Note on the magnitude direction at the caustic.} At the
+caustic in the \emph{evolved} state, $M_{vv}$ grows for adiabatic
+$\Gamma > 1$ (because $J\to 0$ and $M_{vv} = J^{1-\Gamma}e^{s/c_v}$),
+so $\gamma^2$ and $|\det\,\mathrm{Hess}|$ have spatial \emph{maxima}
+at the caustic location, not minima. The cold-limit \emph{initial}
+state has $\gamma\to 0$ uniformly; the \emph{evolved} caustic is
+where $\beta\to\sqrt{M_{vv}}$ saturates on the trajectory's level set
+while $M_{vv}$ itself diverges. The variational signature of the
+caustic is therefore the spatial \emph{shape} --- a symmetric peak
+at the rank-1 ridge --- not the magnitude direction. This was
+confirmed empirically in M1 Phase 3 and Phase 6 (see
+\verb|reference/figs/phase3_hessian_degen.png| and
+\verb|reference/figs/A2_cold_sinusoid_density.png|).
+
 \subsection{Heat flux gauge structure}
 
 The heat flux $Q_{ijk} = \langle (v-u)_i(v-u)_j(v-u)_k\rangle$ has
@@ -426,17 +456,23 @@ which is gamma-distributed at fixed $\kappa$, modified to
 variance-gamma by the multiplicative cascade structure of $\kappa$.
 
 \paragraph{Theorem (variance-gamma from variance mixing).} If
-$\epsilon | V \sim \mathcal{N}(0,V)$ with $V\sim\Gamma(\lambda,\theta)$,
+$\epsilon | V \sim \mathcal{N}(0,V)$ with $V\sim\Gamma(\lambda,\theta)$
+in the Distributions-canonical (variance-mixture) parametrization
+($\mathbb{E}[V]=\lambda\theta$, $\mathrm{Var}(\epsilon)=\lambda\theta$),
 then $\epsilon\sim\mathrm{VG}(\lambda,\theta)$ with density
 \begin{equation}
-  f(\epsilon) = \frac{1}{\sqrt\pi\,\Gamma(\lambda)}
-  \frac{1}{(2\theta)^{\lambda-1/2}}|\epsilon|^{\lambda-1/2}
-  K_{\lambda-1/2}\bigl(|\epsilon|/\sqrt\theta\bigr),
+  f(\epsilon) = \sqrt{\frac{2}{\pi}}\,\theta^{-\lambda}\,
+  \frac{\bigl(|\epsilon|\sqrt{\theta/2}\bigr)^{\lambda-1/2}\,
+  K_{\lambda-1/2}\bigl(|\epsilon|\sqrt{2/\theta}\bigr)}{\Gamma(\lambda)},
   \label{eq:VG}
 \end{equation}
-with $K_\nu$ the modified Bessel function of the second kind. Special
-cases: $\lambda=1$ gives Laplace; $\lambda\to\infty$ (with $\theta$
-scaled) gives Gaussian. Excess kurtosis is $3/\lambda$.
+with $K_\nu$ the modified Bessel function of the second kind. Direct
+quadrature confirms $\int f(\epsilon)\,\dd\epsilon = 1$ (verified in
+M1 Track D, \verb|src/stochastic.jl::pdf_variance_gamma| and
+\verb|test_vg_sampler.jl|). The textbook generalised-hyperbolic
+form is recovered under the rescaling $\theta_{\rm GH} = 2\theta$.
+Special cases: $\lambda=1$ gives Laplace; $\lambda\to\infty$ (with
+$\theta$ scaled) gives Gaussian. Excess kurtosis is $3/\lambda$.
 
 \subsection{The MSRJD action with variance-gamma vertices}
 
@@ -938,7 +974,9 @@ the scheme reports its own failure cleanly.
 \item \textbf{A.1 Sod shock tube.} Reproduce dfmm Fig.\ 2 across
 three $\tau$ regimes.
 \item \textbf{A.2 Cold sinusoid across six $\tau$ decades.} Reproduce
-dfmm Fig.\ 3; $\gamma$ drops by $\sim 6$ decades at caustics.
+dfmm Fig.\ 3; $\gamma^2$ spatial-max grows by $0.3$--$0.9$ decades at
+caustics across six $\tau$ decades (verified across
+$\tau\in\{10^{-3},10^{-1},10^{1},10^{3},10^{5},10^{7}\}$ in M1 Phase 6).
 \item \textbf{A.3 Steady shock Mach scan.} Reproduce dfmm Fig.\ 4;
 Rankine-Hugoniot to 3 decimal places at $M_1\in\{1.5,\ldots,10\}$.
 \item \textbf{A.4 KM-LES wave-pool spectra.} Reproduce dfmm Fig.\ 8;
@@ -955,6 +993,21 @@ mass-ratio scaling of thermal vs.\ momentum relaxation.
 \item \textbf{B.1 Variational integrator energy drift.} Long-time
 ($10^5$ steps) energy budget; variational scheme drift $<10^{-8}$
 relative, standard scheme accumulates $>10^{-4}$.
+
+\emph{Caveat (M1 Phase 4).} Bounded-oscillation behavior holds for
+the bulk-coupled flow on smooth bounded problems. The autonomous
+Cholesky sector $(\alpha,\beta)$ at fixed $M_{vv}$ has unbounded
+orbits (analytical trajectory $\alpha(t)=\sqrt{1+t^2}$,
+$\beta(t)=t/\sqrt{1+t^2}$ from $\dot\alpha=\beta$,
+$\dot\beta=\gamma^2/\alpha$ with $\gamma$ const), so the
+symplectic-averaging cancellation that produces bounded oscillation
+does not apply in that limit. M1 Phase 4 verified literal drift
+bound $5.6\times 10^{-9}$ over $10^5$ steps on a smooth acoustic-wave
+problem; the trend is $t^1$-secular within the bound. A Kraus 2017
+\emph{projected variational integrator} (arXiv:1708.07356) enforcing
+the level-set constraint $\alpha^2(M_{vv}-\beta^2)=\mathrm{const}$
+exactly each step would close the leak; this is left for future
+work. See \verb|reference/notes_phase4_energy_drift.md|.
 \item \textbf{B.2 Cold-limit reduction to phase-space sheet.} 1D
 Zel'dovich-like initial conditions; pre-crossing matches Zel'dovich
 analytic, Hessian degenerates at predicted location at predicted
