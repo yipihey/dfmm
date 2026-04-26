@@ -46,7 +46,7 @@ integration: `advect_tracers!` is a no-op. The caller may mutate
 `tracers` directly to set initial conditions, but should never
 write to it inside an integration loop.
 """
-struct TracerMesh{T<:Real, M<:Mesh1D}
+mutable struct TracerMesh{T<:Real, M<:Mesh1D}
     fluid::M
     tracers::Matrix{T}
     names::Vector{Symbol}

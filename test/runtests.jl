@@ -139,6 +139,16 @@ using Test
         # `reference/notes_M2_2_multitracer.md`.
         include("test_phase_M2_2_multitracer.jl")
     end
+    @testset verbose = true "Phase M2-1: action-based AMR" begin
+        # Tier B.3 — 1D action-based AMR vs gradient-based AMR on
+        # the off-center blast. Verifies refine/coarsen primitives
+        # (mass / momentum / tracer conservation), the action-error
+        # and gradient indicators, and the headline 20-50% cell-
+        # count reduction at matched L² accuracy.
+        # See `reference/notes_M2_1_amr.md` and
+        # `experiments/B3_action_amr.jl`.
+        include("test_phase_M2_1_amr.jl")
+    end
     @testset verbose = true "Cross-phase smoke (defensive integration)" begin
         # Catches inter-phase regressions that per-phase tests miss
         # — e.g. struct extension without updating mutation call sites.

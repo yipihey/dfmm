@@ -141,4 +141,14 @@ export TracerMesh, advect_tracers!, add_tracer!, set_tracer!,
        n_tracer_fields, n_tracer_segments,
        eulerian_upwind_advect!, interface_width
 
+# --- Phase M2-1 API (Tier B.3 1D action-based AMR) ------------------------
+# Refine/coarsen primitives on the Lagrangian segment mesh + the action-
+# error and gradient indicators used to compare action-AMR vs. gradient-
+# AMR per methods paper §10.3 B.3. See `src/amr_1d.jl` and
+# `experiments/B3_action_amr.jl`.
+include("amr_1d.jl")
+export refine_segment!, coarsen_segment_pair!,
+       action_error_indicator, gradient_indicator,
+       amr_step!, refresh_p_half!
+
 end # module
