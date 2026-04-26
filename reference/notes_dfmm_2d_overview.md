@@ -86,23 +86,52 @@ What does **not** carry over:
 
 ## Implementation stack — incremental over M1
 
+> **Update 2026-04-26:** `yipihey/HierarchicalGrids.jl` (HG, v0.1) was
+> published, providing the dimension-generic mesh + AMR + polynomial-
+> fields + remap + threading substrate the original M3 plan was going
+> to build piece-by-piece. The HG-based stack below replaces the
+> original "P4est.jl + r3d + ParallelStencil + manual threading" path.
+> See `reference/notes_HG_design_guidance.md` for what HG provides
+> directly, and `reference/MILESTONE_3_PLAN.md` for how dfmm consumes
+> it. The original specs/05-based stack table is preserved as
+> "alternative paths if HG dependency proves problematic" below.
+
+### Recommended stack (HG-based)
+
 Per `specs/05` §13, M1 already pulled in:
 
 > StaticArrays, NonlinearSolve, LinearSolve, Enzyme, ForwardDiff, Distributions, GeometricalPredicates, GeometricIntegrators, OrdinaryDiffEq, HDF5, JLD2, WriteVTK, CairoMakie, NPZ, QuadGK, SpecialFunctions, StatsBase, SparseArrays, SparseConnectivityTracer, SparseMatrixColorings.
 
-For M3 add:
+For M3, add only two new direct deps (HG transitively pulls in the
+rest):
+
+| Package | Purpose | Reference |
+|---|---|---|
+| **HierarchicalGrids.jl** | dimension-generic mesh + AMR + remap + threading substrate | `reference/notes_HG_design_guidance.md` |
+| **R3D.jl** (r3djl) | polygon/polyhedral overlap + polynomial moments | `docs/overlap_example.md` |
+
+HG's transitive deps (already covered by the above):
+- `OhMyThreads.jl` (chunk-based threading; mirrors future MPI structure).
+- `StaticArrays` (already in M1).
+
+For M3-8 GPU port, add via HG's threading-layer abstraction:
+
+| Package | Purpose |
+|---|---|
+| **KernelAbstractions.jl** | vendor-neutral GPU kernels |
+| **CUDA.jl / Metal.jl / AMDGPU.jl** | backend selectors |
+| **MPI.jl** | distributed parallelism (when needed) |
+
+### Alternative paths (if HG proves problematic)
+
+The original `specs/05` §13 stack remains viable as a fallback:
 
 | Package | Purpose | Reference |
 |---|---|---|
 | **P4est.jl + P4estTypes.jl** | quadtree AMR | `specs/05` §2.1 |
-| **Tom's `r3d` Julia port** | polygon overlap + polynomial moments | replaces `specs/05` §6.3 fallback |
-| **KernelAbstractions.jl** | vendor-neutral GPU kernels | `specs/05` §5.1 |
-| **AcceleratedKernels.jl** | sort/scan/reduce primitives | `specs/05` §5.4 |
-| **CUDA.jl / Metal.jl / AMDGPU.jl / oneAPI.jl** | backend selectors | `specs/05` §5.2 |
-| **MPI.jl** + **ImplicitGlobalGrid.jl** | distributed parallelism | `specs/05` §11.1 |
-| **ParallelStencil.jl** | regular Eulerian-quadtree stencils | `specs/05` §5.3 |
+| **R3D.jl** (r3djl, used directly without HG wrapper) | polygon overlap + moments | `specs/05` §6.3 |
+| **ParallelStencil.jl + ImplicitGlobalGrid.jl** | regular Eulerian stencils + multi-GPU | `specs/05` §5.3 |
 | **Tensors.jl** (optional) | clean deviatoric-stress arithmetic | `specs/05` §9.2 |
-| **HOHQMesh.jl** (optional) | curvilinear mesh generation | `specs/05` §6.5 |
 
 **Don't add to the M3 stack:**
 
