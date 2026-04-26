@@ -218,4 +218,32 @@ using Test
         # and `src/berry.jl` for the implementation.
         include("test_M3_prep_berry_stencil.jl")
     end
+    @testset verbose = true "Phase M3-2: Phase 7/8/11 + M2 on HG" begin
+        # Phase 7 (heat-flux Q + steady shock + inflow/outflow), Phase 8
+        # (variance-gamma stochastic injection), Phase 11 (passive
+        # tracers), and M2-1 (action-AMR) + M2-3 (realizability
+        # projection) sub-phases ported onto the HG substrate. All
+        # wrappers delegate to their M1 counterparts through the
+        # `cache_mesh` shim for bit-exact parity. See
+        # `reference/notes_M3_2_phase7811_m2_port.md` and
+        # `reference/MILESTONE_3_PLAN.md` Phase M3-2.
+        @testset "Phase 7 (HG): steady-shock + heat flux Q" begin
+            include("test_M3_2_phase7_steady_shock_HG.jl")
+        end
+        @testset "Phase 8 (HG): stochastic injection" begin
+            include("test_M3_2_phase8_stochastic_HG.jl")
+        end
+        @testset "Phase 11 (HG): tracer advection" begin
+            include("test_M3_2_phase11_tracer_HG.jl")
+        end
+        @testset "M2-2 (HG): multi-tracer wave-pool" begin
+            include("test_M3_2_M2_2_multitracer_HG.jl")
+        end
+        @testset "M2-1 (HG): action-based AMR" begin
+            include("test_M3_2_M2_1_amr_HG.jl")
+        end
+        @testset "M2-3 (HG): realizability projection" begin
+            include("test_M3_2_M2_3_realizability_HG.jl")
+        end
+    end
 end

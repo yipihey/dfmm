@@ -405,13 +405,23 @@ end
 """
     det_step_HG!(mesh::DetMeshHG, dt; tau=nothing, sparse_jac=true,
                  q_kind=:none, c_q_quad=1.0, c_q_lin=0.5,
+                 bc = mesh.bc, inflow_state = nothing,
+                 outflow_state = nothing, n_pin = 2,
                  abstol=1e-13, reltol=1e-13, maxiters=50)
 
-Advance the HG-substrate Phase-2/5/5b mesh by one timestep `dt`.
+Advance the HG-substrate Phase-2/5/5b/7 mesh by one timestep `dt`.
 Bit-exact delegate to M1's `det_step!`: the cached `Mesh1D` is
 refreshed from the HG field set, M1's `det_step!` is called with
 identical kwargs, and the result is written back. The `tau` /
-`q_kind` / etc. semantics are identical to M1.
+`q_kind` / `bc` / inflow / outflow / etc. semantics are identical
+to M1.
+
+The Phase-7 inflow_outflow path is supported: passing
+`bc = :inflow_outflow` together with `inflow_state`, `outflow_state`,
+and `n_pin` forwards the boundary-pinning convention to the cache
+mesh. `Q` (heat-flux) is automatically advanced by `det_step!`'s
+post-Newton operator-split step regardless of `bc`, so Phase-7 BGK
+relaxation is bit-exact-equal to M1 by construction.
 
 Mutates the HG field set in-place; returns `mesh`.
 """
@@ -421,6 +431,10 @@ function det_step_HG!(mesh::DetMeshHG{T}, dt::Real;
                        q_kind::Symbol = Q_KIND_NONE,
                        c_q_quad::Real = 1.0,
                        c_q_lin::Real  = 0.5,
+                       bc::Symbol = mesh.bc,
+                       inflow_state::Union{NamedTuple,Nothing} = nothing,
+                       outflow_state::Union{NamedTuple,Nothing} = nothing,
+                       n_pin::Int = 2,
                        abstol::Real = 1e-13, reltol::Real = 1e-13,
                        maxiters::Int = 50) where {T<:Real}
     sync_cache_from_HG!(mesh)
@@ -430,6 +444,10 @@ function det_step_HG!(mesh::DetMeshHG{T}, dt::Real;
               q_kind = q_kind,
               c_q_quad = c_q_quad,
               c_q_lin  = c_q_lin,
+              bc = bc,
+              inflow_state = inflow_state,
+              outflow_state = outflow_state,
+              n_pin = n_pin,
               abstol = abstol, reltol = reltol,
               maxiters = maxiters)
     sync_HG_from_cache!(mesh)
@@ -506,3 +524,8 @@ function segment_length_HG(mesh::DetMeshHG{T}, j::Integer) where {T<:Real}
     sync_cache_from_HG!(mesh)
     return segment_length(mesh.cache_mesh, j)
 end
+
+# Phase M3-2 wrappers (Phase 7/8/11 + M2-1 + M2-3) live in
+# `src/newton_step_HG_M3_2.jl`, included from `dfmm.jl` after the
+# corresponding M1/M2 files (`tracers.jl`, `stochastic_injection.jl`,
+# `amr_1d.jl`) so the wrappers can reference their M1 counterparts.

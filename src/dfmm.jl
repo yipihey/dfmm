@@ -215,4 +215,22 @@ export berry_F_2d, berry_term_2d, berry_partials_2d
 export berry_F_3d, berry_term_3d, berry_partials_3d
 export kinetic_offdiag_coeffs_2d, kinetic_offdiag_2d
 
+# --- Phase M3-2 API (HG substrate; Phase 7/8/11 + M2-1 / M2-3) ----------
+# Ports the M1 Phase 7 (heat-flux Q via det_step!), Phase 8 (variance-
+# gamma stochastic injection), Phase 11 (passive tracers), the M2-1
+# action-based AMR primitives (refine/coarsen + indicators + driver),
+# and the M2-3 realizability projection onto the HG substrate. All
+# wrappers delegate to their M1 counterparts through the cache_mesh
+# shim for bit-exact parity. See
+# `reference/notes_M3_2_phase7811_m2_port.md` and
+# `reference/MILESTONE_3_PLAN.md` Phase M3-2.
+include("newton_step_HG_M3_2.jl")
+include("action_amr_helpers.jl")
+export inject_vg_noise_HG!, det_run_stochastic_HG!
+export TracerMeshHG, advect_tracers_HG!
+export realizability_project_HG!
+export refine_segment_HG!, coarsen_segment_pair_HG!,
+       action_error_indicator_HG, gradient_indicator_HG,
+       amr_step_HG!
+
 end # module
