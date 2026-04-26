@@ -668,20 +668,45 @@ spread; the Bayesian remap captures this via the law of total
 cumulants and converts what would be numerical dissipation into
 physical phase-space spreading.
 
-\subsection{Geometric overlap via r3d}
+\subsection{Geometric overlap and polynomial moment transfer}
+\label{sec:remap-overlap}
 
 For each Lagrangian cell $T_i$ (deformed) and Eulerian cell $C_j$,
-compute the polygonal overlap $T_i\cap C_j$ exactly. Using the
-r3d~\cite{r3d-paper} polynomial-moment kernel, integrate polynomial
-moments of the field reconstructions $\bx(\bq), \bu(\bq), L(\bq),
-s(\bq), Q(\bq)$ over the overlap region. For curved-element
-reconstructions (cubic or higher), use the dimension-lifting
-approach: lift each curved-edge constraint to a coordinate hyperplane
-in extended space (typically 5D for triangle-quad overlap with cubic
-edges), where the overlap region is a polytope and r3d gives exact
-moments.
+the polygonal overlap $T_i\cap C_j$ is computed exactly, and the
+polynomial moments of the field reconstructions
+$\bx(\bq), \bu(\bq), L(\bq), s(\bq), Q(\bq)$ are integrated over
+the overlap region. For curved-element reconstructions (cubic or
+higher), we use the dimension-lifting approach: each curved-edge
+constraint is lifted to a coordinate hyperplane in extended space
+(typically 5D for triangle--quad overlap with cubic edges), where
+the overlap region is a polytope and the r3d~\cite{r3d-paper}
+polynomial-moment kernel gives exact moments.
+
+\paragraph{Implementation via HierarchicalGrids.}
+In the dfmm-2d implementation, the geometric backbone of the remap
+is provided by the dimension-generic
+\texttt{HierarchicalGrids.jl}~\cite{hg-paper} (HG) substrate, which
+hosts the r3d polynomial-moment kernel through its Julia port
+\texttt{r3djl}~\cite{r3djl-paper}. The Lagrangian and Eulerian
+meshes appear to the remap driver as a \texttt{PairedMesh} (or more
+generally a \texttt{CompositeMesh}) of an HG \texttt{SimplicialMesh}
+and an HG \texttt{HierarchicalMesh}; per-cell field reconstructions
+are stored as a \texttt{PolynomialFieldSet} in the Bernstein basis
+at order $p$. The two primitives that do the geometric work are
+\texttt{compute\_overlap} (returns the
+$\{T_i\cap C_j, m_{ij}, \text{moment integrals}\}$ table) and
+\texttt{polynomial\_remap} (assembles the new Eulerian-cell field
+from those overlap moments via the law of total cumulants
+specified in \S\ref{sec:remap-LTC}). The overlap cache is
+invalidated automatically when either mesh is refined or
+coarsened. The mathematical content of the remap --- priors,
+likelihoods, and posterior moment matching specified in the
+remainder of this section --- is unchanged by this implementation
+choice; HG and r3djl supply the conservative geometric transfer,
+and dfmm specifies the Bayesian moment-matching rule on top.
 
 \subsection{Law of total covariance}
+\label{sec:remap-LTC}
 
 For new Eulerian cell $C_j$ receiving mass fractions $w_{ij}$ from
 source Lagrangian cells $T_i$:
@@ -720,6 +745,7 @@ flux $Q$ at third moment:
 appropriately symmetrized. Higher cumulants follow the same pattern.
 
 \subsection{Liouville behavior}
+\label{sec:remap-liouville-thm}
 
 \paragraph{Theorem (Liouville monotonicity).} Under the Bayesian
 remap, the per-parcel phase-space volume $\det L = \sqrt{\det M}$
@@ -741,6 +767,66 @@ momentum, and energy conservation. Standard remaps lose the same
 entropy into numerical dissipation; the Bayesian remap converts it
 to physical phase-space spreading, capturable in the moment
 hierarchy.
+
+\subsection{Liouville monotone-increase diagnostic}
+\label{sec:remap-liouville-diag}
+
+The monotonicity statement of \S\ref{sec:remap-liouville-thm} is not only a
+physical interpretation; it is also a built-in self-check on the
+remap implementation. We define, per Eulerian leaf cell $C_j$ and
+per remap event,
+\begin{equation}
+  \Delta_{\rm Liou}(C_j)
+  \;=\;
+  \det L_j^{\rm new} \;-\; \sum_i w_{ij}\,\det L_i,
+  \label{eq:liouville-increment}
+\end{equation}
+i.e.\ the per-parcel phase-space-volume increment between the source
+Lagrangian state and the post-remap Eulerian state. The Minkowski
+inequality argument of \S\ref{sec:remap-liouville-thm} gives
+$\Delta_{\rm Liou}(C_j) \geq 0$ analytically; numerically, dfmm
+records this quantity per cell and reduces it to a global
+\texttt{liouville\_increment} diagnostic at every remap step,
+alongside the global \texttt{total\_overlap\_volume} mass-conservation
+check (which is required to match the box volume to round-off, per
+the M3 acceptance criterion).
+
+\paragraph{Status of the diagnostic.} HG design-guidance item~\#8
+(see~\cite{hg-design-guidance}) calls for \texttt{liouville\_increment}
+to be a built-in hook on \texttt{polynomial\_remap}, returned next
+to \texttt{total\_overlap\_volume}. Until that hook lands upstream,
+dfmm computes $\Delta_{\rm Liou}$ in the driver layer from the
+overlap moment table; the formulation is identical and the cost is
+negligible relative to the overlap computation itself.
+
+\paragraph{Failure modes detected.} A measured violation
+$\Delta_{\rm Liou}(C_j) < 0$ is structurally impossible under the
+Bayesian remap rule and so is interpreted as a self-detected
+implementation fault, not a soft warning. Two distinct causes are
+expected and have been observed in development:
+\begin{itemize}
+\item \emph{Numerical bug in the geometric overlap.} Either
+  \texttt{compute\_overlap} has lost a sliver of the overlap region,
+  or the moment integrator has been called with mismatched
+  reconstruction order; either drops mass-weighted positive-definite
+  contributions to $M_j^{\rm new}$ that the law of total covariance
+  guarantees.
+\item \emph{Polynomial reconstruction order too low for the local
+  geometry.} If the curved Lagrangian element is more deformed than
+  the chosen reconstruction order $p$ can resolve, the projected
+  $L_i$ become non-realizable on the overlap region and the
+  Minkowski lower bound is no longer attained at the discrete level.
+  In this case the remedy is to refine locally (HG
+  \texttt{refine\_by\_indicator!}, with $|\Delta_{\rm Liou}|$ as
+  the indicator) rather than to reduce the time step.
+\end{itemize}
+In both cases the diagnostic localizes the offending cell and the
+offending source-target pair through the per-cell increment field,
+which is more informative than a global mass-conservation residual
+alone. The diagnostic is therefore complementary to
+\texttt{total\_overlap\_volume}: the former checks the
+\emph{positive-semidefiniteness} of the moment update, the latter
+checks the \emph{partition of unity} of the geometric overlap.
 
 \section{Passive scalar advection: exact at the discrete level}
 \label{sec:tracer}
@@ -1311,6 +1397,23 @@ phase space,'' \emph{Mon.~Not.~R.~Astron.~Soc.}\ \textbf{427} (2012) 61--76.
 
 \bibitem{action-note-v3}
 Working note v3 (this design document), April 2026.
+
+\bibitem{hg-paper}
+T.~Abel, ``\texttt{HierarchicalGrids.jl}: a dimension-generic
+hierarchical mesh, polynomial-field, and remap substrate in Julia,''
+v0.1, April 2026; code repository
+\texttt{https://github.com/yipihey/HierarchicalGrids.jl}.
+
+\bibitem{r3djl-paper}
+T.~Abel, ``\texttt{r3djl}: Julia port of the r3d polynomial-moment
+kernel,'' April 2026; code repository
+\texttt{https://github.com/yipihey/r3djl}.
+
+\bibitem{hg-design-guidance}
+T.~Abel, ``HierarchicalGrids.jl design guidance for dfmm-2d,''
+working note, April 2026; reproduced as
+\texttt{reference/notes\_HG\_design\_guidance.md} in the dfmm
+repository.
 \end{thebibliography}
 
 \end{document}
