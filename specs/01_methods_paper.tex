@@ -567,8 +567,39 @@ and $\omega_{\rm rot}$ is the Berry-curvature-like contribution.
 The first two terms are exactly two copies of the 1D weighted
 symplectic form; reduction to 1D (set $\alpha_2=\alpha_1$,
 $\beta_2=\beta_1$, $\theta_R=0$) recovers $\omega_{1D}$ correctly.
-The Berry-connection term $\omega_{\rm rot}$ requires further
-derivation; its specific form is flagged for the 2D extension paper.
+
+The Berry-connection 1-form $\Theta_{\rm rot}$ generating
+$\omega_{\rm rot} = d\Theta_{\rm rot}$ is, in the principal-axis-diagonal restriction,
+\begin{equation}
+  \Theta_{\rm rot} = \tfrac{1}{3}\bigl(\alpha_1^3\,\beta_2 - \alpha_2^3\,\beta_1\bigr)\,d\theta_R,
+  \label{eq:Theta-rot-2D}
+\end{equation}
+giving the explicit 2-form
+\begin{equation}
+  \omega_{\rm rot} = \bigl(\alpha_1^2\beta_2\,d\alpha_1 + \tfrac{\alpha_1^3}{3}\,d\beta_2
+                          - \alpha_2^2\beta_1\,d\alpha_2 - \tfrac{\alpha_2^3}{3}\,d\beta_1\bigr)
+                    \wedge d\theta_R.
+  \label{eq:omega-rot-2D}
+\end{equation}
+The form is bilinear-antisymmetric under axis swap $(1\leftrightarrow 2)$, vanishes
+on the iso-diagonal subspace $\alpha_1=\alpha_2,\,\beta_1=\beta_2$ (the principal-axis-degenerate
+gauge boundary), and dimensionally matches the 1D Hamilton-Pontryagin
+factor $\alpha^3/3$ per axis. Symbolic verification ($d\omega_{2D} = 0$,
+per-axis Hamilton equations, iso-pullback Berry block,
+kernel-direction analysis) is in
+\texttt{scripts/verify\_berry\_connection.py} of the implementation
+repository.
+
+\paragraph{Normalization.} On the iso-diagonal subspace, the per-axis sum
+$\alpha_1^2\,d\alpha_1\wedge d\beta_1 + \alpha_2^2\,d\alpha_2\wedge d\beta_2$
+pulls back to $2\alpha^2\,d\alpha\wedge d\beta$ (each diagonal half
+contributes equally). To recover $\omega_{1D} = \alpha^2\,d\alpha\wedge d\beta$
+exactly under the iso reduction, one of two normalization conventions
+is consistent: (a) carry an explicit $1/2$ in the per-axis weight,
+$\omega_{2D} = \tfrac{1}{2}\sum_a \alpha_a^2\,d\alpha_a\wedge d\beta_a + \omega_{\rm rot}$,
+or (b) interpret the iso pullback as a projection counting each axis
+half-weight on the diagonal subspace. Both are internally consistent;
+this paper adopts convention (a) for explicitness in subsequent work.
 
 \subsection{Why this is the right structural choice}
 
@@ -598,11 +629,31 @@ The 2D Cholesky Hamiltonian on the principal-axis basis is
   \label{eq:H-2D}
 \end{equation}
 with the Berry-connection contribution to the rotation Hamiltonian
-flagged for further derivation. Hamilton's equations on the diagonal
+$\mathcal{H}_{\rm rot}$ specified by the Poisson-manifold integrability
+constraint below. Hamilton's equations on the diagonal
 sectors give two independent copies of the 1D dfmm Cholesky
 evolution, one per principal axis. The rotation sector evolves on
 $SO(2)$ driven by the misalignment between the $M_{xx}$ principal
 axes and the strain principal axes.
+
+\paragraph{Poisson-manifold constraint on $\mathcal{H}_{\rm rot}$.} In the
+principal-axis-diagonal restriction, $\omega_{2D}$ is a rank-4 Poisson
+form on the 5D phase space $(\alpha_a, \beta_a, \theta_R)$, with a 1D
+gauge-direction kernel. Hamilton's equations $\Omega\,X = -dH$ have
+solutions iff $dH$ is orthogonal to the kernel. This integrability
+condition fixes $\mathcal{H}_{\rm rot}$ in the no-strain-misalignment
+sector (where $\tilde S_{12} = 0$) algebraically:
+\begin{equation}
+  \frac{\partial \mathcal{H}_{\rm rot}}{\partial \theta_R}\bigg|_{\rm constraint}
+  = \frac{\gamma_1^2\,\alpha_2^3}{3\alpha_1} - \frac{\gamma_2^2\,\alpha_1^3}{3\alpha_2}
+    - (\alpha_1^2 - \alpha_2^2)\,\beta_1\beta_2.
+  \label{eq:H-rot-constraint}
+\end{equation}
+The strain-driven part of $\mathcal{H}_{\rm rot}$ (which carries the
+methods-paper §5.5 ``misalignment with strain principal axes'' coupling)
+requires lifting the diagonal restriction; this is treated when the
+off-diagonal $L_2$ sector is added (see the implementation notes for
+the 2D-extension paper).
 
 \section{Bayesian remap with the law of total cumulants}
 \label{sec:remap}
@@ -1159,8 +1210,13 @@ convergence, and self-monitoring diagnostics.
 
 \begin{enumerate}
 \item The Berry-connection $\omega_{\rm rot}$ in the 2D matrix lift
-is sketched but not explicitly derived. The 1D reduction is verified;
-the full 2D form requires further work.
+is now derived in the principal-axis-diagonal restriction
+(see §\ref{sec:matrix-lift}, eq.~\ref{eq:Theta-rot-2D}--\ref{eq:omega-rot-2D},
+with the $\mathcal{H}_{\rm rot}$ integrability constraint in
+eq.~\ref{eq:H-rot-constraint}); SymPy-verified. The off-diagonal
+$L_2$ sector (which lifts the diagonal restriction and carries the full
+strain-misalignment coupling) is sketched but not fully integrated;
+this is needed before 2D Kelvin-Helmholtz tests in M3 Phase 9.
 \item The 3D extension via $SO(3)$ rotation is structurally clear but
 not specified in detail.
 \item The cosmological self-gravity coupling is sketched (Poisson on
