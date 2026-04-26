@@ -206,9 +206,10 @@ boundary-condition tag `bc`. The wrapper exists so the HG-side driver
 without re-deriving them from the simplicial mesh on every call.
 
 Note: HG's `SimplicialMesh{1, T}` does not natively carry
-periodic-wrap topology. We carry the wrap in `L_box` and in the
-trailing-segment neighbour entries of the simplex-neighbour matrix
-(see `periodic_simplicial_mesh_1D`).
+periodic-wrap topology in its positions; we carry the period in
+`L_box`. The simplex-neighbour matrix is wired up by HG's upstream
+`HierarchicalGrids.periodic!` builder for `bc == :periodic`, and is
+left with zero boundary entries for non-periodic BCs (M3-2b Swap 1).
 """
 mutable struct DetMeshHG{T<:Real}
     mesh::SimplicialMesh{1, T}
@@ -246,43 +247,6 @@ function allocate_detfield_HG(N::Integer; T::Type = Float64)
         HierarchicalGrids.SoA(), basis, Int(N);
         alpha = T, beta = T, x = T, u = T, s = T, Pp = T, Q = T,
     )
-end
-
-"""
-    periodic_simplicial_mesh_1D(N::Integer, L::Real = 1.0; T = Float64)
-
-Build a periodic-wrap-aware `SimplicialMesh{1, T}` of `N` simplices on
-`[0, L]`. Vertex `i` sits at `(i-1) * L / N` for `i = 1, …, N+1`; the
-last simplex's right-vertex (vertex `N+1`) closes the cycle by
-linking back to vertex `1` through the simplex-neighbour matrix.
-
-In M3-1 the HG mesh structure does not strictly require this
-periodic linkage — the per-cell driver delegates to M1's
-`Mesh1D{:periodic}` for the actual integration step — but the field
-of trailing-edge neighbours is filled in for downstream M3-2/M3-3
-phases that may iterate over neighbour stencils directly on the HG
-mesh. The Lagrangian-mass coordinate is left for the caller to wire
-through `Δm` (the HG simplex-volume API stays unaware of the mass
-labelling).
-
-Returns the mesh.
-"""
-function periodic_simplicial_mesh_1D(N::Integer, L::Real = 1.0;
-                                      T::Type = Float64)
-    @assert N >= 2 "periodic Phase-2 mesh requires N ≥ 2"
-    Lt = T(L)
-    positions = [(Lt * (i - 1) / N,) for i in 1:(N + 1)]
-    sv = Matrix{Int32}(undef, 2, N)
-    sn = zeros(Int32, 2, N)
-    for j in 1:N
-        sv[1, j] = j
-        sv[2, j] = j + 1
-        # Periodic neighbours: the face opposite vertex 1 is the left
-        # neighbour, the face opposite vertex 2 is the right neighbour.
-        sn[1, j] = j > 1 ? Int32(j - 1) : Int32(N)   # cyclic wrap
-        sn[2, j] = j < N ? Int32(j + 1) : Int32(1)   # cyclic wrap
-    end
-    return SimplicialMesh{1, T}(positions, sv, sn)
 end
 
 """
@@ -328,7 +292,9 @@ function DetMeshHG_from_arrays(
     # Build the periodic HG simplicial mesh on the Lagrangian-mass
     # coordinate. The mesh's vertex positions encode `m` (the
     # Lagrangian-mass coordinate); each simplex's `simplex_volume`
-    # returns the per-segment Δm in this convention.
+    # returns the per-segment Δm in this convention. Boundary face
+    # neighbours are wired up via HG's upstream `periodic!` builder
+    # (M3-2b Swap 1).
     cum_m = T(0)
     pos_m = Vector{NTuple{1, T}}(undef, N + 1)
     pos_m[1] = (T(0),)
@@ -341,10 +307,16 @@ function DetMeshHG_from_arrays(
     for j in 1:N
         sv[1, j] = j
         sv[2, j] = j + 1
-        sn[1, j] = j > 1 ? Int32(j - 1) : Int32(N)
-        sn[2, j] = j < N ? Int32(j + 1) : Int32(1)
+        sn[1, j] = j < N ? Int32(j + 1) : Int32(0)   # interior; wrap left to periodic!
+        sn[2, j] = j > 1 ? Int32(j - 1) : Int32(0)   # interior; wrap left to periodic!
     end
     hg_mesh = SimplicialMesh{1, T}(pos_m, sv, sn)
+    # Wire periodic wrap-around on the mass axis. Iff `bc == :periodic`
+    # we identify the lo-mass boundary face with the hi-mass one; for
+    # other BCs the boundary entries stay 0 (HG convention).
+    if periodic
+        HierarchicalGrids.periodic!(hg_mesh, (true,), ((T(0), cum_m),))
+    end
 
     # Allocate the HG field set, populate from the cache mesh.
     fields = allocate_detfield_HG(N; T = T)

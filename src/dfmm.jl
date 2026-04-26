@@ -84,7 +84,7 @@ export single_cell_simplicial_mesh_1D, uniform_simplicial_mesh_1D,
 # `reference/notes_M3_1_phase2_5_5b_port.md` for the design write-up.
 export DetFieldND
 export DetMeshHG, DetMeshHG_from_arrays
-export allocate_detfield_HG, periodic_simplicial_mesh_1D
+export allocate_detfield_HG
 export read_detfield, write_detfield!
 export det_step_HG!, det_run_HG!
 export total_mass_HG, total_momentum_HG, total_energy_HG
