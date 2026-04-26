@@ -43,12 +43,38 @@ include("artificial_viscosity.jl")
 include("heat_flux.jl")
 include("newton_step.jl")
 
+# --- Phase M3-0 API: HierarchicalGrids-based Cholesky-sector path ----------
+# Foundation phase for the M3 (multi-D) refactor. Adds a thin shim that
+# runs the Phase-1 Cholesky-sector integrator on top of HG's
+# `SimplicialMesh{1, T}` + `PolynomialFieldSet` substrate, while reusing
+# M1's `cholesky_el_residual` kernel byte-identically. M1's hand-rolled
+# `Mesh1D` + `Segment` path remains the regression baseline; the new
+# files coexist with it.
+#
+# See `reference/MILESTONE_3_PLAN.md` Phase M3-0 and
+# `reference/notes_M3_0_hg_integration.md` for the full design.
+import HierarchicalGrids
+import R3D
+include("eom.jl")
+include("newton_step_HG.jl")
+
 # --- Phase 1 API ----------------------------------------------------------
 export ChField, gamma_from_Mvv
 export Segment, Mesh1D, single_segment_mesh
 export D_t_q
 export cholesky_one_step_action, cholesky_el_residual, cholesky_hamiltonian
 export cholesky_step, cholesky_run
+
+# --- Phase M3-0 API (HG substrate) ----------------------------------------
+# Note: `spatial_dimension(::ChFieldND)` is intentionally NOT exported —
+# `HierarchicalGrids` already exports the same name for its meshes, and
+# we'd rather keep the user's namespace unambiguous. Call via
+# `dfmm.spatial_dimension(...)` if needed.
+export ChFieldND
+export read_alphabeta, write_alphabeta!, cholesky_el_residual_HG
+export cholesky_step_HG!, cholesky_run_HG!
+export single_cell_simplicial_mesh_1D, uniform_simplicial_mesh_1D,
+       allocate_chfield_HG
 
 # --- Phase 2 API (multi-segment full deterministic) ------------------------
 export DetField

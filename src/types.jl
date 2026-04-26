@@ -190,3 +190,77 @@ DetField(x, u, α, β, s) = DetField{promote_type(typeof(x), typeof(u),
             zero(promote_type(typeof(x), typeof(u), typeof(α),
                               typeof(β), typeof(s))))...,
 )
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase M3-0: dimension-generic Cholesky-sector field type.
+# ──────────────────────────────────────────────────────────────────────
+#
+# The original `ChField{T}` (above) is a scalar (α, β, γ) triple
+# specific to the 1D specialisation of the 4×4 phase-space Cholesky
+# factor. As of M3-0 we introduce a dimension-generic `ChField{D, T}`
+# that, in 1D, reduces to a single (α, β) pair (γ remains derived from
+# the EOS); in 2D it becomes the principal-axis pair
+# `(α_a, β_a)_{a=1,2}` plus a Berry rotation angle `θ_R`; in 3D it is
+# `(α_a, β_a)_{a=1,2,3}` plus three angles `θ_{ab}`. The 2D and 3D
+# constructors land in M3-3.
+#
+# In Phase M3-0 the generic type is *only* used for downstream APIs
+# that need to accept a dimension parameter; the M1 `cholesky_step`
+# kernel still operates on `SVector{2}` for the bit-equality contract.
+# Storage of (α, β) per cell goes through HG's `PolynomialFieldSet`
+# (see `src/newton_step_HG.jl`), which is dimension-generic by
+# construction, so `ChField{D, T}` exists primarily as a
+# documentation / tag type for now.
+#
+# DO NOT delete the legacy `ChField{T}` — it is referenced by Phase-1
+# tests and downstream Phase-2/5 internals through the
+# `Segment{T,ChField{T}}` path. The two coexist until M3-2 verifies
+# full M1+M2 parity on the HG-based code path.
+
+"""
+    ChFieldND{D, T<:Real}
+
+Dimension-generic Cholesky-sector state in the 1D / 2D / 3D
+specialisation of the phase-space Cholesky factor.
+
+In `D = 1` this carries a single `(α, β)` pair (γ remains derived
+from the EOS via `γ² = M_vv − β²`). In `D = 2` it carries the
+principal-axis pairs `(α_a, β_a)_{a=1,2}` and a Berry rotation
+angle `θ_R` (M3-3 scope). In `D = 3` it carries three principal-axis
+pairs and three angles `θ_{ab}` (M3-7 scope).
+
+Phase M3-0 use: the type is a thin wrapper exposing
+`alphas::NTuple{D, T}` and `betas::NTuple{D, T}` so dimension-generic
+APIs can dispatch on `D` without committing to a concrete storage
+layout. Per-cell storage of the polynomial expansion of these
+fields lives in `HierarchicalGrids.PolynomialFieldSet`; this type is
+mainly documentation + a dispatch tag.
+
+Naming. The type name is `ChFieldND` (rather than `ChField{D, T}`)
+to avoid colliding with the legacy 1D `ChField` until the legacy
+path is retired in M3-2.
+"""
+struct ChFieldND{D, T<:Real}
+    alphas::NTuple{D, T}
+    betas::NTuple{D, T}
+end
+
+"""
+    ChFieldND(α::T, β::T) where {T<:Real}
+
+1D convenience constructor: build a `ChFieldND{1, T}` from a scalar
+`(α, β)` pair. Mirrors the legacy `ChField(α, β, γ)` constructor's
+calling convention (γ is derived externally and not stored here —
+the M3-0 EOS coupling supplies it from `M_vv` per cell).
+"""
+ChFieldND(α::T, β::T) where {T<:Real} =
+    ChFieldND{1, T}((α,), (β,))
+
+"""
+    spatial_dimension(::ChFieldND{D, T})
+
+Spatial dimension `D` of the Cholesky-sector field. Mirrors the
+HG-side `spatial_dimension(::SimplicialMesh{D, T})`.
+"""
+@inline spatial_dimension(::ChFieldND{D, T}) where {D, T} = D
+

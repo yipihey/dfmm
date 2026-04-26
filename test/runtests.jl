@@ -164,4 +164,14 @@ using Test
         # See test/test_integration_all_phases.jl docstring.
         include("test_integration_all_phases.jl")
     end
+    @testset verbose = true "Phase M3-0: HG + R3D integration" begin
+        # Foundation phase for the M3 (multi-D) refactor. Confirms HG
+        # and R3D import cleanly and the HG-substrate-based Phase-1
+        # Cholesky-sector path is bit-exactly equivalent to M1's
+        # `Mesh1D`+`Segment` path. See
+        # `reference/notes_M3_0_hg_integration.md` and
+        # `reference/MILESTONE_3_PLAN.md` Phase M3-0.
+        include("test_M3_0_smoke.jl")
+        include("test_M3_0_parity_1D.jl")
+    end
 end
