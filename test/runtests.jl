@@ -207,4 +207,15 @@ using Test
             include("test_M3_1_phase5b_qformula_unit.jl")
         end
     end
+    @testset verbose = true "Phase M3-prep: Berry-connection stencils" begin
+        # Tier-1 building blocks for M3-3 (2D Cholesky + Berry connection).
+        # Pure-functional pre-compute of the verified symbolic forms
+        #   Θ_rot^(2D) = (1/3)(α_1³ β_2 − α_2³ β_1) dθ_R
+        #   Θ_rot^(3D) = (1/3) Σ_{a<b}(α_a³ β_b − α_b³ β_a) dθ_{ab}
+        #   θ_offdiag  = -(1/2)(α_1² α_2 dβ_{21} + α_1 α_2² dβ_{12}).
+        # Cross-checked against `scripts/verify_berry_connection*.py`.
+        # See `reference/notes_M3_prep_berry_stencil.md` for the API
+        # and `src/berry.jl` for the implementation.
+        include("test_M3_prep_berry_stencil.jl")
+    end
 end

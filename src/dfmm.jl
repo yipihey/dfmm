@@ -197,4 +197,22 @@ export refine_segment!, coarsen_segment_pair!,
        action_error_indicator, gradient_indicator,
        amr_step!, refresh_p_half!
 
+# --- Phase M3-prep API: Berry-connection 2D/3D stencils -------------------
+# Pure-functional building blocks for the M3-3 (2D Cholesky + Berry
+# connection) phase. Implements the verified symbolic forms
+#
+#   Θ_rot^(2D) = (1/3)(α_1³ β_2 − α_2³ β_1) · dθ_R
+#   Θ_rot^(3D) = (1/3) Σ_{a<b} (α_a³ β_b − α_b³ β_a) · dθ_{ab}
+#   θ_offdiag  = -(1/2)(α_1² α_2 dβ_{21} + α_1 α_2² dβ_{12})
+#
+# from `reference/notes_M3_phase0_berry_connection.md` (2D + off-diag) and
+# `reference/notes_M3_phase0_berry_connection_3D.md` (SO(3)). Cross-checked
+# against `scripts/verify_berry_connection*.py`. Not yet wired into the
+# solver — M3-3 will consume these stencils.
+include("berry.jl")
+export BerryStencil2D, BerryStencil3D
+export berry_F_2d, berry_term_2d, berry_partials_2d
+export berry_F_3d, berry_term_3d, berry_partials_3d
+export kinetic_offdiag_coeffs_2d, kinetic_offdiag_2d
+
 end # module
