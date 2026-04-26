@@ -88,6 +88,13 @@ using Test
         include("test_burst_stats.jl")
         include("test_self_consistency.jl")
     end
+    @testset verbose=true "Phase 8: stochastic injection" begin
+        # Phase 8: variance-gamma noise post-Newton injection +
+        # Phase 9 / Tier B.4 burst-stats self-consistency monitor.
+        # See `reference/notes_phase8_stochastic_injection.md` and
+        # `experiments/B4_compression_bursts.jl`.
+        include("test_phase8_stochastic_injection.jl")
+    end
     @testset "setups" begin
         include("test_setups.jl")
     end
