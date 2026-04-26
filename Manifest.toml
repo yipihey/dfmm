@@ -1191,7 +1191,7 @@ uuid = "076d061b-32b6-4027-95e0-9a2c6f6d7e74"
 version = "0.2.0"
 
 [[deps.HierarchicalGrids]]
-deps = ["LinearAlgebra", "OhMyThreads", "R3D", "StaticArrays"]
+deps = ["LinearAlgebra", "OhMyThreads", "R3D", "SparseArrays", "StaticArrays"]
 path = "/Users/tabel/.julia/dev/HierarchicalGrids"
 uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 version = "0.1.0"
