@@ -375,7 +375,8 @@ function inject_vg_noise!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
         # vertex value) is rewritten in step 7 too.
         mesh.segments[j].state = DetField{T}(seg.state.x, seg.state.u,
                                              seg.state.α, seg.state.β,
-                                             T(s_new), T(Pp_new))
+                                             T(s_new), T(Pp_new),
+                                             seg.state.Q)
         # Cell-momentum injection per cell: ΔP_j = δ · Δx_j.
         Δx_j = J_j * Float64(seg.Δm)
         Δp_cell[j] = δ * Δx_j
@@ -393,7 +394,8 @@ function inject_vg_noise!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
         seg = mesh.segments[i]
         mesh.segments[i].state = DetField{T}(seg.state.x, T(u_new),
                                              seg.state.α, seg.state.β,
-                                             seg.state.s, seg.state.Pp)
+                                             seg.state.s, seg.state.Pp,
+                                             seg.state.Q)
         mesh.p_half[i] = m̄ * u_new
     end
 
