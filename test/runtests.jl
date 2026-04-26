@@ -117,6 +117,15 @@ using Test
         # `experiments/B4_compression_bursts.jl`.
         include("test_phase8_stochastic_injection.jl")
     end
+    @testset verbose=true "Phase M2-3: realizability projection" begin
+        # M2-3: closes M1 Open #4 — the long-time stochastic
+        # realizability instability. Adds `realizability_project!` to
+        # the post-Newton injection so wave-pool runs reach 10⁴+ steps
+        # under production calibration. See
+        # `reference/notes_M2_3_realizability.md` and
+        # `experiments/M2_3_long_time_stochastic.jl`.
+        include("test_phase_M2_3_realizability.jl")
+    end
     @testset "setups" begin
         include("test_setups.jl")
     end

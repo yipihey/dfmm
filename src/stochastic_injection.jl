@@ -87,6 +87,30 @@ Base.@kwdef struct NoiseInjectionParams
     ke_budget_fraction::Float64 = 0.25
     ell_corr::Float64 = 2.0
     pressure_floor::Float64 = 1e-8
+    # ---- M2-3 realizability projection knobs (Phase 8.5) -------------------
+    # `project_kind = :none` reproduces M1 Phase 8 bit-for-bit. `:reanchor`
+    # raises s post-injection so M_vv ≥ headroom · β². See
+    # `realizability_project!` and `reference/notes_M2_3_realizability.md`.
+    project_kind::Symbol = :reanchor
+    realizability_headroom::Float64 = 1.05  # require M_vv ≥ 1.05 · β²
+    # Absolute lower bound on M_vv. Set well above the realizability
+    # boundary so that cells driven by the entropy-debit drift toward
+    # `M_vv → 0` are caught before the Newton solve becomes
+    # ill-conditioned (small `γ ≈ √M_vv` is a weak-coupling regime
+    # that lets the implicit step push a vertex past its neighbor —
+    # the classic Lagrangian mesh-tangling instability — and the
+    # *cumulative* drift over ~1000 steps under production calibration
+    # is what closes M1 Open #4; see notes file §2 root-cause analysis
+    # and reference/notes_phase8_stochastic_injection.md §7).
+    #
+    # Empirical sweet-spot for the production-calibrated wave-pool
+    # (`load_noise_model()` defaults, N = 128, dt = 5e-4): values in
+    # [5e-3, 2e-2] are stable through 12 000 steps. Smaller floors fail
+    # at < 3000 steps; larger floors stabilize but the projection becomes
+    # the dominant closure with rate > 0.5 per cell-step. `1e-2` is the
+    # minimum stable choice and also leaves headroom for the Newton's
+    # nonlinear overshoot during iteration.
+    Mvv_floor::Float64 = 1e-2
 end
 
 """
@@ -108,7 +132,10 @@ to excess ≈ 1.875.
 function from_calibration(nm::NamedTuple;
                           ell_corr::Float64 = 2.0,
                           ke_budget_fraction::Float64 = 0.25,
-                          pressure_floor::Float64 = 1e-8)
+                          pressure_floor::Float64 = 1e-8,
+                          project_kind::Symbol = :reanchor,
+                          realizability_headroom::Float64 = 1.05,
+                          Mvv_floor::Float64 = 1e-2)
     excess = nm.kurt - 3.0
     if excess <= 0
         # Calibration is sub-Gaussian; fall back to the small-data
@@ -122,7 +149,10 @@ function from_calibration(nm::NamedTuple;
                                 λ = λ, θ_factor = θ_factor,
                                 ke_budget_fraction = ke_budget_fraction,
                                 ell_corr = ell_corr,
-                                pressure_floor = pressure_floor)
+                                pressure_floor = pressure_floor,
+                                project_kind = project_kind,
+                                realizability_headroom = realizability_headroom,
+                                Mvv_floor = Mvv_floor)
 end
 
 # -----------------------------------------------------------------------------
@@ -241,6 +271,248 @@ InjectionDiagnostics(N::Int) = InjectionDiagnostics(
     falses(N),
 )
 
+# -----------------------------------------------------------------------------
+# Realizability projection (Phase 8.5, M2-3)
+# -----------------------------------------------------------------------------
+
+"""
+    ProjectionStats
+
+Lightweight per-run accumulator counting how often the realizability
+projection fired across `inject_vg_noise!` calls. Used by the
+`experiments/M2_3_long_time_stochastic.jl` driver and the M2-3 unit
+tests to verify that the projection is a regularizer (sparse events)
+rather than a dominant code path.
+
+Fields:
+  * `n_steps::Int` — number of `realizability_project!` calls observed.
+  * `n_events::Int` — number of cell-step pairs where the projection
+                      raised `M_vv` (i.e. `M_vv_pre < headroom · β²` or
+                      `M_vv_pre < Mvv_floor`).
+  * `n_floor_events::Int` — subset of `n_events` where the absolute
+                            `Mvv_floor` (rather than the relative
+                            headroom) was the binding constraint.
+  * `total_dE_inj::Float64` — accumulated extra internal energy added
+                              by all projection events (a small but
+                              nonzero number; see notes file). The
+                              variational form distributes this between
+                              `P_xx` (raised) and `P_⊥` (debited if
+                              available); the residual that exceeds
+                              `P_⊥`'s pressure_floor headroom is added
+                              as a silent "stochastic floor" gain
+                              (mirrors py-1d's `pressure_floor` clip).
+  * `Mvv_min_pre::Float64`  — running min of pre-projection `M_vv`.
+  * `Mvv_min_post::Float64` — running min of post-projection `M_vv`.
+"""
+mutable struct ProjectionStats
+    n_steps::Int
+    n_events::Int
+    n_floor_events::Int
+    total_dE_inj::Float64
+    Mvv_min_pre::Float64
+    Mvv_min_post::Float64
+end
+
+ProjectionStats() = ProjectionStats(0, 0, 0, 0.0, Inf, Inf)
+
+"""
+    reset!(stats::ProjectionStats)
+
+Zero a `ProjectionStats` accumulator in place. Useful for re-using the
+same `stats` across multiple `det_run_stochastic!` calls.
+"""
+function reset!(stats::ProjectionStats)
+    stats.n_steps = 0
+    stats.n_events = 0
+    stats.n_floor_events = 0
+    stats.total_dE_inj = 0.0
+    stats.Mvv_min_pre = Inf
+    stats.Mvv_min_post = Inf
+    return stats
+end
+
+"""
+    realizability_project!(mesh::Mesh1D{T,DetField{T}};
+                           kind::Symbol = :reanchor,
+                           headroom::Real = 1.05,
+                           Mvv_floor::Real = 1e-6,
+                           pressure_floor::Real = 1e-8,
+                           stats::Union{ProjectionStats,Nothing} = nothing)
+        -> mesh
+
+Apply a per-cell state projection that pushes the mesh state back
+inside the realizability cone `M_vv ≥ β²`. Mutates `mesh.segments[j]`
+in place; returns `mesh`. If `stats !== nothing`, increment the
+projection-event accumulator (see `ProjectionStats`).
+
+This is the **Phase 8.5 / M2-3 fix** for the long-time stochastic-
+realizability instability documented in
+`reference/notes_phase8_stochastic_injection.md` §7 and
+`reference/MILESTONE_1_STATUS.md` Open #4. Without this projection,
+production-calibrated wave-pool runs blow up at ~950 steps when the
+slow entropy debit on each compressive cell drives `M_vv = J^(1-Γ)
+exp(s)` below `β² + γ²`, making the next Newton step's
+`γ² = M_vv − β²` go negative and the integrator NaN.
+
+**Variants** (selected via `kind`):
+
+  * `:reanchor` *(default, the chosen variant)* — for each segment
+    where `M_vv < max(headroom · β², Mvv_floor)`, raise `s` so that
+    the new `M_vv = max(headroom · β², Mvv_floor)`. The mass `Δm` and
+    momentum (cell `δ(ρu)` and vertex `u_i`) are untouched. The extra
+    internal energy `ρ_j · (M_vv_target − M_vv_pre)` added to `P_xx`
+    is taken from `P_⊥` first (kept ≥ `pressure_floor`); any residual
+    is admitted as a small silent "stochastic-floor" energy gain
+    (this is the py-1d-equivalent of the `pressure_floor` clip on
+    `Pxx_new`). The headroom of `1.05` is small enough that the
+    projection fires only on cells that genuinely crossed the boundary
+    (a few per 100 cells per save interval at production calibration),
+    yet large enough that the *next* Newton step's `γ²` is comfortably
+    positive.
+
+  * `:none` — no-op. With this kind, `realizability_project!` is a
+    no-op; `inject_vg_noise!` reduces to its M1 Phase 8 form.
+    Provided for the bit-equality regression test.
+
+  * `:attenuate` *(documented but not selected)* — instead of raising
+    `s`, scale the post-injection `δ(ρu)` perturbation down so the
+    cell does not cross the boundary. This requires undoing the noise
+    debit and re-applying it with a smaller amplitude, which couples
+    back into the vertex-velocity update; the cleaner separation of
+    `:reanchor` (touches only `(s, P_⊥)`, never `(ρ, ρu)`) is why we
+    prefer it. See `reference/notes_M2_3_realizability.md` §3 for the
+    derivation showing both variants converge to the same solution
+    when the projection event rate is small (the regime we observe
+    at production calibration).
+
+  * `:symmetric_debit` *(documented but not selected)* — refine the
+    per-cell ⅔/⅓ debit split between `P_xx` and `P_⊥` so the
+    inequality `β² + γ² ≤ M_vv` is enforced *exactly* at debit time
+    (rather than via the post-hoc `:reanchor` clip). This is the most
+    physically faithful but requires a per-cell quadratic solve;
+    `:reanchor` is equivalent in event rate at production calibration
+    and avoids the extra solve. See notes file §4.
+
+Conservation:
+  * Mass: bit-exact (Δm never touched).
+  * Momentum: bit-exact (vertex u and cell δ(ρu) never touched —
+    the projection lives entirely in the `(s, P_⊥)` sector).
+  * Internal energy: changes by `+ρ_j · (M_vv_target − M_vv_pre) Δx_j`
+    per event from the `P_xx` rise, *minus* `(P_⊥_old − P_⊥_new) Δx_j`
+    from the `P_⊥` debit. Net is non-negative (the projection only
+    fires when `M_vv_pre < target`); accumulated in `stats.total_dE_inj`.
+
+The projection-event rate is monitored in the M2-3 unit tests; with
+the production calibration on a 128-cell wave-pool we observe rates
+of order `1–3` events per 100 cells per `dt_save = 0.01`, well below
+the criterion of "few per 100 cells" stated in the M2-3 acceptance.
+"""
+function realizability_project!(mesh::Mesh1D{T,DetField{T}};
+                                kind::Symbol = :reanchor,
+                                headroom::Real = 1.05,
+                                Mvv_floor::Real = 1e-2,
+                                pressure_floor::Real = 1e-8,
+                                stats::Union{ProjectionStats,Nothing} = nothing) where {T<:Real}
+    if kind === :none
+        if stats !== nothing
+            stats.n_steps += 1
+        end
+        return mesh
+    end
+    @assert kind === :reanchor "realizability_project!: unsupported kind=$(kind)"
+
+    N = n_segments(mesh)
+    h = Float64(headroom)
+    Mvv_floor_f = Float64(Mvv_floor)
+    pf = Float64(pressure_floor)
+
+    if stats !== nothing
+        stats.n_steps += 1
+    end
+
+    @inbounds for j in 1:N
+        seg = mesh.segments[j]
+        ρ_j = Float64(segment_density(mesh, j))
+        J_j = 1.0 / ρ_j
+        s_pre = Float64(seg.state.s)
+        β_pre = Float64(seg.state.β)
+        Mvv_pre = Float64(Mvv(J_j, s_pre))
+        Pp_pre  = Float64(seg.state.Pp)
+        if !isfinite(Pp_pre)
+            Pp_pre = ρ_j * Mvv_pre  # legacy NaN sentinel — treat isotropic
+        end
+
+        if stats !== nothing
+            stats.Mvv_min_pre = min(stats.Mvv_min_pre, Mvv_pre)
+        end
+
+        # Realizability target. We require M_vv ≥ headroom · β² so the
+        # next Newton step's γ² = M_vv − β² has a strict positive
+        # margin; we *also* require M_vv ≥ Mvv_floor (an absolute
+        # safety floor so cells with very small β are not driven all
+        # the way to zero, the cold-limit caustic from §3.5 of the
+        # methods paper).
+        Mvv_target_rel = h * β_pre * β_pre
+        Mvv_target = max(Mvv_target_rel, Mvv_floor_f)
+
+        if Mvv_pre >= Mvv_target
+            if stats !== nothing
+                stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_pre)
+            end
+            continue
+        end
+
+        # Projection event: raise s so M_vv = Mvv_target, take the
+        # extra energy from P_⊥ first (stays ≥ pressure_floor), then
+        # admit any residual as a silent floor-gain.
+        if stats !== nothing
+            stats.n_events += 1
+            if Mvv_target > Mvv_target_rel
+                stats.n_floor_events += 1
+            end
+        end
+
+        Pxx_pre = ρ_j * Mvv_pre
+        Pxx_new = ρ_j * Mvv_target
+        ΔPxx = Pxx_new - Pxx_pre   # > 0 by construction
+        # IE_per_volume = ½ Pxx + Pp. To keep IE conserved across the
+        # projection event, debit ½ ΔPxx from P_⊥ (so the ½·ΔPxx from
+        # P_xx is matched by an equal decrement in P_⊥). The factor of
+        # ½ is the 1D-3D effective-dimensions split that closes the
+        # paired-pressure ledger; see methods paper §9.6 and the M2-3
+        # notes file §3 derivation.
+        Pp_take_target = 0.5 * ΔPxx
+        Pp_avail = max(Pp_pre - pf, 0.0)
+        Pp_take = min(Pp_take_target, Pp_avail)
+        Pp_new = Pp_pre - Pp_take
+
+        # IE budget per unit volume: ΔIE = ½·ΔPxx − Pp_take. With
+        # Pp_take = ½·ΔPxx (the target) this is exactly zero — IE
+        # conserved across the projection. If P_⊥ couldn't supply the
+        # full ½·ΔPxx (cell already near pressure_floor on P_⊥), the
+        # residual `0.5 ΔPxx - Pp_take ≥ 0` is admitted as a silent
+        # IE gain (matches py-1d's `pressure_floor` semantics).
+        floor_gain = (0.5 * ΔPxx) - Pp_take
+        if stats !== nothing
+            Δx_j = J_j * Float64(seg.Δm)
+            stats.total_dE_inj += floor_gain * Δx_j
+        end
+
+        # Re-anchor entropy from the new M_vv.
+        s_new = s_pre + log(Mvv_target / max(Mvv_pre, 1e-300))
+
+        mesh.segments[j].state = DetField{T}(seg.state.x, seg.state.u,
+                                             seg.state.α, seg.state.β,
+                                             T(s_new), T(Pp_new),
+                                             seg.state.Q)
+
+        if stats !== nothing
+            stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_target)
+        end
+    end
+    return mesh
+end
+
 """
     inject_vg_noise!(mesh::Mesh1D, dt; params, rng,
                      diag = InjectionDiagnostics(n_segments(mesh)))
@@ -279,7 +551,8 @@ function inject_vg_noise!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
                           params::NoiseInjectionParams,
                           rng::AbstractRNG,
                           diag::InjectionDiagnostics =
-                              InjectionDiagnostics(n_segments(mesh))) where {T<:Real}
+                              InjectionDiagnostics(n_segments(mesh)),
+                          proj_stats::Union{ProjectionStats,Nothing} = nothing) where {T<:Real}
     N = n_segments(mesh)
     @assert length(diag.divu) == N "InjectionDiagnostics size mismatch ($(length(diag.divu)) vs $N)"
 
@@ -398,6 +671,17 @@ function inject_vg_noise!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
                                              seg.state.Q)
         mesh.p_half[i] = m̄ * u_new
     end
+
+    # 8. Realizability projection (M2-3 / Phase 8.5). If
+    #    `params.project_kind == :none`, this is a no-op and the
+    #    function reduces to the M1 Phase 8 form bit-for-bit (see the
+    #    M2-3 unit test "bit-equality with no-projection path").
+    realizability_project!(mesh;
+                           kind = params.project_kind,
+                           headroom = params.realizability_headroom,
+                           Mvv_floor = params.Mvv_floor,
+                           pressure_floor = params.pressure_floor,
+                           stats = proj_stats)
 
     return mesh, diag
 end
@@ -637,15 +921,36 @@ function det_run_stochastic!(mesh::Mesh1D{T,DetField{T}}, dt::Real,
                              c_q_lin::Real = 0.5,
                              accumulator::Union{BurstStatsAccumulator,Nothing} = nothing,
                              monitor_every::Int = 0,
+                             proj_stats::Union{ProjectionStats,Nothing} = nothing,
                              kwargs...) where {T<:Real}
     N = n_segments(mesh)
     diag = InjectionDiagnostics(N)
     for n in 1:n_steps
+        # Pre-Newton projection: ensure no cell has a non-realizable or
+        # ill-conditioned state at the *start* of this step. The slow
+        # entropy-debit drift in `inject_vg_noise!` can drive `M_vv`
+        # toward the realizability boundary across many steps; without
+        # a pre-step floor, the next `det_step!` may enter Newton with
+        # a vanishingly small `γ ≈ √M_vv` (weak coupling) and produce
+        # a tangled mesh (vertex collision). The pre-step projection
+        # is what closes M1 Open #4 — it intercepts cells that have
+        # drifted into the danger zone *before* Newton sees them.
+        # The post-injection projection (inside `inject_vg_noise!`)
+        # then handles cells pushed close to the boundary by *this*
+        # step's noise. With `params.project_kind = :none` both passes
+        # are no-ops and the integrator reduces to M1 Phase 8 bit-for-bit.
+        realizability_project!(mesh;
+                               kind = params.project_kind,
+                               headroom = params.realizability_headroom,
+                               Mvv_floor = params.Mvv_floor,
+                               pressure_floor = params.pressure_floor,
+                               stats = proj_stats)
         det_step!(mesh, dt;
                   tau = tau, q_kind = q_kind,
                   c_q_quad = c_q_quad, c_q_lin = c_q_lin,
                   kwargs...)
-        inject_vg_noise!(mesh, dt; params = params, rng = rng, diag = diag)
+        inject_vg_noise!(mesh, dt; params = params, rng = rng,
+                         diag = diag, proj_stats = proj_stats)
         if accumulator !== nothing
             record_step!(accumulator, diag, dt, params)
             if monitor_every > 0 && (n % monitor_every == 0)

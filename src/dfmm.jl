@@ -112,7 +112,8 @@ export NoiseInjectionParams, from_calibration,
        inject_vg_noise!, det_run_stochastic!,
        BurstStatsAccumulator, record_step!, burst_durations,
        self_consistency_check, InjectionDiagnostics,
-       smooth_periodic_3pt!
+       smooth_periodic_3pt!,
+       realizability_project!, ProjectionStats
 
 # Tier-A initial-condition factories. Mirrors the six benchmarks listed
 # in the methods paper §10.2; the corresponding HDF5 goldens are
