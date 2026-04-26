@@ -206,7 +206,12 @@ function det_el_residual(y_np1::AbstractVector, y_n::AbstractVector,
                          q_kind::Symbol = Q_KIND_NONE,
                          c_q_quad::Real = 1.0,
                          c_q_lin::Real  = 0.5,
-                         Γ_q::Real      = GAMMA_LAW_DEFAULT)
+                         Γ_q::Real      = GAMMA_LAW_DEFAULT,
+                         bc::Symbol     = :periodic,
+                         inflow_xun     = nothing,
+                         outflow_xun    = nothing,
+                         inflow_Pq      = nothing,
+                         outflow_Pq     = nothing)
     N = length(Δm)
     @assert length(y_np1) == 4N
     @assert length(y_n) == 4N
@@ -235,19 +240,31 @@ function det_el_residual(y_np1::AbstractVector, y_n::AbstractVector,
     q̄ = similar(y_np1, Tres, N)
 
     use_q = q_active(q_kind)
+    is_io = bc == :inflow_outflow
 
     @inbounds for j in 1:N
         j_right = j == N ? 1 : j + 1
         x_left_n   = get_x(y_n, j)
         x_left_np1 = get_x(y_np1, j)
-        # Periodic wrap on the right vertex of segment N.
-        wrap = (j == N) ? L_box : zero(L_box)
-        x_right_n   = get_x(y_n, j_right)   + wrap
-        x_right_np1 = get_x(y_np1, j_right) + wrap
+        # Right-vertex data: periodic wrap by default; on inflow_outflow
+        # the segment-N right vertex is overridden with the supplied
+        # outflow Dirichlet position/velocity, breaking the cyclic
+        # stencil at the boundary so the residual doesn't see a
+        # spurious upstream → downstream jump at the periodic seam.
+        if is_io && j == N && outflow_xun !== nothing
+            x_right_n   = Tres(outflow_xun.x_n)
+            x_right_np1 = Tres(outflow_xun.x_np1)
+            u_right_n   = Tres(outflow_xun.u_n)
+            u_right_np1 = Tres(outflow_xun.u_np1)
+        else
+            wrap = (j == N) ? L_box : zero(L_box)
+            x_right_n   = get_x(y_n, j_right)   + wrap
+            x_right_np1 = get_x(y_np1, j_right) + wrap
+            u_right_n   = get_u(y_n, j_right)
+            u_right_np1 = get_u(y_np1, j_right)
+        end
         u_left_n   = get_u(y_n, j)
         u_left_np1 = get_u(y_np1, j)
-        u_right_n   = get_u(y_n, j_right)
-        u_right_np1 = get_u(y_np1, j_right)
 
         x̄_left  = (x_left_n  + x_left_np1)  / 2
         x̄_right = (x_right_n + x_right_np1) / 2
@@ -295,10 +312,18 @@ function det_el_residual(y_np1::AbstractVector, y_n::AbstractVector,
         # q ≡ 0 (q_kind = :none) this collapses to the Phase-5
         # residual exactly.
         i_left = i == 1 ? N : i - 1
+        # Phase 7 inflow_outflow: replace the cyclic-left pressure on
+        # vertex 1 with the supplied upstream Dirichlet `(P + q)`,
+        # breaking the cyclic momentum stencil at the inflow boundary.
+        Pq_left = if is_io && i == 1 && inflow_Pq !== nothing
+            Tres(inflow_Pq)
+        else
+            P̄xx[i_left] + q̄[i_left]
+        end
         m̄_i = (Δm[i_left] + Δm[i]) / 2
         F[4*(i-1) + 2] =
             (u_i_np1 - u_i_n) / dt +
-            ((P̄xx[i] + q̄[i]) - (P̄xx[i_left] + q̄[i_left])) / m̄_i
+            ((P̄xx[i] + q̄[i]) - Pq_left) / m̄_i
 
         # F^α and F^β at segment i (in the segment-major packing,
         # row i corresponds to segment i).

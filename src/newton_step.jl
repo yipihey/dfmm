@@ -167,6 +167,7 @@ function unpack_state!(mesh::Mesh1D{T,DetField{T}}, y::AbstractVector) where {T<
         seg = mesh.segments[j]
         s_old = seg.state.s
         Pp_old = seg.state.Pp
+        Q_old = seg.state.Q
         seg.state = DetField{T}(
             T(y[4*(j-1) + 1]),
             T(y[4*(j-1) + 2]),
@@ -174,6 +175,7 @@ function unpack_state!(mesh::Mesh1D{T,DetField{T}}, y::AbstractVector) where {T<
             T(y[4*(j-1) + 4]),
             s_old,
             Pp_old,
+            Q_old,
         )
         # Refresh the cached half-step momentum diagnostic.
         i_left = j == 1 ? N : j - 1
@@ -266,6 +268,10 @@ function det_step!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
                    q_kind::Symbol = Q_KIND_NONE,
                    c_q_quad::Real = 1.0,
                    c_q_lin::Real  = 0.5,
+                   bc::Symbol = mesh.bc,
+                   inflow_state::Union{NamedTuple,Nothing} = nothing,
+                   outflow_state::Union{NamedTuple,Nothing} = nothing,
+                   n_pin::Int = 2,
                    abstol::Real = 1e-13, reltol::Real = 1e-13,
                    maxiters::Int = 50) where {T<:Real}
     @assert q_kind_supported(q_kind) "Unsupported q_kind = $q_kind. " *
@@ -290,13 +296,45 @@ function det_step!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
     # bit-equality with Phase 5 is preserved.
     cqq = T(c_q_quad)
     cql = T(c_q_lin)
+
+    # Phase 7: precompute inflow / outflow ghost data for the residual
+    # so the cyclic stencil at the boundary is replaced by Dirichlet
+    # ghosts. This avoids the spurious upstream→downstream jump at the
+    # periodic seam destroying the Newton iterate.
+    inflow_xun  = nothing
+    outflow_xun = nothing
+    inflow_Pq   = nothing
+    outflow_Pq  = nothing
+    if bc == :inflow_outflow && inflow_state !== nothing
+        # Inflow Pxx + q. The artificial viscous pressure q is zero on
+        # the upstream Dirichlet (smooth flow, no compression).
+        inflow_Pq = T(inflow_state.Pp)  # Pp == Pxx for isotropic Maxwellian inflow
+        if outflow_state !== nothing
+            # The "right vertex" for segment N is the implicit boundary
+            # at x = L_box. We Dirichlet it to (x = L_box, u = u_outflow)
+            # at both time levels — frozen plane.
+            outflow_xun = (
+                x_n   = T(mesh.L_box),
+                x_np1 = T(mesh.L_box),
+                u_n   = T(outflow_state.u),
+                u_np1 = T(outflow_state.u),
+            )
+            outflow_Pq = T(outflow_state.Pp)
+        end
+    end
+
     p = (y_n, Δm_vec, s_vec, L_box, T(dt))
     f = (u, p_in) -> begin
         y_n_in, Δm_in, s_in, L_box_in, dt_in = p_in
         return det_el_residual(u, y_n_in, Δm_in, s_in, L_box_in, dt_in;
                                q_kind = q_kind,
                                c_q_quad = cqq,
-                               c_q_lin  = cql)
+                               c_q_lin  = cql,
+                               bc = bc,
+                               inflow_xun = inflow_xun,
+                               outflow_xun = outflow_xun,
+                               inflow_Pq = inflow_Pq,
+                               outflow_Pq = outflow_Pq)
     end
 
     # Build the NonlinearProblem with sparse Jacobian prototype when
@@ -329,7 +367,12 @@ function det_step!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
     res = det_el_residual(sol.u, y_n, Δm_vec, s_vec, L_box, T(dt);
                           q_kind = q_kind,
                           c_q_quad = cqq,
-                          c_q_lin  = cql)
+                          c_q_lin  = cql,
+                          bc = bc,
+                          inflow_xun = inflow_xun,
+                          outflow_xun = outflow_xun,
+                          inflow_Pq = inflow_Pq,
+                          outflow_Pq = outflow_Pq)
     res_norm = maximum(abs, res)
     # Newton may report `Stalled` or `MaxIters` retcodes on smooth
     # nearly-converged problems where the per-step descent falls below
@@ -396,7 +439,8 @@ function det_step!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
                 seg = mesh.segments[j]
                 seg.state = DetField{T}(seg.state.x, seg.state.u,
                                         seg.state.α, seg.state.β,
-                                        s_pre + Δs_q, seg.state.Pp)
+                                        s_pre + Δs_q, seg.state.Pp,
+                                        seg.state.Q)
             end
         end
     end
@@ -467,9 +511,115 @@ function det_step!(mesh::Mesh1D{T,DetField{T}}, dt::Real;
             elseif β_new < -β_max
                 β_new = -β_max
             end
+            # Phase 7: heat-flux update. Lagrangian transport
+            # `Q/ρ` conserved, then BGK relaxation `Q · exp(-Δt/τ)`.
+            # Matches py-1d/dfmm/schemes/cholesky.py line 169.
+            Q_n = seg.state.Q
+            Q_transport = Q_n * ρ_np1 / ρ_n_vec[j]
+            Q_new = Q_transport * decay
             seg.state = DetField{T}(seg.state.x, seg.state.u,
                                     seg.state.α, β_new,
-                                    s_new, Pp_new)
+                                    s_new, Pp_new, Q_new)
+        end
+    end
+
+    # Phase 7: inflow_outflow boundary enforcement. After the Newton
+    # solve, BGK relaxation, and any q-dissipation, pin the leftmost
+    # `n_pin` segments to upstream state and the rightmost `n_pin`
+    # segments to downstream state. Mirrors `py-1d/dfmm/setups/shock.py`
+    # `step_inflow_outflow` which overwrites cells 0–1 (i.e. n_pin=2)
+    # with the upstream conserved state after every HLL step.
+    #
+    # The pinning preserves the Lagrangian mass label `Δm` and the
+    # cell's `m` coordinate; only the `state::DetField` is overwritten.
+    # Vertex positions are forced to march at the inflow velocity (a
+    # purely-translational ghost), keeping `Δx_j = (x_{j+1} − x_j)`
+    # consistent with `Δm_j / ρ_inflow` for the pinned segments.
+    if bc == :inflow_outflow
+        @assert inflow_state !== nothing "bc = :inflow_outflow requires inflow_state"
+        # outflow_state is optional: nothing ⇒ zero-gradient (copy nearest interior).
+        n_pin_left  = n_pin
+        n_pin_right = n_pin
+        # Left (inflow) — anchor segment 1's left vertex at x = 0 (the
+        # Dirichlet inflow plane), then chain the pinned leftmost-
+        # `n_pin_left` segments rightward from there with the
+        # downstream density convention `Δx = Δm / ρ_inflow`.
+        ρ_in = T(inflow_state.rho)
+        cum_Δx_in = zero(T)
+        @inbounds for j in 1:min(n_pin_left, N)
+            seg = mesh.segments[j]
+            # j=1 starts at x=0; subsequent pinned vertices chain.
+            x_left_pinned = (j == 1) ? zero(T) : cum_Δx_in
+            cum_Δx_in += seg.Δm / ρ_in
+            seg.state = DetField{T}(
+                x_left_pinned,
+                T(inflow_state.u),
+                T(inflow_state.alpha),
+                T(inflow_state.beta),
+                T(inflow_state.s),
+                T(inflow_state.Pp),
+                T(inflow_state.Q),
+            )
+            # Refresh vertex momentum diagnostic.
+            i_left = j == 1 ? N : j - 1
+            m̄ = (mesh.segments[i_left].Δm + seg.Δm) / 2
+            mesh.p_half[j] = m̄ * seg.state.u
+        end
+        # Right (outflow) — anchor segment N's right vertex at
+        # x = L_box (the Dirichlet plane), then chain the pinned
+        # rightmost-`n_pin_right` segments leftward from there. This
+        # keeps the outflow plane stationary and prevents the
+        # vertex chain from drifting beyond L_box.
+        if outflow_state !== nothing
+            ρ_out = T(outflow_state.rho)
+            # Walk leftward from the implicit right boundary at L_box.
+            # Segment j's left vertex sits at L_box − Σ_{k=j..N} Δx_k,
+            # with Δx_k = Δm_k / ρ_out for the pinned segments.
+            cum_Δx = zero(T)
+            @inbounds for j in N:-1:(N - n_pin_right + 1)
+                seg = mesh.segments[j]
+                # Δx for segment j with Dirichlet downstream density.
+                Δx_j = seg.Δm / ρ_out
+                cum_Δx += Δx_j
+                x_left_pinned = T(mesh.L_box) - cum_Δx
+                seg.state = DetField{T}(
+                    x_left_pinned,
+                    T(outflow_state.u),
+                    T(outflow_state.alpha),
+                    T(outflow_state.beta),
+                    T(outflow_state.s),
+                    T(outflow_state.Pp),
+                    T(outflow_state.Q),
+                )
+                i_left = j == 1 ? N : j - 1
+                m̄ = (mesh.segments[i_left].Δm + seg.Δm) / 2
+                mesh.p_half[j] = m̄ * seg.state.u
+            end
+        else
+            # Zero-gradient: copy state of segment N - n_pin_right
+            # into the trailing n_pin_right segments, advancing the
+            # vertex chain by the local Δx.
+            j_src = max(1, N - n_pin_right)
+            src   = mesh.segments[j_src].state
+            ρ_src = mesh.segments[j_src].Δm / max((j_src < N ?
+                       (mesh.segments[j_src+1].state.x - src.x) :
+                       (mesh.L_box + mesh.segments[1].state.x - src.x)),
+                                                  eps(T))
+            @inbounds for j in (N - n_pin_right + 1):N
+                seg = mesh.segments[j]
+                Δx_target = seg.Δm / ρ_src
+                if j > 1
+                    x_left_pinned = mesh.segments[j-1].state.x + (mesh.segments[j-1].Δm / ρ_src)
+                else
+                    x_left_pinned = seg.state.x
+                end
+                seg.state = DetField{T}(
+                    x_left_pinned, src.u, src.α, src.β, src.s, src.Pp, src.Q,
+                )
+                i_left = j == 1 ? N : j - 1
+                m̄ = (mesh.segments[i_left].Δm + seg.Δm) / 2
+                mesh.p_half[j] = m̄ * seg.state.u
+            end
         end
     end
 

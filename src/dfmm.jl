@@ -39,6 +39,8 @@ include("cholesky_sector.jl")
 include("deviatoric.jl")
 # Phase 5b: opt-in artificial viscosity (tensor-q) for shock capture.
 include("artificial_viscosity.jl")
+# Phase 7: heat-flux Lagrange-multiplier sector (used by det_step!).
+include("heat_flux.jl")
 include("newton_step.jl")
 
 # --- Phase 1 API ----------------------------------------------------------
@@ -64,6 +66,9 @@ export deviatoric_bgk_step, deviatoric_bgk_step_exponential,
 # --- Phase 5b API (opt-in artificial viscosity / tensor-q) -----------------
 export compute_q_segment, q_kind_supported, q_active,
        Q_KIND_NONE, Q_KIND_VNR_LINEAR_QUADRATIC
+
+# --- Phase 7 API (heat-flux Lagrange multiplier) ---------------------------
+export heat_flux_bgk_step, heat_flux_advect_lagrangian, heat_flux_step
 
 # --- Track C/F infrastructure layer (Milestone 1, Agent C) -----------------
 # Pure infrastructure modules: diagnostics, I/O, plotting, calibration.

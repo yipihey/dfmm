@@ -117,6 +117,14 @@ Fields:
   defaults `Pp = ρ · M_vv(J, s)` (the isotropic-Maxwellian initial
   condition that makes the Phase-1/2 tests insensitive to its
   presence).
+- `Q::T` — heat flux (third central velocity moment, `Q = M_3 −
+  ρ u^3 − 3 u P_xx`), cell-centered. Phase 7 introduces this as a
+  Lagrangian post-Newton update mirroring the β / P_⊥ sectors:
+  the variational integrator advances `(x, u, α, β)` implicitly,
+  and after the Newton step a closed-form exponential BGK relaxes
+  `Q → 0`. Phase 1/2/5 callers leave `Q = 0` (Maxwellian IC); the
+  6-arg `DetField(x, u, α, β, s, Pp)` constructor defaults `Q = 0`
+  and the integrator skips Q-related work when `Q = 0` everywhere.
 
 Phase 1 compatibility: setting `x = m * J_0`, `u = 0`, and reading
 `(α, β)` reproduces the Phase-1 single-cell state on a uniform mesh.
@@ -128,17 +136,36 @@ struct DetField{T<:Real}
     β::T
     s::T
     Pp::T
+    Q::T
 end
+
+"""
+    DetField(x, u, α, β, s, Pp, Q)
+
+Convenience 7-arg constructor with element-type promotion. Phase 7
+introduces the explicit `Q` (heat-flux) field; pass `Q = 0` for
+Maxwellian initial conditions.
+"""
+DetField(x, u, α, β, s, Pp, Q) = DetField{promote_type(typeof(x), typeof(u),
+                                                       typeof(α), typeof(β),
+                                                       typeof(s), typeof(Pp),
+                                                       typeof(Q))}(
+    promote(x, u, α, β, s, Pp, Q)...,
+)
 
 """
     DetField(x, u, α, β, s, Pp)
 
-Convenience 6-arg constructor with element-type promotion.
+Phase-5 compatibility constructor. Defaults `Q = 0` (Maxwellian IC,
+the value used by every Tier-A `setup_*` factory at t = 0). Phase 7+
+callers that need explicit `Q` should use the 7-arg constructor.
 """
 DetField(x, u, α, β, s, Pp) = DetField{promote_type(typeof(x), typeof(u),
                                                     typeof(α), typeof(β),
                                                     typeof(s), typeof(Pp))}(
-    promote(x, u, α, β, s, Pp)...,
+    promote(x, u, α, β, s, Pp, zero(promote_type(typeof(x), typeof(u),
+                                                  typeof(α), typeof(β),
+                                                  typeof(s), typeof(Pp))))...,
 )
 
 """
@@ -148,6 +175,8 @@ Phase-1/2 compatibility constructor. Leaves `Pp = NaN` as a
 sentinel: callers that do not pass `Pp` are running pre-Phase-5
 tests where `P_⊥` is not part of the state, and the integrator
 will not read it. For Phase 5+ tests, pass `Pp` explicitly.
+Defaults `Q = 0` for the same reason — pre-Phase-7 paths don't
+read it.
 
 Implementation note: `NaN` would propagate into any computation
 that reads `Pp`, so this 5-arg constructor is *only* for legacy
@@ -157,5 +186,7 @@ Phase-1/2 paths. The Phase-5 driver
 DetField(x, u, α, β, s) = DetField{promote_type(typeof(x), typeof(u),
                                                 typeof(α), typeof(β),
                                                 typeof(s))}(
-    promote(x, u, α, β, s, NaN)...,
+    promote(x, u, α, β, s, NaN,
+            zero(promote_type(typeof(x), typeof(u), typeof(α),
+                              typeof(β), typeof(s))))...,
 )

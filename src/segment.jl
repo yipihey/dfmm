@@ -61,8 +61,17 @@ Fields:
   length `L` this is `L`. (For Phase-1 single-segment meshes, set to
   `Δm` since the single-cell action is autonomous and `L_box` is
   unused.)
-- `periodic::Bool` — `true` for periodic BC. Phase 2 only implements
-  periodic BC; reflective/transmissive are flagged for later.
+- `periodic::Bool` — `true` for cyclic wrap. Kept for backwards
+  compatibility (Phase 1–6 callers); Phase 7+ callers should consult
+  `bc` instead.
+- `bc::Symbol` — boundary-condition tag, either `:periodic` (default,
+  matches `periodic = true`) or `:inflow_outflow` (Phase 7
+  steady-shock setup). The mesh's interior topology is always
+  N-segment cyclic — the EL residual is unchanged across BC choices —
+  but the Phase-7 driver `det_step!(...; bc = :inflow_outflow,
+  inflow_state = ..., outflow_state = ...)` re-pins boundary
+  segments to upstream / downstream values after every step,
+  mimicking py-1d's `step_inflow_outflow`.
 - `p_half::Vector{T}` — vertex half-step momenta `p_i^{n+1/2}`. Used
   by the variational-Verlet driver to carry the mid-step velocity
   forward between calls. Initialized from the user-supplied initial
@@ -73,6 +82,7 @@ mutable struct Mesh1D{T<:Real,F}
     L_box::T
     periodic::Bool
     p_half::Vector{T}
+    bc::Symbol
 end
 
 # Backwards-compatible (Phase-1) constructor: positional Vector of
@@ -80,7 +90,7 @@ end
 function Mesh1D(segments::Vector{Segment{T,F}}) where {T<:Real,F}
     L_box = sum(seg.Δm for seg in segments)
     p_half = zeros(T, length(segments))
-    return Mesh1D{T,F}(segments, L_box, true, p_half)
+    return Mesh1D{T,F}(segments, L_box, true, p_half, :periodic)
 end
 
 """
@@ -100,7 +110,7 @@ function single_segment_mesh(α, β, γ; Δm = 1.0, m = 0.0)
     T = promote_type(typeof(α), typeof(β), typeof(γ), typeof(Δm), typeof(m))
     state = ChField{T}(T(α), T(β), T(γ))
     seg = Segment{T,ChField{T}}(T(m), T(Δm), state)
-    return Mesh1D{T,ChField{T}}([seg], T(Δm), true, zeros(T, 1))
+    return Mesh1D{T,ChField{T}}([seg], T(Δm), true, zeros(T, 1), :periodic)
 end
 
 # ──────────────────────────────────────────────────────────────────────
@@ -147,8 +157,10 @@ function Mesh1D(
     ss::AbstractVector;
     Δm::AbstractVector,
     Pps::Union{AbstractVector,Nothing} = nothing,
+    Qs::Union{AbstractVector,Nothing}  = nothing,
     L_box::Union{Real,Nothing} = nothing,
     periodic::Bool = true,
+    bc::Symbol = :periodic,
 )
     N = length(positions)
     @assert length(velocities) == N
@@ -157,9 +169,27 @@ function Mesh1D(
     @assert length(ss) == N
     @assert length(Δm) == N
     @assert N ≥ 2 "Phase-2 multi-segment mesh requires at least 2 segments"
-    @assert periodic "Phase 2 implements periodic BC only"
+    # Phase 7: bc support. Map the legacy `periodic::Bool` constructor
+    # arg onto the new `bc::Symbol` parameter, and preserve the existing
+    # default behaviour. Supported BCs:
+    #   :periodic         — Phase 2/5/5b/6 default (cyclic wrap).
+    #   :inflow_outflow   — Phase 7 steady-shock setup. Implementation
+    #     uses a periodic mesh internally (so the EL residual is
+    #     unchanged) but the Phase-7 caller (`det_step!`) re-pins the
+    #     left K segments to upstream and the right K segments to
+    #     downstream after every step, mimicking py-1d's
+    #     `step_inflow_outflow` ghost-cell stencil. The mesh struct
+    #     just records the choice; enforcement is the integrator
+    #     driver's responsibility.
+    @assert bc in (:periodic, :inflow_outflow) "bc must be :periodic or :inflow_outflow, got $bc"
+    if !periodic
+        @assert bc == :inflow_outflow "non-periodic mesh must declare bc = :inflow_outflow"
+    end
     if Pps !== nothing
         @assert length(Pps) == N
+    end
+    if Qs !== nothing
+        @assert length(Qs) == N
     end
 
     T = promote_type(eltype(positions), eltype(velocities),
@@ -205,7 +235,8 @@ function Mesh1D(
             Pp_init = T(Pps[j])
         end
         det = DetField{T}(T(positions[j]), T(velocities[j]),
-                          T(αs[j]), T(βs[j]), T(ss[j]), Pp_init)
+                          T(αs[j]), T(βs[j]), T(ss[j]), Pp_init,
+                          (Qs === nothing) ? zero(T) : T(Qs[j]))
         segments[j] = Segment{T,DetField{T}}(m_center, T(Δm[j]), det)
     end
 
@@ -218,7 +249,7 @@ function Mesh1D(
         p_half[i] = m̄ * T(velocities[i])
     end
 
-    return Mesh1D{T,DetField{T}}(segments, L, periodic, p_half)
+    return Mesh1D{T,DetField{T}}(segments, L, periodic, p_half, bc)
 end
 
 # ──────────────────────────────────────────────────────────────────────

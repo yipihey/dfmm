@@ -68,6 +68,28 @@ using Test
         # shock-capturing — see `reference/notes_phase6_cold_sinusoid.md`.
         include("test_phase6_cold_sinusoid_scan.jl")
     end
+    @testset verbose = true "Phase 7: steady shock" begin
+        # Tier A.3 steady-shock Mach scan + heat-flux Lagrange
+        # multiplier. Asserts:
+        #  (a) The closed-form heat-flux BGK primitives
+        #      (`heat_flux_bgk_step`, `heat_flux_step`) match the
+        #      bit-equal exponential decay py-1d uses.
+        #  (b) `setup_steady_shock` builds an IC whose downstream
+        #      state matches analytical Rankine-Hugoniot to 3
+        #      decimal places (methods paper §10.2 A.3) for
+        #      M1 ∈ {1.5, 2, 3, 5, 10}.
+        #  (c) `Mesh1D` and `DetField` accept the new `bc` and `Q`
+        #      fields without breaking Phase 1–6 paths.
+        #  (d) `det_step!` advances `Q` via BGK (exponential decay
+        #      to <1e-10 over 10 steps on a smooth mesh).
+        #  (e) Short-horizon (t = 0.005, ~30 steps at N = 80)
+        #      preservation of the downstream R-H plateau by the
+        #      variational integrator + Phase-5b artificial
+        #      viscosity for M1 = 3. The long-horizon golden match
+        #      is gated on a future shock-capturing extension —
+        #      see `reference/notes_phase7_steady_shock.md`.
+        include("test_phase7_steady_shock.jl")
+    end
     @testset "eos" begin
         include("test_eos.jl")
     end
