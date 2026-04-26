@@ -168,6 +168,16 @@ include("setups.jl")
 export setup_sod, setup_cold_sinusoid, setup_steady_shock,
        setup_kmles_wavepool, setup_dust_in_gas, setup_eion
 
+# Tier-C dimension-generic IC factories (HG substrate). Used by
+# Milestone M3-4 (2D 1D-symmetric consistency tests). The factories
+# are dimension-generic over `D ∈ {1, 2, 3}` via HG's
+# `HierarchicalMesh{D}` + `EulerianFrame{D}`. See
+# `reference/notes_M3_prep_tierC_ic_factories.md`.
+include("setups_2d.jl")
+export tier_c_sod_ic, tier_c_cold_sinusoid_ic, tier_c_plane_wave_ic
+export uniform_eulerian_mesh, tier_c_total_mass,
+       tier_c_cell_centers, tier_c_velocity_component
+
 # Tier-A regression-scaffold: HDF5 golden loader. The full
 # integrator-vs-golden comparison enters at Phase 5; this module
 # lands the loader plumbing in advance.

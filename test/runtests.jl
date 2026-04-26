@@ -174,6 +174,17 @@ using Test
         include("test_M3_0_smoke.jl")
         include("test_M3_0_parity_1D.jl")
     end
+    @testset verbose = true "M3-prep: Tier-C IC factories" begin
+        # Setup-only tests for the Tier-C dimension-generic IC
+        # factories `tier_c_sod_ic`, `tier_c_cold_sinusoid_ic`,
+        # `tier_c_plane_wave_ic`. These run in advance of the M3-4
+        # solver-coupled C.1/C.2/C.3 consistency tests; they only
+        # verify the IC field-set values (mass conservation,
+        # y-direction independence, rotational invariance, sample
+        # primitive points). See
+        # `reference/notes_M3_prep_tierC_ic_factories.md`.
+        include("test_M3_prep_setups_tierC.jl")
+    end
     @testset verbose = true "Phase M3-1: Phase 2 + 5 + 5b on HG" begin
         # Phase-2 (bulk + entropy + multi-segment periodic mesh),
         # Phase-5 (deviatoric P_⊥ via post-Newton BGK), and Phase-5b
