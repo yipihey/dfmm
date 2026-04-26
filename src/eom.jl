@@ -100,3 +100,61 @@ Returns: `SVector{2}` residual matching `cholesky_el_residual`.
                                           M_vv, divu_half, dt)
     return cholesky_el_residual(q_np1, q_n, M_vv, divu_half, dt)
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M3-1: Phase-2/5/5b field-set helpers for the HG path.
+# ─────────────────────────────────────────────────────────────────────
+#
+# The Phase-2 deterministic state per cell (1D) is the 7-tuple
+# `(α, β, x, u, s, Pp, Q)`. The HG-side storage uses an order-0
+# `PolynomialFieldSet` with seven Float64 scalar fields, one
+# coefficient per cell (piecewise constant), keyed by those names.
+# The boundary conditions, periodic box length `L_box`, vertex
+# half-step momenta `p_half`, and per-segment masses `Δm` are not
+# expressible as polynomial-cell fields and ride along on a thin
+# wrapper struct (see `src/newton_step_HG.jl`).
+
+"""
+    read_detfield(fields::PolynomialFieldSet, j::Integer)
+
+Read the 7-tuple `(x, u, α, β, s, Pp, Q)` stored at simplex `j` of
+an HG order-0 polynomial field set populated for the Phase-2/5
+state. Returns the M1 `DetField{T}` so downstream consumers (e.g.
+the M1 `det_step!` driver) can use the legacy code path
+byte-identically.
+
+The field set must have the structure produced by
+`allocate_detfield_HG`. Each polynomial-view's single coefficient is
+read via index `[1]`.
+"""
+@inline function read_detfield(fields::PolynomialFieldSet, j::Integer)
+    α  = fields.alpha[j][1]
+    β  = fields.beta[j][1]
+    x  = fields.x[j][1]
+    u  = fields.u[j][1]
+    s  = fields.s[j][1]
+    Pp = fields.Pp[j][1]
+    Q  = fields.Q[j][1]
+    T = promote_type(typeof(α), typeof(β), typeof(x), typeof(u),
+                     typeof(s), typeof(Pp), typeof(Q))
+    return DetField{T}(T(x), T(u), T(α), T(β), T(s), T(Pp), T(Q))
+end
+
+"""
+    write_detfield!(fields::PolynomialFieldSet, j::Integer, det::DetField)
+
+Write the M1 `DetField{T}` `det` to simplex `j`'s order-0 coefficients
+in the HG field set. Mirrors `read_detfield`.
+"""
+@inline function write_detfield!(fields::PolynomialFieldSet,
+                                  j::Integer,
+                                  det::DetField)
+    fields.alpha[j] = (det.α,)
+    fields.beta[j]  = (det.β,)
+    fields.x[j]     = (det.x,)
+    fields.u[j]     = (det.u,)
+    fields.s[j]     = (det.s,)
+    fields.Pp[j]    = (det.Pp,)
+    fields.Q[j]     = (det.Q,)
+    return det
+end

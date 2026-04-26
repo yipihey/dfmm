@@ -76,6 +76,25 @@ export cholesky_step_HG!, cholesky_run_HG!
 export single_cell_simplicial_mesh_1D, uniform_simplicial_mesh_1D,
        allocate_chfield_HG
 
+# --- Phase M3-1 API (HG substrate; Phase-2/5/5b) --------------------------
+# Adds the multi-segment Phase-2 (`(x, u, α, β, s)` evolution), the
+# post-Newton Phase-5 BGK relaxation of `(P_xx, P_⊥)`, and the opt-in
+# Phase-5b artificial viscosity (Kuropatenko / vNR) on the HG substrate.
+# The driver delegates to M1's `det_step!` for bit-exact parity. See
+# `reference/notes_M3_1_phase2_5_5b_port.md` for the design write-up.
+export DetFieldND
+export DetMeshHG, DetMeshHG_from_arrays
+export allocate_detfield_HG, periodic_simplicial_mesh_1D
+export read_detfield, write_detfield!
+export det_step_HG!, det_run_HG!
+export total_mass_HG, total_momentum_HG, total_energy_HG
+export segment_density_HG, segment_length_HG
+# Note: `n_cells(::DetMeshHG)` is intentionally NOT exported —
+# `HierarchicalGrids` already exports an `n_cells` method on its own
+# mesh types. Call via `dfmm.n_cells(...)` if needed; the regular
+# user-facing path is `length(mesh.Δm)` or
+# `HierarchicalGrids.n_simplices(mesh.mesh)`.
+
 # --- Phase 2 API (multi-segment full deterministic) ------------------------
 export DetField
 export n_segments, vertex_mass, segment_length, segment_density,

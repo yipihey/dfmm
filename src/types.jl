@@ -264,3 +264,75 @@ HG-side `spatial_dimension(::SimplicialMesh{D, T})`.
 """
 @inline spatial_dimension(::ChFieldND{D, T}) where {D, T} = D
 
+# ──────────────────────────────────────────────────────────────────────
+# Phase M3-1: dimension-generic full deterministic field type.
+# ──────────────────────────────────────────────────────────────────────
+#
+# The original M1 `DetField{T}` (above) carries the full deterministic
+# state per segment in 1D: `(x, u, α, β, s, Pp, Q)`. As of M3-1 we
+# introduce a dimension-generic `DetFieldND{D, T}` that, in 1D, reduces
+# to the 7-scalar M1 layout; in 2D it carries `(x_a, u_a, α_a, β_a,
+# s, Pp, Q)` per axis with `θ_R` for the Berry rotation (M3-3 scope);
+# in 3D it carries `(x_a, u_a, α_a, β_a, s, Pp, Q)` per axis plus
+# three `θ_{ab}` (M3-7 scope).
+#
+# In Phase M3-1 the type is a documentation / dispatch tag; storage of
+# `(x, u, α, β, s, Pp, Q)` per HG cell goes through HG's
+# `PolynomialFieldSet` (see `src/newton_step_HG.jl`), which is
+# dimension-generic by construction.
+#
+# DO NOT delete the legacy `DetField{T}` — it is referenced by Phase-2
+# tests and downstream Phase-5/5b internals through the
+# `Mesh1D{T,DetField{T}}` path. The two coexist until M3-2 verifies
+# full M1+M2 parity on the HG-based code path.
+
+"""
+    DetFieldND{D, T<:Real}
+
+Dimension-generic full deterministic state in the 1D / 2D / 3D
+specialisation of the Phase-2/5 system.
+
+In `D = 1` this carries a single `(x, u, α, β, s, Pp, Q)` tuple
+matching M1's `DetField{T}`. In `D = 2` it carries per-axis
+`(x_a, u_a, α_a, β_a)_{a=1,2}` plus a Berry rotation angle `θ_R` and
+the scalar entropy `s`, perpendicular pressure `Pp`, heat flux `Q`
+(M3-3 scope). In `D = 3` it carries three principal-axis tuples
+plus three angles `θ_{ab}` (M3-7 scope).
+
+Phase M3-1 use: a thin wrapper exposing scalar fields for the 1D path.
+Per-cell storage of the polynomial expansion lives in
+`HierarchicalGrids.PolynomialFieldSet`; this type is mainly
+documentation + a dispatch tag.
+
+Naming. The type name is `DetFieldND` (rather than
+`DetField{D, T}`) to avoid colliding with the legacy 1D
+`DetField` until the legacy path is retired in M3-2.
+"""
+struct DetFieldND{D, T<:Real}
+    x::NTuple{D, T}
+    u::NTuple{D, T}
+    alphas::NTuple{D, T}
+    betas::NTuple{D, T}
+    s::T
+    Pp::T
+    Q::T
+end
+
+"""
+    DetFieldND(x::T, u::T, α::T, β::T, s::T, Pp::T, Q::T) where {T<:Real}
+
+1D convenience constructor: build a `DetFieldND{1, T}` from scalar
+`(x, u, α, β, s, Pp, Q)` values. Mirrors the M1 `DetField{T}`'s
+7-arg constructor.
+"""
+DetFieldND(x::T, u::T, α::T, β::T, s::T, Pp::T, Q::T) where {T<:Real} =
+    DetFieldND{1, T}((x,), (u,), (α,), (β,), s, Pp, Q)
+
+"""
+    spatial_dimension(::DetFieldND{D, T})
+
+Spatial dimension `D` of the deterministic field. Mirrors the HG-side
+`spatial_dimension(::SimplicialMesh{D, T})`.
+"""
+@inline spatial_dimension(::DetFieldND{D, T}) where {D, T} = D
+

@@ -174,4 +174,37 @@ using Test
         include("test_M3_0_smoke.jl")
         include("test_M3_0_parity_1D.jl")
     end
+    @testset verbose = true "Phase M3-1: Phase 2 + 5 + 5b on HG" begin
+        # Phase-2 (bulk + entropy + multi-segment periodic mesh),
+        # Phase-5 (deviatoric P_⊥ via post-Newton BGK), and Phase-5b
+        # (opt-in Kuropatenko / vNR tensor-q) ports to the HG
+        # substrate. The HG-side driver delegates to M1's `det_step!`
+        # for bit-exact parity. See
+        # `reference/notes_M3_1_phase2_5_5b_port.md` and
+        # `reference/MILESTONE_3_PLAN.md` Phase M3-1.
+        @testset "Phase 2 (HG): mass" begin
+            include("test_M3_1_phase2_mass_HG.jl")
+        end
+        @testset "Phase 2 (HG): momentum" begin
+            include("test_M3_1_phase2_momentum_HG.jl")
+        end
+        @testset "Phase 2 (HG): free streaming" begin
+            include("test_M3_1_phase2_free_streaming_HG.jl")
+        end
+        @testset "Phase 2 (HG): acoustic" begin
+            include("test_M3_1_phase2_acoustic_HG.jl")
+        end
+        @testset "Phase 5 (HG): Sod regression" begin
+            include("test_M3_1_phase5_sod_HG.jl")
+        end
+        @testset "Phase 5b (HG): q_kind=:none bit-equality" begin
+            include("test_M3_1_phase5b_qnone_bit_equal.jl")
+        end
+        @testset "Phase 5b (HG): q_kind=:vNR Sod" begin
+            include("test_M3_1_phase5b_qvnr_sod.jl")
+        end
+        @testset "Phase 5b (HG): compute_q formula" begin
+            include("test_M3_1_phase5b_qformula_unit.jl")
+        end
+    end
 end
