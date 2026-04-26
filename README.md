@@ -5,11 +5,11 @@ Two-stage development of the dfmm scheme in one repository.
 |  | Stage | Language | Dimension | Status |
 |---|---|---|---|---|
 | `py-1d/` | Reference | Python + Numba | 1D | Reproduces the methods paper |
-| top level | Unified variational scheme | Julia | 1D → 2D | **Milestone 1 substantially complete** (1801 tests + 1 deferred) |
+| top level | Unified variational scheme | Julia | 1D → 2D | **Milestones 1 + 2 complete** (2044 tests + 1 deferred) |
 
-## Milestone-1 status snapshot
+## Status snapshot — Milestones 1 + 2
 
-**1801 + 1 deferred tests** on main, full `Pkg.test()` ~2m25s. Phases 1-11 + 5b complete; only Phase 6's post-crossing golden remains deferred (gated on shock-capturing improvement). **The methods paper's two central claims — Tier B.2 cold-limit unification and Tier B.5 passive-scalar exactness — are verified.**
+**2044 + 1 deferred tests** on main, full `Pkg.test()` ~3m. **All 1D Tier-A and Tier-B regression items verified.** The methods paper's three central scientific claims — **Tier B.2 cold-limit unification**, **Tier B.5 passive-scalar exactness**, and **Tier B.3 action-based AMR cell-savings** — are all verified.
 
 | Phase | Tier | Headline result |
 |---|---|---|
@@ -22,6 +22,10 @@ Two-stage development of the dfmm scheme in one repository.
 | 7 | A.3 | Steady shock R-H to ≥3 decimals at $M_1 \in \{1.5, 2, 3, 5, 10\}$ |
 | 8 / 9 | B.4 | Variance-gamma noise injection; self-consistency monitor working |
 | 11 | **B.5** | **Tracer-exactness verified — L∞ change = 0.0 literally** |
+| **M2-1** | **B.3** | **Action-based AMR: 37.8% cell savings vs gradient AMR** |
+| **M2-2** | **B.6** | **Multi-tracer wave-pool: bit-exact under stochastic; 25-114× over Eulerian** |
+| **M2-3** | **Open #4** | **Realizability projection: wave-pool reaches 12,000 steps (was 1222)** |
+| **M2-4** | — | **Methods-paper text corrections applied** (§3.5, §3.2, §3.1, §10.3 B.1) |
 
 See `reference/MILESTONE_1_STATUS.md` for the full synthesis,
 `reference/notes_methods_paper_corrections.md` for paper-edit items

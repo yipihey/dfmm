@@ -1,5 +1,10 @@
 # Methods-paper text corrections from Milestone-1 implementation
 
+> **Status (2026-04-26):** All four corrections **✓ applied in M2-4**
+> (commit `ed5338c`). PDF rebuilt to 20 pages. See
+> `reference/notes_M2_4_paper_corrections_applied.md` for the
+> per-correction line-number diffs.
+
 These are concrete edits to `specs/01_methods_paper.tex` and
 `design/03_action_note_v2.tex` that surfaced during Milestone-1
 implementation. Each was independently noted by an agent in their

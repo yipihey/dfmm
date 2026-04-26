@@ -564,14 +564,13 @@ The natural parallel groupings:
 
 Before launching M3:
 
-1. **Resolve M1 Open #4** (long-time stochastic realizability
-   instability). Carries directly into M3 Phase 11+.
+1. ~~**Resolve M1 Open #4** (long-time stochastic realizability
+   instability). Carries directly into M3 Phase 11+.~~ **✓ Done in M2-3** (closed by `realizability_project!` in `src/stochastic_injection.jl`; wave-pool reaches 12,000 steps under production calibration; root-cause reframed as compression cascade — see `reference/notes_M2_3_realizability.md`).
 2. **Berry connection derivation** complete (Phase 0 deliverable).
 3. **r3d Julia port** confirmed available + API confirmed.
-4. **Methods paper revision pass** applied (per
-   `reference/notes_methods_paper_corrections.md`).
-5. **Optional: Milestone 2** (1D variational verification). The
-   handoff explicitly leaves M2 scope open. Tom's call.
+4. ~~**Methods paper revision pass** applied (per
+   `reference/notes_methods_paper_corrections.md`).~~ **✓ Done in M2-4** (four edits applied to `specs/01_methods_paper.tex`; PDF rebuilt to 20 pages).
+5. ~~**Optional: Milestone 2** (1D variational verification).~~ **✓ Done.** Tier B complete; B.3 (M2-1) + B.6 (M2-2) verified. See `reference/MILESTONE_2_STATUS.md`.
 
 ---
 
