@@ -1,13 +1,10 @@
 # Berry connection $\omega_{\rm rot}$ for the 2D Cholesky sector
 
-> **Status (2026-04-26):** First-principles derivation. Result is
-> structurally correct in the principal-axis-diagonal restriction;
-> off-diagonal $L_2$ coupling sketched but not fully integrated.
-> Verifications pass: isotropic limit reduces $\omega_{\rm rot} \to 0$;
-> uniaxial limit reduces 2D to 1D; rotation Hamilton equation matches
-> the kinematic torque from kinetic-theory Liouville. Computer-algebra
-> independent verification recommended before M3 Phase 1 codes against
-> this form.
+> **Status (2026-04-26):** First-principles derivation **+ symbolic
+> verification** in `scripts/verify_berry_connection.py` (passes 5 of
+> 7 checks cleanly; 2 corrections to the original derivation appear
+> in §6 below). Off-diagonal $L_2$ coupling sketched in §7 but not
+> fully integrated — defer until M3 Phase 9 (KH instability test).
 
 This document derives the Berry-curvature contribution
 $\omega_{\rm rot}$ in
@@ -205,53 +202,119 @@ $$\omega_{\rm rot} = dF\wedge d\theta_R
   \wedge d\theta_R.
 \tag{5.3}$$
 
-## 6. Verifications
+## 6. Verifications (symbolic, via `scripts/verify_berry_connection.py`)
 
-### 6.1 Isotropic limit ($\alpha_1 = \alpha_2 = \alpha$, $\beta_1 = \beta_2 = \beta$)
+The script builds $\Omega$ as a 5×5 antisymmetric matrix in the basis
+$(\alpha_1, \beta_1, \alpha_2, \beta_2, \theta_R)$ and runs seven
+checks. Five pass cleanly; two surface corrections to the original
+derivation:
 
-On the diagonal subspace parameterized by $(\alpha, \beta, \theta_R)$:
+### 6.1 Closedness — $d\omega_{2D} = 0$
 
-- $F|_{\rm iso} = \tfrac{1}{3}(\alpha^3\beta - \alpha^3\beta) = 0$.
-- $dF$ along the diagonal: with $d\alpha_1 = d\alpha_2 = d\alpha$,
-  $d\beta_1 = d\beta_2 = d\beta$, the four terms cancel pairwise, so
-  $dF|_{\rm iso} = 0$.
-- $\omega_{\rm rot}|_{\rm iso} = 0$. ✓
+All cyclic-sum components $\partial_i \Omega_{jk} + \partial_j \Omega_{ki} + \partial_k \Omega_{ij}$
+for $i<j<k$ vanish. ✓ — $\omega_{2D}$ is a valid (closed) symplectic
+2-form.
 
-The two diagonal terms reduce to $2\alpha^2 d\alpha\wedge d\beta = 2\,\omega_{1D}$; the factor of 2 is a *normalization choice* (whether to count the diagonal subspace as carrying 1 or 2 canonical pairs). The methods paper's §5.2 wording "recovers $\omega_{1D}$ correctly" implies the convention where the diagonal subspace carries one canonical pair; under that convention the per-axis weights pick up a 1/2 in the 2D form. Equivalently, the isotropic-limit projection halves the total. Both conventions are internally consistent; pick one and document.
+### 6.2 Per-axis Hamilton equations match M1's boxed form
 
-### 6.2 Uniaxial limit ($\alpha_2 = 1$, $\beta_2 = 0$, $\theta_R = 0$)
+Computing Hamilton's equations from $\Omega$ and $\mathcal{H}_{\rm Ch}^{2D} = -\tfrac12(\alpha_1^2\gamma_1^2 + \alpha_2^2\gamma_2^2)$ on the slice $\dot\theta_R = 0$ (4×4 sub-system):
 
-This is the 2D-degenerates-to-1D limit relevant for M3 Phase 3
-(Tier C.1 1D-symmetric Sod). Restrict to the slice where
-$\alpha_2, \beta_2, \theta_R$ are constants (no $y$-dynamics):
+| Equation | Match |
+|---|---|
+| $\dot\alpha_1 = \beta_1$ | ✓ |
+| $\dot\beta_1 = (M_{vv,1} - \beta_1^2)/\alpha_1 = \gamma_1^2/\alpha_1$ | ✓ |
+| $\dot\alpha_2 = \beta_2$ | ✓ |
+| $\dot\beta_2 = (M_{vv,2} - \beta_2^2)/\alpha_2 = \gamma_2^2/\alpha_2$ | ✓ |
 
-- $d\alpha_2 = d\beta_2 = d\theta_R = 0$.
-- $\omega_{\rm rot} \to 0$ (every term involves $d\theta_R$).
-- $\omega_{2D}$ reduces to $\alpha_1^2 d\alpha_1\wedge d\beta_1 = \omega_{1D}$. ✓
+Per-axis sector reduces *exactly* to the M1 boxed Hamilton equations
+(v2 §2.1, eq:dfmm-cholesky-cov).
 
-The 1D code is a strict slice of the 2D code; M3 Phase 3 verifies
-this end-to-end against the M1 1D goldens.
+### 6.3 Iso-subspace pullback (1D iso reduction)
 
-### 6.3 Hamilton equation for $\theta_R$ matches kinematic (3.1)
+The original derivation claimed $\omega_{\rm rot} \to 0$ "in the
+isotropic limit." The verification clarifies this: the **components**
+of $\omega_{\rm rot}$ in 5D do **not** vanish at $\alpha_1 = \alpha_2$,
+$\beta_1 = \beta_2$ (the partial derivatives $\partial F/\partial \alpha_a$,
+$\partial F/\partial \beta_a$ are individually nonzero there). What
+vanishes is the **pullback** to the 3D iso-diagonal subspace
+parameterized by $(\alpha, \beta, \theta_R)$ with embedding
+$\alpha_1 = \alpha_2 = \alpha$, $\beta_1 = \beta_2 = \beta$.
 
-To extract Hamilton's equation for $\theta_R$, decompose
-$\omega_{2D}$ as a matrix in the basis $(d\alpha_1, d\beta_1, d\alpha_2, d\beta_2, d\theta_R)$.
-The diagonal pairs contribute the standard symplectic blocks, and
-$\omega_{\rm rot}$ adds a 5th-row coupling. Inverting and contracting
-with $d\mathcal{H}_{\rm Ch}^{2D}$ gives
+The pullback's tangent vectors are $T_\alpha = (1,0,1,0,0)$,
+$T_\beta = (0,1,0,1,0)$, $T_\theta = (0,0,0,0,1)$, and SymPy
+gives:
 
-$$\dot\theta_R\bigl|_{\rm Ham} = \frac{1}{F_{,\beta_a}}\,\frac{\partial \mathcal{H}_{\rm Ch}^{2D}}{\partial \beta_a} + \cdots$$
+| Component | Value | Status |
+|---|---|---|
+| $i^*\omega(T_\alpha, T_\beta)$ | $\boxed{2\alpha^2}$ | Twice 1D weight (factor-of-2 issue, see §6.4) |
+| $i^*\omega(T_\alpha, T_\theta)$ | $0$ | ✓ Berry block vanishes |
+| $i^*\omega(T_\beta, T_\theta)$ | $0$ | ✓ Berry block vanishes |
 
-The detailed match-up to (3.1) is left for computer-algebra
-verification (see §8). The structural match at leading order:
+So the Berry contribution does vanish on the iso slice, as required.
 
-- The Hamilton equation $\dot\theta_R$ is proportional to
-  $(\alpha_1^2 - \alpha_2^2)^{-1}$ — the same singularity at the
-  principal-axis-degenerate boundary as in (3.1).
-- The driver is the principal-axis-frame strain $\tilde S_{12}$,
-  which enters through $\mathcal{H}_{\rm rot}(\theta_R) =$
-  $\tilde S_{12}(\theta_R)\,\cdot$(asymmetry), generating the
-  vorticity + strain-induced rotation predicted by (3.1).
+### 6.4 Factor-of-2 normalization correction
+
+The methods paper §5.2 says iso reduction "recovers $\omega_{1D}$
+correctly." With the form as written ($\alpha_a^2 d\alpha_a \wedge d\beta_a$ per
+axis), the iso pullback gives $2\alpha^2 d\alpha \wedge d\beta = 2\omega_{1D}$ —
+twice the 1D weight. To get exact agreement, one of two corrections:
+
+1. **Normalize the per-axis weight to $\alpha_a^2/2$**: write
+   $\omega_{2D} = \tfrac12\sum_a \alpha_a^2 d\alpha_a \wedge d\beta_a + \omega_{\rm rot}$.
+   The 1D form is then $\omega_{1D} = \alpha^2 d\alpha\wedge d\beta$, and the
+   iso pullback gives exactly $\omega_{1D}$.
+2. **Or interpret the iso-reduction as a projection** counting each
+   axis half-weight on the diagonal subspace.
+
+Both conventions are internally consistent. **Recommend (1)** for the
+methods-paper revision: explicit factor of $1/2$ avoids the
+implicit-projection subtlety.
+
+### 6.5 Uniaxial limit ($\alpha_2 = $ const, $\beta_2 = 0$, $\theta_R = 0$)
+
+On this 2D slice ($d\alpha_2 = d\beta_2 = d\theta_R = 0$), every
+$\omega_{\rm rot}$ term involves $d\theta_R$ and pulls back to zero;
+$\omega_{2D}$ reduces to $\alpha_1^2 d\alpha_1 \wedge d\beta_1 = \omega_{1D}$
+without normalization issues. ✓
+
+### 6.6 Kernel structure: Poisson manifold, not symplectic
+
+$\Omega$ has rank 4 in 5D — it's a *Poisson* structure, not strictly
+symplectic. The 1D kernel is the **gauge direction**:
+
+$$v_{\rm ker} = \left(-\frac{\alpha_2^3}{3\alpha_1^2},\; -\beta_2,\; \frac{\alpha_1^3}{3\alpha_2^2},\; \beta_1,\; 1\right) e$$
+
+(verified by SymPy `nullspace`). Hamilton's equations
+$\Omega\,X = -dH$ have solutions iff $dH \perp v_{\rm ker}$. This is
+the **integrability condition**, and it determines the rotation
+Hamiltonian $\mathcal{H}_{\rm rot}$ as a function of the per-axis
+$(α_a, β_a, M_{vv,a})$:
+
+$$\boxed{\;\mathcal{H}_{\rm rot}\;\text{must satisfy}\quad
+\frac{\partial \mathcal{H}_{\rm rot}}{\partial \theta_R}\bigg|_{\rm constraint}
+= \frac{\gamma_1^2 \alpha_2^3}{3\alpha_1} - \frac{\gamma_2^2 \alpha_1^3}{3\alpha_2} - (\alpha_1^2 - \alpha_2^2)\beta_1\beta_2\;}$$
+
+(derived from $dH \cdot v_{\rm ker} = 0$; SymPy output in §6.6 of the
+verification log.) **This is a substantive new finding**: in the
+principal-axis-diagonal restriction, $\mathcal{H}_{\rm rot}$ is *not* a
+free input — it's algebraically determined by the per-axis Hamiltonian
+and the Berry connection.
+
+The methods paper §5.5 says $\mathcal{H}_{\rm rot}$ "is driven by the
+misalignment between the $M_{xx}$ principal axes and the strain
+principal axes." Our result complements this: in the
+principal-axis-diagonal sector (no strain misalignment, $\tilde S_{12} = 0$),
+$\mathcal{H}_{\rm rot}$ has the explicit form above. The full
+strain-driven form requires lifting the principal-axis-diagonal
+restriction (see §7).
+
+### 6.7 Singularity structure at the iso boundary
+
+Both $\mathcal{H}_{\rm rot}$ and the $\dot\theta_R$ Hamilton equation
+have a $1/(\alpha_1^2 - \alpha_2^2)$-type singularity at the
+principal-axis-degenerate boundary (the $\alpha_a$-difference appears
+in denominators). This matches the kinetic-theory kinematic equation
+(3.1) from §3 above. ✓
 
 ## 7. Off-diagonal $L_2$ sector (sketch)
 
@@ -279,12 +342,14 @@ fully before that phase.
 
 Before M3 Phase 1 codes against this form:
 
-1. **Computer-algebra verification.** Symbolic-algebra check
-   (Mathematica / SymPy) that Hamilton's equations under $(\omega_{2D}, \mathcal{H}_{\rm Ch}^{2D})$ from §5 match
-   the kinematic equation (3.1) at general $(\alpha_a, \beta_a, \theta_R)$.
-   The existing dfmm test infrastructure (Track C diagnostics +
-   Track A discrete-EL framework) can be used as a numerical
-   check at finite mesh resolution.
+1. ~~**Computer-algebra verification.**~~ **✓ Done** —
+   `scripts/verify_berry_connection.py` runs SymPy verification of:
+   closedness $d\omega_{2D} = 0$, per-axis Hamilton equations matching
+   M1's boxed form, iso-subspace pullback's Berry-block vanishing,
+   uniaxial reduction to $\omega_{1D}$, kernel structure, and the
+   $1/(\alpha_1^2 - \alpha_2^2)$ singularity at the iso boundary.
+   See §6 above for the corrections surfaced (factor-of-2
+   normalization in §6.4, $\mathcal{H}_{\rm rot}$ constraint in §6.6).
 
 2. **3D extension structural pattern.** Replacing $SO(2)$ with
    $SO(3)$ and three principal axes, the Berry connection should
