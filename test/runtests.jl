@@ -130,6 +130,15 @@ using Test
         # upwind scheme. See `reference/notes_phase11_passive_tracer.md`.
         include("test_phase11_tracer_advection.jl")
     end
+    @testset verbose=true "Phase M2-2: multi-tracer wave-pool" begin
+        # Tier B.6 — multi-tracer fidelity in 1D wave-pool turbulence
+        # with Phase-8 stochastic injection enabled. Verifies that
+        # Phase-11's bit-exact tracer-preservation property holds
+        # even when stochastic noise is active (the noise mutates
+        # ρu, P_xx, P_⊥, s — never the tracer matrix). See
+        # `reference/notes_M2_2_multitracer.md`.
+        include("test_phase_M2_2_multitracer.jl")
+    end
     @testset verbose = true "Cross-phase smoke (defensive integration)" begin
         # Catches inter-phase regressions that per-phase tests miss
         # — e.g. struct extension without updating mutation call sites.
