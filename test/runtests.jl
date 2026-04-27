@@ -457,4 +457,11 @@ using Test
         # §"Pre-Tier-C handoff items" deliverables 1+2.
         include("test_M3_4_ic_bridge.jl")
     end
+    @testset verbose = true "Phase M3-4 Phase 2 (b): C.1 1D-symmetric 2D Sod" begin
+        # M3-4 Phase 2 (b): C.1 1D-symmetric 2D Sod acceptance driver.
+        # y-independence ≤ 1e-12 at every step + conservation gates.
+        # 1D-reduction-vs-golden gate is captured at the loose tolerance
+        # documented in MILESTONE_3_STATUS Open Issue #2 (Sod L∞ ~10-20%).
+        include("test_M3_4_C1_sod.jl")
+    end
 end
