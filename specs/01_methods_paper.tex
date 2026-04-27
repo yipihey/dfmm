@@ -1105,7 +1105,29 @@ is the dominant physics.
 \paragraph{Tier E: Stress tests.} Extreme parameter regimes where
 the scheme reports its own failure cleanly.
 
+\paragraph{Bit-exact regression protocol across substrate ports.}
+The Tier A and Tier B 1D regression suites are not only verified
+against \texttt{dfmm} reference output: they are additionally
+held \emph{bit-exact} ($\Delta = 0.0$ absolute, every cell, every
+step) across the M3 substrate port from the standalone Rust/Julia
+1D code onto \texttt{HierarchicalGrids.jl}. M3-0/1/2 used a
+transitional \texttt{cache\_mesh::Mesh1D} shim to expose the HG
+mesh under the legacy 1D interface, and the entire M1 (305 +
+140 + 21 = 466) + M2 (243) test set, plus 1335 cross-phase /
+regression tests, plus the M3-port-specific tests, all reproduce
+to identical bit pattern through that shim ($3037+$ asserts; full
+counts in \verb|reference/MILESTONE_3_STATUS.md|). M3-3e is now
+retiring the shim with a sub-phase decomposition that imposes a
+bit-exact gate per sub-phase, so that the native HG-driven 1D
+path remains byte-for-byte equivalent to the dfmm-paper baseline
+at every intermediate state. Bit-exactness, where it is
+attainable, is treated in this paper as the \emph{strongest}
+acceptance criterion --- stronger than any tolerance-based
+floating-point check --- because it converts a regression bug
+from a statistical to a deterministic detection problem.
+
 \subsection{Tier A: 1D regression}
+\label{sec:tier-A}
 
 \begin{itemize}
 \item \textbf{A.1 Sod shock tube.} Reproduce dfmm Fig.\ 2 across
@@ -1125,6 +1147,7 @@ mass-ratio scaling of thermal vs.\ momentum relaxation.
 \end{itemize}
 
 \subsection{Tier B: 1D extension}
+\label{sec:tier-B}
 
 \begin{itemize}
 \item \textbf{B.1 Variational integrator energy drift.} Long-time
@@ -1166,6 +1189,7 @@ Multi-tracer fidelity vs.\ fine DNS; sharp interface preservation.
 \end{itemize}
 
 \subsection{Tier C: 2D consistency}
+\label{sec:tier-C}
 
 \begin{itemize}
 \item \textbf{C.1 1D-symmetric 2D Sod.} Solution exactly $y$-independent
@@ -1177,7 +1201,46 @@ $\gamma_1\to 10^{-5}$, $\gamma_2\to O(1)$.
 invariance to plotting precision.
 \end{itemize}
 
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.95\textwidth]{../reference/figs/M3_3d_per_axis_gamma_selectivity.png}
+\caption{C.2 per-axis $\gamma$ selectivity (M3-3d gate). Cold
+sinusoid initial condition with $k_x = 1$, $k_y = 0$, $A = 0.5$,
+HG level $= 4$ ($256$ leaves), $\Delta t = 2\times 10^{-3}$,
+$100$ steps ($T = 0.2$). Top row: spatial min/max trajectory of
+$\gamma_1$ (collapsing axis, range $[0.940, 0.987]$ at the final
+step) and $\gamma_2$ (trivial axis, range $[0.981, 0.981]$,
+uniform to round-off). Bottom row: per-cell $|s|$ and per-cell
+$\det(\mathrm{Hess})$ at the final step. The spatial-std ratio
+$\mathrm{std}(\gamma_1) / \mathrm{std}(\gamma_2)$ exceeds
+$10^{13}$ ($\gamma_2$ spatial variance is at machine precision):
+the principal-axis decomposition selects the collapsing axis,
+and the trivial axis preserves anisotropy by construction. This
+is the load-bearing scientific gate for the 2D matrix lift of
+\S\ref{sec:matrix-lift}.}
+\label{fig:M3-3d-selectivity}
+\end{figure}
+
+\paragraph{Tier C conservation-properties acceptance.} The Bayesian
+remap of \S\ref{sec:remap} commits the only nontrivial
+floating-point arithmetic in the conservation chain. As of
+\texttt{HierarchicalGrids.jl} commit \texttt{81914c2}, HG ships an
+opt-in exact-rational polytope-clipping backend
+(\texttt{overlap\_simplex\_box\_exact!},
+\texttt{IntegerLattice}, and the
+\texttt{compute\_overlap(\dots; backend=:exact)} dispatch in
+\verb|src/Overlap/r3d_int_adapter.jl|), in addition to the default
+\texttt{:float} backend. The Tier C acceptance protocol therefore
+runs every conservation gate (mass, momentum, total $L$ overlap,
+and the Liouville-monotonicity diagnostic of
+\S\ref{sec:remap-liouville-diag}) under both backends; the
+\texttt{:exact} backend produces an exact-rational reference whose
+deviation from \texttt{:float} bounds the geometric round-off
+contribution to any observed conservation residual. M3-5 will
+adopt \texttt{:exact} as the conservation-regression gate.
+
 \subsection{Tier D: 2D novelty}
+\label{sec:tier-D}
 
 \begin{itemize}
 \item \textbf{D.1 2D Kelvin-Helmholtz.} Per-principal-axis noise
@@ -1222,6 +1285,7 @@ significantly better than Eulerian methods.
 \end{itemize}
 
 \subsection{Tier E: Stress tests}
+\label{sec:tier-E}
 
 \begin{itemize}
 \item \textbf{E.1 High-Mach 2D shocks.} $|s|$ approaches realizability
@@ -1234,7 +1298,125 @@ implicit Newton; reduces to Navier-Stokes.
 collapse with self-gravity; comparison to ColDICE and PM N-body.
 \end{itemize}
 
+\subsection{M3 implementation gate results}
+\label{sec:tier-M3-gates}
+
+The Milestone-3 (2D) implementation has produced numerical results
+on a subset of the gates above; these are recorded here as the
+data points the methods paper can presently cite. Each gate is
+documented in a corresponding design note under
+\verb|reference/notes_M3_3*.md|; the magnitudes below are quoted
+from those notes. The remaining Tier C/D items are scheduled for
+M3-4 through M3-8 and remain ``to be produced.''
+
+\paragraph{Dimension-lift gate (load-bearing).} The 2D residual
+in a $1$D-symmetric configuration ($k_y = 0$, axis~2 trivial)
+reproduces the 1D Phase-1 zero-strain analytic trajectory
+$\alpha(t) = \sqrt{1+t^2}$, $\beta(t) = t/\sqrt{1+t^2}$
+\emph{byte-equal}: $\Delta = 0.0$ absolute at every test
+resolution. Verified single-step at $\Delta t = 10^{-3}$ and
+$10^{-5}$, $100$-step runs at $\Delta t = 10^{-3}$, both $4\times
+4$ and $8\times 8$ meshes, and under axis-swap symmetry (active
+axis $= 2$). This is the strongest possible consistency check
+between Tier~A (\S\ref{sec:tier-A}) and Tier~C
+(\S\ref{sec:tier-C}, gate C.1/C.2) for the deterministic
+sector. See \verb|reference/notes_M3_3b_native_residual.md|.
+
+\paragraph{Berry-coupling residual verification.} The 2D
+Euler--Lagrange residual with $\theta_R$ promoted to a Newton
+unknown reproduces the closed-form Berry partials
+\[
+\frac{\partial F^*}{\partial\dot\beta_1} =
+\frac{\bar\alpha_2^{\,3}}{3\bar\alpha_1^{\,2}\,\Delta t}, \quad
+\frac{\partial F^*}{\partial\dot\beta_2} =
+-\frac{\bar\alpha_1^{\,3}}{3\bar\alpha_2^{\,2}\,\Delta t}, \quad
+\dots
+\]
+to finite-difference tolerance $10^{-9}$ across $8$ random
+$(\alpha,\beta,\theta_R)$ samples $\times$ $9$ sub-tests each
+($72$ asserts). The residual partials are cross-checked against
+\texttt{berry\_partials\_2d} via the symplectic-weight identity
+$\partial F^*/\partial \dot\theta_R \cdot \alpha_a^2 =
+\texttt{berry\_partials}_a$. Verifies eqs.\
+\eqref{eq:Theta-rot-2D}--\eqref{eq:omega-rot-2D} of
+\S\ref{sec:matrix-lift} at the discrete level. See
+\verb|reference/notes_M3_3c_berry_integration.md|.
+
+\paragraph{Iso-pullback $\varepsilon$-expansion.} At
+$\alpha_1 = \alpha_2 + \varepsilon$ with $\beta_1 = \beta_2$
+fixed, the Berry $F$-function scales linearly in $(\alpha_1 -
+\alpha_2)$. The fitted exponent is $1.003$ (target $\sim 1.0$);
+$F$ vanishes identically on the iso submanifold, and the action
+contribution $F\cdot\dot\theta_R$ scales as $\mathcal O(\varepsilon)$
+with the same slope. Verifies the iso-pullback regularity claim
+at the structural-fix step of \S\ref{sec:matrix-lift}. Same
+note.
+
+\paragraph{$\mathcal H_{\rm rot}$ solvability.} The closed-form
+$\partial \mathcal H_{\rm rot}/\partial \theta_R$ matches the
+kernel-orthogonality residual $\mathrm dH \cdot v_{\rm ker} = 0$
+to $\le 10^{-10}$ at $5$ random points $\times$ $3$ values of
+$\dot\theta_R$. Newton converges in $\le 5$ iterations on
+non-isotropic IC ($\alpha = (1.2, 0.8)$, $\beta = (0.15, -0.10)$,
+$\theta_R = 0.13$); post-Newton residual norm $\le 10^{-10}$.
+Verifies the integrability constraint
+\eqref{eq:H-rot-constraint}. Same note.
+
+\paragraph{Per-axis $\gamma$ selectivity (Tier~C/D bridge).}
+On the C.2 cold-sinusoid configuration ($k_x = 1$, $k_y = 0$,
+$A = 0.5$, level $= 4$, $\Delta t = 2\times 10^{-3}$, $100$
+steps), the spatial range of $\gamma_1$ is $[0.940, 0.987]$ ---
+clear collapse along the active axis --- while $\gamma_2$
+satisfies $[0.981, 0.981]$, uniform across the mesh to
+round-off. The spatial-std ratio
+$\mathrm{std}(\gamma_1)/\mathrm{std}(\gamma_2)$ exceeds
+$10^{13}$ ($\gamma_2$ at machine precision); see
+Fig.~\ref{fig:M3-3d-selectivity}. This is the sharp scientific
+test that the per-axis decomposition correctly identifies the
+collapsing axis and that the trivial axis preserves anisotropy
+by construction --- in particular, the falsifiable structural
+prediction underlying gates C.2, D.1, and D.4. See
+\verb|reference/notes_M3_3d_per_axis_gamma_amr.md|.
+
+\paragraph{Plane-wave convergence (Tier~C C.3).} On the C.3
+acoustic-plane-wave initial condition (levels $4$/$5$/$6$ with
+$256$/$1024$/$4096$ leaves at $A = 10^{-3}$, $\theta = 0$), the
+maximum cell-average vs.\ point-sample residual
+$|\delta\rho_{\rm cell} - \delta\rho_{\rm pt}|$ is $6.29\times
+10^{-6}$, $1.60\times 10^{-6}$, $4.01\times 10^{-7}$ at the
+three resolutions, with successive ratios $3.93$ and $3.98$
+($\Delta x^2$ midpoint-rule rate, target $\ge 3.5$). See
+\verb|reference/notes_M3_prep_tierC_ic_factories.md| and
+\verb|reference/notes_M3_2b_swap5_init_field.md|.
+
+\paragraph{Bit-exact 0.0 parity protocol (M1+M2 carry-forward).}
+The M3 substrate ports of the M1 (Phase 1--7 deterministic, Phase
+8 stochastic, Phase 11 tracer) and M2 (M2-1 AMR, M2-2
+multi-tracer, M2-3 realizability) test sets reproduce to bit
+pattern through HG, validated by $3037+$ asserts in the running
+test suite (full breakdown in
+\verb|reference/MILESTONE_3_STATUS.md|). M3-3e is currently
+retiring the transitional \texttt{cache\_mesh::Mesh1D} shim with
+a five-sub-phase decomposition (M3-3e-1 through M3-3e-5), each
+sub-phase imposing a bit-exact gate before merge. This converts
+``regression on the substrate port'' from a tolerance check to
+an equality check.
+
+\paragraph{HG \texttt{IntExact} backend availability.}
+\texttt{HierarchicalGrids.jl} at commit \texttt{81914c2} ships
+an opt-in exact-rational polytope-clipping backend
+(\texttt{overlap\_simplex\_box\_exact!},
+\texttt{IntegerLattice}, and the
+\texttt{compute\_overlap(\dots; backend=:exact)} dispatch in
+\verb|src/Overlap/r3d_int_adapter.jl|), independent of the
+default \texttt{:float} pathway. The Bayesian-remap
+acceptance-test suite in M3-5 will run both backends and treat
+the exact-rational result as the conservation-regression
+reference; see also the conservation-properties paragraph of
+\S\ref{sec:tier-C}.
+
 \subsection{Acceptance criteria}
+\label{sec:tier-acceptance}
 
 The methods paper has its central demonstration if:
 \begin{enumerate}[label=(\arabic*)]
