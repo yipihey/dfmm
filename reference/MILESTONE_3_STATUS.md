@@ -1,12 +1,17 @@
-# Milestone 3 — Status synthesis
+# Milestone 3 — Status synthesis (CLOSED — through M3-5 + M3-4)
 
-**Date:** 2026-04-26 (M3-5 close).
+**Date:** 2026-04-27 (combined close).
 
-**Repo state:** main at `077d6e4` (M3-3 close); M3-4 in flight on
-the scientific-validation track (separate worktree); **M3-5 closed
-on branch `m3-5-bayesian-remap`** (this milestone-status update).
-**13461 + 1 deferred tests** pass byte-equal across the now-14 phase
-blocks (was 13375 + 1 at M3-3 close).
+**Repo state:** M3-3 closed at `077d6e4` (M3-3e-5 drop cache_mesh).
+M3-4 lands in two phases: Phase 1 at `f364b4a` (periodic-x coordinate
+wrap on 2D EL residual) and Phase 2 (IC bridge + C.1 / C.2 / C.3
+acceptance drivers). M3-5 closed on `m3-5-bayesian-remap` with HG
+`compute_overlap` + `polynomial_remap` wiring + IntExact audit harness.
+**~19297 + 1 deferred tests** pass byte-equal across the 15 phase
+blocks. The 2D scientific phase is complete through Tier-C
+consistency; the 1D `cache_mesh::Mesh1D` shim is retired in full; the
+1D ⊂ 2D consistency gates fire across C.1 / C.2 / C.3 IC families;
+Bayesian L↔E remap is wired with conservation regression.
 
 **Per methods paper §10.7:** "Milestone 3: 2D principal-axis-decomposed
 Cholesky integrator with Berry-connection coupling, on the
@@ -31,6 +36,11 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-3e-3** | Native AMR refine/coarsen + standalone `TracerMeshHG` storage | done | 5784 | Bit-exact 0.0 across 31 AMR events with 3 tracers |
 | **M3-3e-4** | Native `realizability_project_HG!` | done | 708 | Bit-exact 0.0 + ProjectionStats parity |
 | **M3-3e-5** | Drop `cache_mesh::Mesh1D` field; close M3-3 | done | 0 (no new) | Field dropped; 13375+1 byte-equal regression |
+| **M3-4 P1** | Periodic-x coordinate wrap on 2D EL residual | done | 46 | Translation equivariance; closes M3-3c handoff |
+| **M3-4 P2 (a)** | Tier-C IC bridge + primitive recovery | done | 2606 | `(ρ, u, P)` → `(α, β, s, …)` cold-limit isotropic IC |
+| **M3-4 P2 (b)** | C.1 1D-symmetric 2D Sod driver | done | 590 | y-independence ≤ 1e-12 per step |
+| **M3-4 P2 (c)** | C.2 2D cold sinusoid driver | done | 11 | std(γ_1)/std(γ_2) > 1e10 for k=(1,0) |
+| **M3-4 P2 (d)** | C.3 2D plane wave driver | done | 2583 | Rotational invariance + bounded mode amplitude |
 | **M3-5** | Bayesian L↔E remap (`compute_overlap` + `polynomial_remap_l_to_e!`/`_e_to_l!` wired via `BayesianRemapState`); IntExact audit; Liouville monotone-necessary diagnostic | done | +86 | 9/9 IntExact battery passes; mass conserved 0..6.7e-16 over 5 cycles; partition-of-unity to 1e-12 |
 
 ## Test summary
@@ -48,7 +58,12 @@ L↔E remap substrate per §6 / §6.6.
 | M3-3a/b/c/d (2D native) | ~330 |
 | M3-3e-1/2/3/4 (native-vs-cache cross-check tests) | 8624 |
 | M3-5 (Bayesian L↔E remap + Liouville + IntExact audit) | 86 |
-| **Total** | **13461 + 1 deferred** |
+| M3-4 Phase 1 (periodic-x wrap on 2D EL residual) | 46 |
+| M3-4 Phase 2 (a) IC bridge + primitive recovery | 2606 |
+| M3-4 Phase 2 (b) C.1 1D-symmetric Sod driver | 590 |
+| M3-4 Phase 2 (c) C.2 cold sinusoid driver | 11 |
+| M3-4 Phase 2 (d) C.3 plane wave driver | 2583 |
+| **Total** | **~19297 + 1 deferred** |
 
 ## M3-3 headline scientific findings
 
@@ -163,8 +178,6 @@ status notes (each with its own bit-exact gate breakdown).
   diagnostics).
 
 **Unblocked for M4:**
-- Tier C (1D ⊂ 2D) consistency tests on the native 2D + native 1D
-  substrate (M3-4 scope).
 - Tier D (KH instability, pancake collapse, wave-pool spectra) on the
   full 2D substrate.
 - Off-diagonal β_{12}, β_{21} sector activation (M3-6 / D.1 KH).
@@ -172,15 +185,12 @@ status notes (each with its own bit-exact gate breakdown).
 
 ## Recommended next moves
 
-1. **M3-4** — Tier C consistency tests: 1D ⊂ 2D parity on the full
-   physics suite (Sod, cold-sinusoid, wave-pool) on the native
-   `HierarchicalMesh{2}` + `PolynomialFieldSet` substrate. Per
-   methods paper §10 / §10.7. **Status (2026-04-26):** prerequisite
-   periodic-x coordinate wrap landed (the M3-3c handoff item — closes
-   architectural Q#6). +46 asserts (13375 + 1 → 13421 + 1, byte-equal
-   regression). M3-4 Phase 2 (IC bridge + C.1/C.2/C.3 drivers) in
-   flight in a sibling worktree. See
-   `reference/notes_M3_4_tier_c_consistency.md`.
+1. **M3-4** — Tier C consistency tests **CLOSED 2026-04-27**: Phase 1
+   periodic-x wrap (`f364b4a`); Phase 2 IC bridge + C.1/C.2/C.3 drivers
+   (+5790 asserts). C.1 1D-vs-golden tolerance is at the loose
+   variational-solver dispersion level (~10-20% L∞), documented as
+   Open Issue #2 (deferred to higher-order Bernstein reconstruction).
+   See `reference/notes_M3_4_tier_c_consistency.md`.
 2. **M3-5** — Bayesian L↔E remap via `BayesianRemapState` +
    `bayesian_remap_l_to_e!` / `bayesian_remap_e_to_l!` /
    `remap_round_trip!`; IntExact audit gate; Liouville
@@ -191,6 +201,28 @@ status notes (each with its own bit-exact gate breakdown).
    `det_run_with_remap_HG!` stub provides the integration site.
 4. **M3-7** — 3D extension (the Berry stencils were verified in
    M3-prep as the M3-7 pre-flight gate).
+
+## M3-4 close (2026-04-26)
+
+**Phase 1** (`f364b4a`): periodic-x coordinate wrap on the 2D EL
+residual. Closes the M3-3c handoff prerequisite. +46 asserts.
+
+**Phase 2** (commits a, b, c, d on `m3-4-phase-2-tier-c-drivers`):
+
+  • IC bridge maps primitive `(ρ, u_x, u_y, P)` cell-averages onto the
+    M3-3 12-field Cholesky-sector state under a cold-limit, isotropic
+    IC convention (α=1, β=0, θ_R=0, Pp=Q=0; s solved from EOS).
+  • C.1 1D-symmetric 2D Sod: y-independence ≤ 1e-12 at every step;
+    conservation gates pass; 1D-vs-golden gate captured at the loose
+    tolerance documented in Open Issue #2.
+  • C.2 2D cold sinusoid: std(γ_1)/std(γ_2) > 1e10 for k = (1, 0);
+    qualitative 2D structure for k = (1, 1); conservation gates pass.
+  • C.3 2D plane wave: u parallel to k̂ at IC; rotational invariance
+    under π/2 to mesh-discretization tolerance; bounded mode amplitude
+    under linear-acoustic Newton evolution at θ ∈ {0, π/8, π/4, π/2};
+    conservation gates pass.
+
+**M3-4 close: +5836 asserts (13375 + 1 → 19211 + 1).**
 
 ## Repo housekeeping
 
@@ -203,6 +235,9 @@ status notes (each with its own bit-exact gate breakdown).
 
 ---
 
-*M3-3 closes with M3-3e-5. The 1D path is native; the 2D path is
-native; the cache_mesh shim is gone. Methods paper §10.7 numbers
-all hold. Ready for M3-4.*
+*M3-3 closed with M3-3e-5. M3-4 closed in two phases (Phase 1
+periodic-x wrap; Phase 2 IC bridge + C.1/C.2/C.3 drivers). The 1D
+path is native; the 2D path is native; the Tier-C C.1 / C.2 / C.3
+acceptance gates fire. 1D-path bit-exact 0.0 parity holds across
+all 19211 + 1 currently passing tests. Methods paper §10.4 / §10.7
+numbers all hold. Ready for M3-5 (in flight in another worktree).*
