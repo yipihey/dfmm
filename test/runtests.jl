@@ -493,4 +493,19 @@ using Test
         include("test_M3_6_phase0_offdiag_dimension_lift.jl")
         include("test_M3_6_phase0_offdiag_realizability.jl")
     end
+
+    @testset verbose = true "Phase M3-6 Phase 1a: off-diagonal strain coupling" begin
+        # M3-6 Phase 1a wires the off-diagonal Hamiltonian
+        #   H_rot^off = G̃_12 · (α_1·β_21 + α_2·β_12) / 2
+        # into the 2D EL residual. The cross-axis velocity-gradient
+        # stencil (∂_2 u_1, ∂_1 u_2) feeds G̃_12 (symmetric strain →
+        # F^β_12, F^β_21 drives) and W_12 (antisymmetric / vorticity →
+        # F^θ_R drive). At axis-aligned ICs (every M3-3c regression and
+        # M3-4 driver) both strain components vanish identically and
+        # the residual reduces byte-equal to M3-6 Phase 0 — preserving
+        # the §Dimension-lift gate at bit-exact 0.0 absolute. The KH
+        # IC factory + Drazin-Reid calibration are M3-6 Phase 1b/1c.
+        # See `reference/notes_M3_6_phase1a_strain_coupling.md`.
+        include("test_M3_6_phase1a_strain_coupling.jl")
+    end
 end

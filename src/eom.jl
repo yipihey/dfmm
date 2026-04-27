@@ -872,10 +872,19 @@ The residual rows are:
     F^u_a    = (u_a_np1 − u_a_n)/dt + (P̄_a^hi − P̄_a^lo) / m̄_a
     F^α_a    = (α_a_np1 − α_a_n)/dt − β̄_a + (Berry α-modification)
     F^β_a    = (β_a_np1 − β_a_n)/dt + (∂_a u_a) β̄_a − γ̄_a²/ᾱ_a
-                + (Berry β-modification, M3-3c + M3-6 Phase 0 off-diag couplings)
-    F^β_12   = (β_12_np1 − β_12_n)/dt    (trivial drive: M3-6 Phase 0)
-    F^β_21   = (β_21_np1 − β_21_n)/dt    (trivial drive: M3-6 Phase 0)
-    F^θ_R    = (θ_R_np1 − θ_R_n)/dt
+                + (Berry β-modification, M3-3c + M3-6 Phase 0 + M3-6 Phase 1a)
+    F^β_12   = (β_12_np1 − β_12_n)/dt + G̃_12·ᾱ_2/2    (M3-6 Phase 1a strain drive)
+    F^β_21   = (β_21_np1 − β_21_n)/dt + G̃_12·ᾱ_1/2    (M3-6 Phase 1a strain drive)
+    F^θ_R    = (θ_R_np1 − θ_R_n)/dt + W_12·F_off       (M3-6 Phase 1a vorticity drive)
+
+with G̃_12 = (∂_2 u_1 + ∂_1 u_2)/2 (symmetric strain), W_12 =
+(∂_2 u_1 − ∂_1 u_2)/2 (antisymmetric / vorticity), and F_off =
+(α_1²·α_2·β_12 − α_1·α_2²·β_21)/2 the off-diagonal Berry function
+(`scripts/verify_berry_connection_offdiag.py`). At axis-aligned ICs
+(every M3-3c regression and M3-4 driver test, plus M3-6 Phase 0)
+the off-diagonal velocity gradients vanish identically ⇒ G̃_12 = W_12
+= 0 ⇒ every Phase 1a addition vanishes and the residual reduces byte-
+equally to the M3-6 Phase 0 form. See `test_M3_6_phase1a_strain_coupling.jl`.
 
 with the per-axis Berry α/β-modifications detailed in the file-level
 comment block above and consistent with `src/berry.jl::berry_partials_2d`
@@ -981,6 +990,103 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
         ᾱ_self_2 = (get_α(y_n, 2, i) + get_α(y_np1, 2, i)) / 2
         β̄_self_1 = (get_β(y_n, 1, i) + get_β(y_np1, 1, i)) / 2
         β̄_self_2 = (get_β(y_n, 2, i) + get_β(y_np1, 2, i)) / 2
+
+        # ──────────────────────────────────────────────────────────
+        # M3-6 Phase 1a: off-diagonal velocity-gradient stencil.
+        #
+        # The off-diagonal Hamiltonian H_rot^off ∝ G̃_12 · (α_1·β_21
+        # + α_2·β_12)/2 (per §7.5 of the 2D Berry note) sources β_12
+        # and β_21 from a sheared base flow. The per-cell off-diagonal
+        # velocity gradients are
+        #
+        #     ∂_2 u_1 ≈ (u_1[hi-along-2] − u_1[lo-along-2]) / (Δx_2 lo→hi)
+        #     ∂_1 u_2 ≈ (u_2[hi-along-1] − u_2[lo-along-1]) / (Δx_1 lo→hi)
+        #
+        # G̃_12 = (∂_2 u_1 + ∂_1 u_2)/2 — symmetric strain (sources β_12, β_21).
+        # W_12 = (∂_2 u_1 − ∂_1 u_2)/2 — antisymmetric (vorticity; sources θ_R).
+        #
+        # At axis-aligned ICs (every M3-3c regression and M3-4 C.1/C.2/
+        # C.3 driver test), u_2 = 0 ⇒ ∂_1 u_2 = 0 and u_1 only varies
+        # along axis 1 ⇒ ∂_2 u_1 = 0, so both G̃_12 = 0 and W_12 = 0.
+        # Every Phase 1a addition vanishes multiplicatively ⇒ the
+        # M3-3c / M3-4 / M3-6 Phase 0 §Dimension-lift gate holds at
+        # bit-exact 0.0 absolute (CRITICAL).
+
+        # ∂_2 u_1: read u_1 at axis-2 neighbors (cells "above" and "below"
+        # in the y direction).
+        ilo2 = face_lo[2][i]
+        ihi2 = face_hi[2][i]
+        wrap_lo_off_2 = wrap_lo === nothing ? zero(Tres) : Tres(wrap_lo[2][i])
+        wrap_hi_off_2 = wrap_hi === nothing ? zero(Tres) : Tres(wrap_hi[2][i])
+
+        # u_1 and x_2 at axis-2 lo neighbor.
+        if ilo2 == 0
+            u1_lo2_n   = get_u(y_n,   1, i)
+            u1_lo2_np1 = get_u(y_np1, 1, i)
+            x2_lo2_n   = get_x(y_n,   2, i)
+            x2_lo2_np1 = get_x(y_np1, 2, i)
+        else
+            u1_lo2_n   = get_u(y_n,   1, ilo2)
+            u1_lo2_np1 = get_u(y_np1, 1, ilo2)
+            x2_lo2_n   = get_x(y_n,   2, ilo2) + wrap_lo_off_2
+            x2_lo2_np1 = get_x(y_np1, 2, ilo2) + wrap_lo_off_2
+        end
+        if ihi2 == 0
+            u1_hi2_n   = get_u(y_n,   1, i)
+            u1_hi2_np1 = get_u(y_np1, 1, i)
+            x2_hi2_n   = get_x(y_n,   2, i)
+            x2_hi2_np1 = get_x(y_np1, 2, i)
+        else
+            u1_hi2_n   = get_u(y_n,   1, ihi2)
+            u1_hi2_np1 = get_u(y_np1, 1, ihi2)
+            x2_hi2_n   = get_x(y_n,   2, ihi2) + wrap_hi_off_2
+            x2_hi2_np1 = get_x(y_np1, 2, ihi2) + wrap_hi_off_2
+        end
+        ū1_lo2 = (u1_lo2_n + u1_lo2_np1) / 2
+        ū1_hi2 = (u1_hi2_n + u1_hi2_np1) / 2
+        x̄2_lo2 = (x2_lo2_n + x2_lo2_np1) / 2
+        x̄2_hi2 = (x2_hi2_n + x2_hi2_np1) / 2
+        Δx̄2 = x̄2_hi2 - x̄2_lo2
+        d2_u1 = Δx̄2 > 0 ? (ū1_hi2 - ū1_lo2) / Δx̄2 : zero(Tres)
+
+        # ∂_1 u_2: read u_2 at axis-1 neighbors.
+        ilo1 = face_lo[1][i]
+        ihi1 = face_hi[1][i]
+        wrap_lo_off_1 = wrap_lo === nothing ? zero(Tres) : Tres(wrap_lo[1][i])
+        wrap_hi_off_1 = wrap_hi === nothing ? zero(Tres) : Tres(wrap_hi[1][i])
+
+        if ilo1 == 0
+            u2_lo1_n   = get_u(y_n,   2, i)
+            u2_lo1_np1 = get_u(y_np1, 2, i)
+            x1_lo1_n   = get_x(y_n,   1, i)
+            x1_lo1_np1 = get_x(y_np1, 1, i)
+        else
+            u2_lo1_n   = get_u(y_n,   2, ilo1)
+            u2_lo1_np1 = get_u(y_np1, 2, ilo1)
+            x1_lo1_n   = get_x(y_n,   1, ilo1) + wrap_lo_off_1
+            x1_lo1_np1 = get_x(y_np1, 1, ilo1) + wrap_lo_off_1
+        end
+        if ihi1 == 0
+            u2_hi1_n   = get_u(y_n,   2, i)
+            u2_hi1_np1 = get_u(y_np1, 2, i)
+            x1_hi1_n   = get_x(y_n,   1, i)
+            x1_hi1_np1 = get_x(y_np1, 1, i)
+        else
+            u2_hi1_n   = get_u(y_n,   2, ihi1)
+            u2_hi1_np1 = get_u(y_np1, 2, ihi1)
+            x1_hi1_n   = get_x(y_n,   1, ihi1) + wrap_hi_off_1
+            x1_hi1_np1 = get_x(y_np1, 1, ihi1) + wrap_hi_off_1
+        end
+        ū2_lo1 = (u2_lo1_n + u2_lo1_np1) / 2
+        ū2_hi1 = (u2_hi1_n + u2_hi1_np1) / 2
+        x̄1_lo1 = (x1_lo1_n + x1_lo1_np1) / 2
+        x̄1_hi1 = (x1_hi1_n + x1_hi1_np1) / 2
+        Δx̄1 = x̄1_hi1 - x̄1_lo1
+        d1_u2 = Δx̄1 > 0 ? (ū2_hi1 - ū2_lo1) / Δx̄1 : zero(Tres)
+
+        # M3-6 Phase 1a strain decomposition.
+        G̃12 = (d2_u1 + d1_u2) / 2     # symmetric (off-diag) strain rate
+        W12 = (d2_u1 - d1_u2) / 2     # antisymmetric (vorticity)
 
         for a in 1:2
             # Self midpoints.
@@ -1140,6 +1246,11 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
                    - (ᾱ_self_2^2 / (2 * ᾱ_self_1^2)) * β̄21 * dθR_dt
                    - (ᾱ_self_2^2 / (2 * ᾱ_self_1^2)) * dβ12_dt
                    - (ᾱ_self_2 / ᾱ_self_1) * dβ21_dt
+                   # M3-6 Phase 1a off-diagonal strain coupling.
+                   # H_rot^off = G̃_12·(α_1·β_21 + α_2·β_12)/2 contributes
+                   # ∂H_rot^off/∂α_1 = G̃_12·β_21/2 to the F^β_1 row at
+                   # midpoint. Vanishes when G̃_12 = 0 (axis-aligned ICs).
+                   + G̃12 * β̄21 / 2
                 )
             else
                 ( -(ᾱ_self_1^3) / (3 * ᾱ_self_2^2) * dθR_dt,
@@ -1149,6 +1260,9 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
                    + (ᾱ_self_1 / ᾱ_self_2) * β̄21 * dθR_dt
                    - (ᾱ_self_1 / ᾱ_self_2) * dβ12_dt
                    - (ᾱ_self_1^2 / (2 * ᾱ_self_2^2)) * dβ21_dt
+                   # M3-6 Phase 1a off-diagonal strain coupling.
+                   # ∂H_rot^off/∂α_2 = G̃_12·β_12/2 contributes to F^β_2.
+                   + G̃12 * β̄12 / 2
                 )
             end
 
@@ -1161,24 +1275,42 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
                               (ᾱ != 0 ? γ²_a / ᾱ : zero(Tres)) + berry_β_term                # F^β_a
         end
 
-        # M3-6 Phase 0 off-diag β rows. Free-flight / no-off-diag-strain
-        # cut: the kinematic drives for β̇_12, β̇_21 vanish (they are
-        # sourced by the off-diagonal strain coupling H_rot^off ∝ G̃_12·
-        # (α_1·β_21 + α_2·β_12)/2 per §7.5 of the 2D Berry note, which
-        # M3-6 Phase 1 / D.1 KH activates). With trivial drive,
-        #   F^β_12 = (β_12_np1 − β_12_n)/dt
-        #   F^β_21 = (β_21_np1 − β_21_n)/dt
-        # so β_12, β_21 are conserved per cell across the step. The
-        # M3-3c regression IC pins them at zero, and the trivial-drive
-        # rows preserve them at zero ⇒ §Dimension-lift gate is byte-
-        # equal to M3-3c.
-        F[11 * (i - 1) + 9]  = (β12_np1 - β12_n) / dt
-        F[11 * (i - 1) + 10] = (β21_np1 - β21_n) / dt
+        # M3-6 Phase 0 off-diag β rows + M3-6 Phase 1a strain coupling.
+        #
+        # Phase 0 had trivial drive (F^β_12 = (β_12_np1 − β_12_n)/dt) so
+        # β_12, β_21 stayed at IC. Phase 1a adds the symmetric-strain
+        # drive sourced by H_rot^off = G̃_12·(α_1·β_21 + α_2·β_12)/2:
+        #
+        #     F^β_12 += ∂H_rot^off/∂β_12 = G̃_12 · ᾱ_2 / 2
+        #     F^β_21 += ∂H_rot^off/∂β_21 = G̃_12 · ᾱ_1 / 2
+        #
+        # At G̃_12 = 0 (axis-aligned ICs of M3-3c / M3-4 / M3-6 Phase 0
+        # tests), the addition vanishes identically and the rows reduce
+        # to the Phase 0 trivial-drive form ⇒ §Dimension-lift gate is
+        # bit-exact.
+        #
+        # The smoke test in `test_M3_6_phase1a_strain_coupling.jl`
+        # confirms that a sheared base flow u_1(x_2) drives β_12, β_21
+        # off rest after a single Newton step.
+        F[11 * (i - 1) + 9]  = (β12_np1 - β12_n) / dt + G̃12 * ᾱ_self_2 / 2
+        F[11 * (i - 1) + 10] = (β21_np1 - β21_n) / dt + G̃12 * ᾱ_self_1 / 2
 
-        # F^θ_R: kinematic-equation-driven evolution. M3-3c first cut has
-        # zero off-diagonal strain rate (M3-6 Phase 1 / D.1 KH activates
-        # this), so θ_R is conserved per cell across the step.
-        F[11 * (i - 1) + 11] = (θR_np1 - θR_n) / dt
+        # F^θ_R: kinematic-equation-driven evolution. M3-3c first cut had
+        # zero drive ⇒ θ_R conserved per cell. M3-6 Phase 1a adds the
+        # antisymmetric-strain (vorticity) coupling to the off-diagonal
+        # Berry block:
+        #
+        #     F^θ_R += W_12 · F_off
+        #
+        # where F_off = (α_1²·α_2·β_12 − α_1·α_2²·β_21)/2 is the
+        # off-diagonal piece of the Berry function (see
+        # `scripts/verify_berry_connection_offdiag.py` CHECK 7). At
+        # axis-aligned ICs W_12 = 0; at β_12 = β_21 = 0 IC F_off = 0;
+        # in either case the addition vanishes and the §Dimension-lift
+        # gate is preserved.
+        F_off = (ᾱ_self_1^2 * ᾱ_self_2 * β̄12 -
+                 ᾱ_self_1 * ᾱ_self_2^2 * β̄21) / 2
+        F[11 * (i - 1) + 11] = (θR_np1 - θR_n) / dt + W12 * F_off
     end
     return F
 end
