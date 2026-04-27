@@ -1,4 +1,4 @@
-# Milestone 3 — Status synthesis (CLOSED — through M3-6 Phase 3)
+# Milestone 3 — Status synthesis (CLOSED — through M3-6 Phase 4)
 
 **Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26;
 M3-6 Phase 1a/1b/1c closed 2026-04-26 (the D.1 KH falsifier — methods
@@ -7,7 +7,10 @@ M3-6 Phase 2 closed 2026-04-26 (the D.4 Zel'dovich pancake — methods
 paper §10.5 D.4 — central novel cosmological reference test).
 M3-6 Phase 3 closed 2026-04-26 (2D substrate: tracers + stochastic
 injection + per-species γ — Phase 4 / 5 prerequisites, no new
-falsifier driver).
+falsifier driver). M3-6 Phase 4 closed 2026-04-26 (the D.7 dust-traps
+in vortices — methods paper §10.5 D.7 — Taylor-Green vortex IC + 2-
+species (gas + dust) `TracerMeshHG2D`; honest finding: substrate
+sound, sub-cell centrifugal accumulation requires Phase 5+ extension).
 
 **Repo state:** M3-3 closed at `077d6e4` (M3-3e-5 drop cache_mesh).
 M3-4 lands in two phases: Phase 1 at `f364b4a` (periodic-x coordinate
@@ -59,6 +62,7 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-6 Phase 1c** | D.1 KH falsifier driver `experiments/D1_KH_growth_rate.jl` + acceptance gates; Drazin-Reid γ_DR = U/(2w) calibration; mesh refinement convergence; 4-component cone diagnostics | done | +1565 | γ_measured/γ_DR = 1.34 (level 5); c_off² = 1.78; mesh-converged at 1.2% (L4→L5); n_neg_jac = 0; **falsifier PASSED** |
 | **M3-6 Phase 2** | D.4 Zel'dovich pancake collapse: `tier_d_zeldovich_pancake_ic` factory + driver + per-axis γ tracking; methods paper §10.5 D.4 central novel cosmological reference test | done | +2718 | std(γ_1)/std(γ_2) ≈ 2.6e14 at near-caustic (L4 T=0.16); γ_1 dyn-range 4.18×; γ_2 uniform to round-off; Phase 1a inertness max|β_off|=0; **per-axis γ selectivity PASSED** |
 | **M3-6 Phase 3** | 2D substrate (D.7 / D.10 prerequisites): `TracerMeshHG2D` per-species + refine listener; `inject_vg_noise_HG_2d!` per-axis selectivity (`axes::Tuple` arg); `gamma_per_axis_2d_per_species_field` + math primitive | done | +329 | 2D Phase 11 + M2-2 invariants byte-equal; per-axis selectivity verified (axis-1 inject leaves axis-2 byte-equal); 4-comp cone n_neg_jac=0; multi-species independence verified |
+| **M3-6 Phase 4** | D.7 dust-traps in vortices: `tier_d_dust_trap_ic_full` factory (Taylor-Green vortex + 2-species `TracerMeshHG2D` `[:gas, :dust]`) + driver + acceptance gates; per-species γ separation diagnostic | done | +1471 | Dust mass conservation bit-exact (M_dust_err_max=0.0); per-species γ separation > 1e10 (gas≈1, dust=0); 4-comp cone n_neg_jac=0 at L∈{3,4,5}; **honest finding: peak/mean structurally bit-stable (advect_tracers_HG_2d! is no-op; sub-cell centrifugal accumulation requires Phase 5+ design)** |
 
 ## Test summary
 
@@ -86,7 +90,8 @@ L↔E remap substrate per §6 / §6.6.
 | M3-6 Phase 1c (D.1 KH falsifier driver + acceptance gates) | 1565 |
 | M3-6 Phase 2 (D.4 Zel'dovich pancake driver + acceptance gates) | 2718 |
 | M3-6 Phase 3 (2D substrate: tracers + stochastic + per-species γ) | 329 |
-| **Total** | **~24998 + 1 deferred** |
+| M3-6 Phase 4 (D.7 dust-traps in vortices: IC + driver + acceptance) | 1471 |
+| **Total** | **~26469 + 1 deferred** |
 
 ## M3-3 headline scientific findings
 
@@ -475,6 +480,58 @@ falsifier driver. The Phase 4 (D.7 dust traps) and Phase 5 (D.10
 ISM tracers) drivers will exercise these paths in production.
 
 **M3-6 Phase 3 close: +329 asserts (24669 + 1 → 24998 + 1).**
+
+## M3-6 Phase 4 close (2026-04-26)
+
+**Phase 4** (`m3-6-phase-4-D7-dust-traps`): exercises the Phase 3 2D
+substrate on the methods-paper §10.5 D.7 falsifier (dust-trapping in
+vortices). Three deliverables:
+
+  • **`tier_d_dust_trap_ic_full`** in `src/setups_2d.jl`: Taylor-Green
+    vortex IC `(u_1, u_2) = (U0·sin·cos, -U0·cos·sin)` with uniform
+    `(ρ0, P0) = (1, 1)` + cold-limit Cholesky-sector state +
+    2-species `TracerMeshHG2D[:gas, :dust]` populated with
+    `c_gas = 1.0` uniform and `c_dust = 1 + ε·sin(2π m_1)·sin(2π m_2)`.
+  • **`experiments/D7_dust_traps.jl`** driver: builds the IC, attaches
+    doubly-periodic BCs, runs `det_step_2d_berry_HG!` +
+    `advect_tracers_HG_2d!` for `T_factor · t_eddy`. Per-step
+    diagnostics: per-species γ, dust mass, vortex-center peak/mean,
+    n_neg_jac, M/Px/Py/KE conservation.
+  • **`test/test_M3_6_phase4_D7_dust_traps.jl`** (14 GATEs / 1471
+    asserts) + **headline plot** `M3_6_phase4_D7_dust_traps.png`
+    (`|u|` map, dust map, dust mass conservation, per-species γ
+    trajectories).
+
+**Headline scientific finding (HONEST).** The dust peak/mean ratio is
+*structurally* bit-stable through the run because (i)
+`advect_tracers_HG_2d!` is a no-op (Phase 3 design contract — pure-
+Lagrangian frame, tracer matrix byte-stable) and (ii) the Eulerian
+cell volumes are fixed under `det_step_2d_berry_HG!`. Sub-cell
+centrifugal-drift dust accumulation is **not captured** by the
+current substrate; the methods paper §10.5 D.7 prediction
+("vortex-center accumulation matches reference codes") requires a
+Phase 5+ extension (per-species momentum + drag, OR Lagrangian
+volume tracking via M3-5 Bayesian L↔E remap composition).
+
+What IS verified (the substrate is sound):
+
+  - **Dust mass conservation**: `M_dust_err_max == 0.0` (literally
+    zero) at L=3, 4, 5.
+  - **Per-species γ separation**: `gamma_separation > 1e10`
+    throughout (gas γ ≈ 1, dust γ = 0 by construction since
+    `M_vv_dust = 0`).
+  - **4-component realizability**: `n_negative_jacobian == 0` on
+    stable runs (T_factor ≤ 0.1, project_kind = :reanchor).
+  - **Long-horizon stability**: no NaN; bounded gas γ; conservation
+    invariants stable.
+  - **Momentum exactness**: `Px_err_max = Py_err_max = 0.0`
+    (Taylor-Green symmetry).
+
+**Wall-time per step**: ~0.22 s (L=3), ~0.51 s (L=4), ~9.2 s (L=5).
+Full-eddy turnover (T_factor = 1.0) at L=4 awaits the sparse-Newton
+solver carried forward from Phase 1c.
+
+**M3-6 Phase 4 close: +1471 asserts (24998 + 1 → 26469 + 1).**
 
 ## Repo housekeeping
 
