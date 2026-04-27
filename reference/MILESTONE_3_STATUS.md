@@ -1,4 +1,4 @@
-# Milestone 3 — Status synthesis (CLOSED — M3-6 entire)
+# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 in flight, M3-7a CLOSED)
 
 **Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26;
 M3-6 Phase 1a/1b/1c closed 2026-04-26 (the D.1 KH falsifier — methods
@@ -91,6 +91,9 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-6 Phase 3** | 2D substrate (D.7 / D.10 prerequisites): `TracerMeshHG2D` per-species + refine listener; `inject_vg_noise_HG_2d!` per-axis selectivity (`axes::Tuple` arg); `gamma_per_axis_2d_per_species_field` + math primitive | done | +329 | 2D Phase 11 + M2-2 invariants byte-equal; per-axis selectivity verified (axis-1 inject leaves axis-2 byte-equal); 4-comp cone n_neg_jac=0; multi-species independence verified |
 | **M3-6 Phase 4** | D.7 dust-traps in vortices: `tier_d_dust_trap_ic_full` factory (Taylor-Green vortex + 2-species `TracerMeshHG2D` `[:gas, :dust]`) + driver + acceptance gates; per-species γ separation diagnostic | done | +1471 | Dust mass conservation bit-exact (M_dust_err_max=0.0); per-species γ separation > 1e10 (gas≈1, dust=0); 4-comp cone n_neg_jac=0 at L∈{3,4,5}; **honest finding: peak/mean structurally bit-stable (advect_tracers_HG_2d! is no-op; sub-cell centrifugal accumulation requires Phase 5+ design)** |
 | **M3-6 Phase 5** | D.10 ISM-like 2D multi-tracer fidelity: `tier_d_ism_tracers_ic_full` factory (KH-style sheared base flow + N=3 species `TracerMeshHG2D` `[:cold, :warm, :hot]`) + driver with stochastic injection enabled + acceptance gates | done | +930 | Tracer matrix byte-equal to IC (`tracers_max_diff_final=0.0`) through K det_step + inject_vg_noise iterations; per-species mass bit-exact; per-species γ separation (cold/warm/hot at γ=1, √2, 2); 4-comp cone n_neg_jac=0; 1D ⊂ 2D parity verified; **falsifier PASSED — methods paper §10.5 D.10 community-impact claim verified bit-exact (2D analog of M2-2's structural argument)** |
+| **M3-7 prep** | 3D scaffolding: `DetField3D{T}` working struct + `src/cholesky_DD_3d.jl` (per-axis 3D Cholesky decomposition / recomposition; `gamma_per_axis_3d`; `rotation_matrix_3d`); intrinsic Cardan ZYX Euler-angle convention pinned to SymPy authority | done | +736 | Round-trip max_err 4.5e-15 on 50 random samples; 2D reduction byte-equal on top-left 2×2 block; iso-pullback gauge degeneracy + M-preservation; allocation-free hot path |
+| **M3-7a (a)** | 3D HaloView smoke test on 4×4×4 balanced `HierarchicalMesh{3}` (`test_M3_7a_halo_smoke.jl`) | done | +426 | 6-face neighbor access verified; corner-leaf out-of-domain → `nothing`; BC-aware wrap (PERIODIC/REFLECTING mix); allocation-free fast path ≤ 64 bytes; depth=2 characterised (Q1/Q4 resolved — works as designed) |
+| **M3-7a (b)** | 3D field-set allocator + read/write helpers: `allocate_cholesky_3d_fields(mesh::HierarchicalMesh{3})` (16-named-field `PolynomialFieldSet`) + `read_detfield_3d` / `write_detfield_3d!` round-trip helpers | done | +2155 | Bit-exact round-trip across all 16 dof on 64 leaves; write-order independence; single-leaf write isolation; T=Float32 sanity round-trip; M3-7b unblocked |
 
 ## Test summary
 
@@ -120,7 +123,9 @@ L↔E remap substrate per §6 / §6.6.
 | M3-6 Phase 3 (2D substrate: tracers + stochastic + per-species γ) | 329 |
 | M3-6 Phase 4 (D.7 dust-traps in vortices: IC + driver + acceptance) | 1471 |
 | M3-6 Phase 5 (D.10 ISM multi-tracer fidelity: IC + driver + acceptance) | 930 |
-| **Total** | **~27399 + 1 deferred** |
+| M3-7 prep (3D scaffolding: `DetField3D` + `cholesky_DD_3d.jl`) | 736 |
+| M3-7a (3D HaloView smoke + 3D field-set allocator + read/write) | 2581 |
+| **Total** | **~29980 + 1 deferred** (= 27399 baseline + 2581 from M3-7a; the 27399 already counts the M3-7 prep 736) |
 
 ## M3-3 headline scientific findings
 
@@ -641,6 +646,62 @@ falsification of D.7 + the Phase 5 bit-exact verification of D.10
 are *complementary* findings characterising what the
 pure-Lagrangian variational substrate captures vs requires
 extensions for. M3-7 (3D extension) is unblocked.
+
+## M3-7a close (2026-04-26)
+
+First sub-phase of M3-7 (3D extension) proper. Lands the 3D
+HaloView smoke test + the 3D field-set allocator + bit-exact
+round-trip helpers. Builds directly on M3-7 prep
+(`64fb1ad` — `DetField3D` + `src/cholesky_DD_3d.jl`).
+
+**What landed:**
+
+  * `test/test_M3_7a_halo_smoke.jl` (NEW, 426 asserts) —
+    3D analog of `test_M3_3a_halo_smoke.jl`. Verifies HaloView
+    depth=1 contract for D=3 on a 4×4×4 balanced
+    `HierarchicalMesh{3}`: 6-face neighbor access, corner-leaf
+    out-of-domain → `nothing`, BC-aware wrap, allocation-free
+    fast path (≤ 64 bytes per call). Also characterises depth=2
+    (Q1/Q4 of M3-7 design note §11 open questions) — works as
+    designed in 3D, not vacuously broken.
+  * `src/setups_2d.jl` (+150 LOC at end-of-file) —
+    `allocate_cholesky_3d_fields(mesh::HierarchicalMesh{3}; T)`
+    + `read_detfield_3d(fields, ci)` + `write_detfield_3d!(fields,
+    ci, v)`. 16-named-field SoA layout: 3 + 3 + 3 + 3 + 3 + 1 =
+    16 (positions + velocities + α + β + θ_{ab} + s) at
+    `MonomialBasis{3, 0}`.
+  * `src/dfmm.jl` (+10 LOC, append-only) — three new exports.
+  * `test/test_M3_7a_field_set_3d.jl` (NEW, 2155 asserts) —
+    structural contract, allocator coverage, bit-exact round-trip
+    on all 64 leaves × all 16 scalars, write-order independence,
+    single-leaf write isolation, T-parameterised allocator
+    (Float32 sanity).
+  * `test/runtests.jl` (append-only) — new "Phase M3-7a: 3D
+    HaloView smoke + field set" testset block.
+
+**Test delta:** +2581 asserts (426 + 2155).
+
+**1D + 2D regression:** byte-equal — verified by running
+`test_phase1_zero_strain.jl` (5), `test_M3_3a_halo_smoke.jl` (30),
+`test_M3_3a_field_set_2d.jl` (295), `test_M3_3a_cholesky_DD.jl`
+(199), and `test_M3_7_prep_3d_scaffolding.jl` (736) in isolation
+on this branch — all pass at their original counts.
+
+**Off-diagonal β + post-Newton Pp / Q:** intentionally NOT carried
+on the 3D field set (per M3-3a Q3 default + M3-7 design note §4.4).
+M3-9 (3D D.1 KH) will lift to 19-dof; M3-7c will activate Pp / Q
+post-Newton sectors.
+
+**M3-7b unblocked:** the launch agent has `DetField3D`,
+`cholesky_decompose_3d` / `cholesky_recompose_3d`,
+`gamma_per_axis_3d`, `allocate_cholesky_3d_fields`,
+`read_detfield_3d` / `write_detfield_3d!`, and a verified depth=1
+HaloView contract for `HierarchicalMesh{3}`. The 3D EL residual
+`cholesky_el_residual_3D!` is the next deliverable per M3-7
+design note §3.
+
+See `reference/notes_M3_7a_3d_halo_allocator.md` for the full
+status note + handoff items.
 
 ## Repo housekeeping
 
