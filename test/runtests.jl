@@ -420,4 +420,33 @@ using Test
         # `reference/notes_M3_4_tier_c_consistency.md`.
         include("test_M3_4_periodic_wrap.jl")
     end
+    @testset verbose = true "Phase M3-5: Bayesian L↔E remap" begin
+        # M3-5 wires HG's `compute_overlap` + polynomial-remap kernels
+        # into a dfmm-side per-step driver via `BayesianRemapState{D, T}`,
+        # `bayesian_remap_l_to_e!` / `bayesian_remap_e_to_l!`,
+        # `remap_round_trip!`, and the
+        # `liouville_monotone_increase_diagnostic` helper.
+        # Three test blocks:
+        #   • Conservation regression: L→E→L round trip preserves
+        #     mass-weighted totals (mass / momentum / energy /
+        #     tracer mass) to 1e-12 on `:float`; the `:exact`
+        #     backend matches to documented HG-caveat magnitudes
+        #     (16-bit lattice; ≤ 5 % drift on dfmm benign configs;
+        #     ~0 drift on uniform fields with axis-aligned
+        #     triangulation).
+        #   • Liouville monotone-increase diagnostic: HG's
+        #     `RemapDiagnostics` proxy (overlap volume / source
+        #     physical volume) is positive, balanced, and zero
+        #     `n_negative_jacobian_cells`; partition-of-unity holds
+        #     across deformation cycles to 1e-12.
+        #   • IntExact audit harness: HG's `audit_overlap` canonical
+        #     2D + 3D polytope battery (5 + 4 = 9 polytopes) passes
+        #     at atol = 1e-12; `:float` vs `:exact` `compute_overlap`
+        #     on the identity-overlap dfmm 4×4 setup matches box
+        #     volume to ~1e-3 on the default 16-bit lattice.
+        # See `reference/notes_M3_5_bayesian_remap.md`.
+        include("test_M3_5_remap_conservation.jl")
+        include("test_M3_5_liouville_monotone.jl")
+        include("test_M3_5_intexact_audit.jl")
+    end
 end
