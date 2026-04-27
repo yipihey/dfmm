@@ -625,4 +625,21 @@ using Test
         include("test_M3_6_phase3_stochastic_2d.jl")
         include("test_M3_6_phase3_gamma_per_species.jl")
     end
+    @testset verbose = true "Phase M3-6 Phase 4: D.7 dust-traps in vortices" begin
+        # M3-6 Phase 4 lifts the M3-6 Phase 3 2D substrate to a Tier-D
+        # falsifier driver: methods paper §10.5 D.7 dust-trapping in
+        # vortices. A Taylor-Green vortex IC + 2-species (gas + dust)
+        # `TracerMeshHG2D`. The dust species is pressureless cold
+        # (M_vv = 0); per-species γ correctly distinguishes the two
+        # phases. Driver: `experiments/D7_dust_traps.jl`.
+        #
+        # Honest scientific finding: the dfmm 2D variational scheme's
+        # `advect_tracers_HG_2d!` is a no-op (pure-Lagrangian frame;
+        # Phase 3 contract — tracer matrix byte-stable per step).
+        # Sub-cell centrifugal-drift dust accumulation is *not* captured
+        # by the current substrate; the headline diagnostic is per-
+        # species γ separation + bit-exact dust mass conservation.
+        # See `reference/notes_M3_6_phase4_D7_dust_traps.md`.
+        include("test_M3_6_phase4_D7_dust_traps.jl")
+    end
 end
