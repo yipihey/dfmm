@@ -662,3 +662,376 @@ function build_residual_aux_2D(fields::PolynomialFieldSet,
         ρ_ref       = ρ_t,
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M3-3c: Berry coupling + θ_R Newton unknown
+# ─────────────────────────────────────────────────────────────────────
+#
+# M3-3c extends the M3-3b residual by:
+#
+#   1. Promoting θ_R from an auxiliary fixed value to a Newton unknown.
+#      Per-cell unknowns grow from 8 to 9:
+#
+#          (x_1, x_2, u_1, u_2, α_1, α_2, β_1, β_2, θ_R).
+#
+#      The flat residual / unknown vector is therefore length 9 N.
+#
+#   2. Adding the Berry-coupling contributions to the per-axis (α_a, β_a)
+#      rows. The closed-form Berry partials live in `src/berry.jl`. The
+#      sign convention is derived from the rows of Ω · X = -dH where Ω
+#      is the closed 5×5 symplectic / Poisson form
+#      `ω_{2D} = α_1²dα_1∧dβ_1 + α_2²dα_2∧dβ_2 + dF∧dθ_R` with
+#      `F = (α_1³β_2 − α_2³β_1)/3`. See
+#      `reference/notes_M3_phase0_berry_connection.md` §6 and
+#      `reference/notes_M3_3_2d_cholesky_berry.md` §4.
+#
+#      The Berry-modified per-axis Hamilton equations are
+#
+#          α̇_1 = β_1 − (α_2³/(3α_1²)) · θ̇_R
+#          α̇_2 = β_2 + (α_1³/(3α_2²)) · θ̇_R
+#          β̇_1 = γ_1²/α_1 − β_2 · θ̇_R
+#          β̇_2 = γ_2²/α_2 + β_1 · θ̇_R
+#
+#      The discrete EL residual rows mirror M1's midpoint convention
+#      (see `src/cholesky_sector.jl::cholesky_el_residual`), with the
+#      Berry contribution added at midpoint state and `θ̇_R = (θ_R_np1
+#      − θ_R_n)/dt`:
+#
+#          F^α_1 = (α_1_np1 − α_1_n)/dt − β̄_1 + (ᾱ_2³/(3ᾱ_1²)) · θ̇_R_h
+#          F^α_2 = (α_2_np1 − α_2_n)/dt − β̄_2 − (ᾱ_1³/(3ᾱ_2²)) · θ̇_R_h
+#          F^β_1 = (β_1_np1 − β_1_n)/dt + (∂_1 u_1) β̄_1 − γ̄_1²/ᾱ_1 + β̄_2 θ̇_R_h
+#          F^β_2 = (β_2_np1 − β_2_n)/dt + (∂_2 u_2) β̄_2 − γ̄_2²/ᾱ_2 − β̄_1 θ̇_R_h
+#
+#      At the 1D-symmetric slice (α_2 = const, β_2 = 0, θ_R = 0,
+#      θ_R_np1 = 0 by construction since the trivial θ_R row pins it),
+#      every Berry-modification term vanishes identically (β̄_2 = 0
+#      makes `(ᾱ_2³/(3ᾱ_1²)) θ̇_R_h = 0` only if θ̇_R_h = 0; the
+#      θ_R-row pinning ensures this) — so the dimension-lift gate
+#      §6.1 holds at 0.0 absolute exactly as in M3-3b.
+#
+#   3. Adding a 9th residual row F^θ_R encoding the kinematic equation
+#      `θ̇_R = drive` from the Berry derivation §3. In the M3-3c first
+#      cut (no off-diagonal β, no off-diagonal velocity gradient stencil
+#      yet), the kinematic drive `W̃_12 − S̃_12·… + 2M̃_xv,12/…` reduces
+#      to 0 — so
+#
+#          F^θ_R = (θ_R_np1 − θ_R_n)/dt
+#
+#      i.e., θ_R is conserved per cell. This is the analog of the M1
+#      §6.6 H_rot solvability constraint embedded structurally in the
+#      residual: with the per-axis rows derived from Ω · X = -dH and
+#      F^θ_R = θ̇_R, the discrete system inherits the continuous
+#      solvability identity (cross-checked in `test_M3_3c_h_rot_solvability.jl`).
+#      M3-3d / M3-6 will activate non-trivial off-diagonal strain-rate
+#      drives (D.1 KH falsifier).
+#
+# Off-diagonal β is still pinned (per Q3 of the design note's §10);
+# `β_{12} = β_{21} = 0` is enforced by their absence from the field set.
+
+"""
+    cholesky_el_residual_2D_berry!(F, y_np1, y_n, aux, dt)
+
+Native HG-side 2D Cholesky-sector EL residual **with Berry coupling
+and θ_R as a Newton unknown** (M3-3c). Writes the residual `F` for the
+9-dof-per-cell flat unknown vector `y_np1` against the reference state
+`y_n`. Both vectors are packed leaf-cell-major as
+
+    y[9(i-1) + 1] = x_1
+    y[9(i-1) + 2] = x_2
+    y[9(i-1) + 3] = u_1
+    y[9(i-1) + 4] = u_2
+    y[9(i-1) + 5] = α_1
+    y[9(i-1) + 6] = α_2
+    y[9(i-1) + 7] = β_1
+    y[9(i-1) + 8] = β_2
+    y[9(i-1) + 9] = θ_R
+
+for `i ∈ 1:N` (N = number of leaf cells in mesh order).
+
+Auxiliary data carried in `aux::NamedTuple` (same layout as the M3-3b
+`build_residual_aux_2D`; `θR_vec` is now read at `n` only — `θ_R_np1`
+is a Newton unknown):
+
+  • `s_vec`, `Δm_per_axis`, `face_lo_idx`, `face_hi_idx`,
+    `M_vv_override`, `ρ_ref` — see `cholesky_el_residual_2D!`.
+
+The residual rows are:
+
+    F^x_a    = (x_a_np1 − x_a_n)/dt − ū_a
+    F^u_a    = (u_a_np1 − u_a_n)/dt + (P̄_a^hi − P̄_a^lo) / m̄_a
+    F^α_a    = (α_a_np1 − α_a_n)/dt − β̄_a + (Berry α-modification)
+    F^β_a    = (β_a_np1 − β_a_n)/dt + (∂_a u_a) β̄_a − γ̄_a²/ᾱ_a
+                + (Berry β-modification)
+    F^θ_R    = (θ_R_np1 − θ_R_n)/dt
+
+with the per-axis Berry α/β-modifications detailed in the file-level
+comment block above and consistent with `src/berry.jl::berry_partials_2d`.
+
+# Verification
+
+  • The dimension-lift gate (§6.1 of the design note) holds at 0.0
+    absolute when `α_2 = const, β_2 = 0, θ_R_n = 0` (the Berry
+    α/β-modification terms vanish; F^θ_R = 0 keeps θ_R = 0 across
+    the step).
+  • The Berry partials (∂F^α_a/∂θ_R_np1, ∂F^β_a/∂θ_R_np1) match
+    `berry_partials_2d` up to the (1/dt) factor and the midpoint
+    averaging — verified in `test_M3_3c_berry_residual.jl`.
+"""
+function cholesky_el_residual_2D_berry!(F::AbstractVector,
+                                          y_np1::AbstractVector,
+                                          y_n::AbstractVector,
+                                          aux::NamedTuple,
+                                          dt::Real)
+    s_vec       = aux.s_vec
+    Δm_per_axis = aux.Δm_per_axis
+    face_lo     = aux.face_lo_idx
+    face_hi     = aux.face_hi_idx
+    M_vv_over   = aux.M_vv_override
+    ρ_ref       = aux.ρ_ref
+
+    N = length(s_vec)
+    @assert length(y_np1) == 9 * N "y_np1 length $(length(y_np1)) does not match 9 * N = $(9 * N)"
+    @assert length(y_n)   == 9 * N
+    @assert length(F)     == 9 * N
+    @assert length(Δm_per_axis[1]) == N
+    @assert length(Δm_per_axis[2]) == N
+
+    Tres = promote_type(eltype(y_np1), eltype(y_n), eltype(s_vec), typeof(dt))
+
+    # 9-dof per-cell index helpers.
+    @inline get_x(y, a, i) = y[9 * (i - 1) + a]              # a ∈ {1, 2}
+    @inline get_u(y, a, i) = y[9 * (i - 1) + 2 + a]
+    @inline get_α(y, a, i) = y[9 * (i - 1) + 4 + a]
+    @inline get_β(y, a, i) = y[9 * (i - 1) + 6 + a]
+    @inline get_θR(y, i)   = y[9 * (i - 1) + 9]
+
+    @inbounds for i in 1:N
+        s_i = s_vec[i]
+
+        # Self θ_R midpoint (shared by both axes).
+        θR_n   = get_θR(y_n,   i)
+        θR_np1 = get_θR(y_np1, i)
+        dθR_dt = (θR_np1 - θR_n) / Tres(dt)
+
+        # Cache per-axis self midpoints (needed for Berry cross-axis terms).
+        ᾱ_self_1 = (get_α(y_n, 1, i) + get_α(y_np1, 1, i)) / 2
+        ᾱ_self_2 = (get_α(y_n, 2, i) + get_α(y_np1, 2, i)) / 2
+        β̄_self_1 = (get_β(y_n, 1, i) + get_β(y_np1, 1, i)) / 2
+        β̄_self_2 = (get_β(y_n, 2, i) + get_β(y_np1, 2, i)) / 2
+
+        for a in 1:2
+            # Self midpoints.
+            x_n   = get_x(y_n,   a, i)
+            x_np1 = get_x(y_np1, a, i)
+            u_n   = get_u(y_n,   a, i)
+            u_np1 = get_u(y_np1, a, i)
+            α_n   = get_α(y_n,   a, i)
+            α_np1 = get_α(y_np1, a, i)
+            β_n   = get_β(y_n,   a, i)
+            β_np1 = get_β(y_np1, a, i)
+
+            x̄ = (x_n   + x_np1)   / 2
+            ū = (u_n   + u_np1)   / 2
+            ᾱ = (α_n   + α_np1)   / 2
+            β̄ = (β_n   + β_np1)   / 2
+
+            # Neighbor along axis a (lo, hi).
+            ilo = face_lo[a][i]
+            ihi = face_hi[a][i]
+
+            # Lo-face neighbor data; mirror-self when out-of-domain.
+            if ilo == 0
+                x_lo_n   = x_n
+                x_lo_np1 = x_np1
+                u_lo_n   = u_n
+                u_lo_np1 = u_np1
+                s_lo     = s_i
+            else
+                x_lo_n   = get_x(y_n,   a, ilo)
+                x_lo_np1 = get_x(y_np1, a, ilo)
+                u_lo_n   = get_u(y_n,   a, ilo)
+                u_lo_np1 = get_u(y_np1, a, ilo)
+                s_lo     = s_vec[ilo]
+            end
+            x̄_lo = (x_lo_n + x_lo_np1) / 2
+            ū_lo = (u_lo_n + u_lo_np1) / 2
+
+            # Hi-face neighbor data; mirror-self when out-of-domain.
+            if ihi == 0
+                x_hi_n   = x_n
+                x_hi_np1 = x_np1
+                u_hi_n   = u_n
+                u_hi_np1 = u_np1
+                s_hi     = s_i
+            else
+                x_hi_n   = get_x(y_n,   a, ihi)
+                x_hi_np1 = get_x(y_np1, a, ihi)
+                u_hi_n   = get_u(y_n,   a, ihi)
+                u_hi_np1 = get_u(y_np1, a, ihi)
+                s_hi     = s_vec[ihi]
+            end
+            x̄_hi = (x_hi_n + x_hi_np1) / 2
+            ū_hi = (u_hi_n + u_hi_np1) / 2
+
+            Δm_i = Δm_per_axis[a][i]
+
+            # Per-axis M_vv (M_vv_override or EOS branch); mirrors the
+            # M3-3b residual exactly so the dimension-lift gate carries.
+            M̄vv_a = if M_vv_over !== nothing
+                Tres(M_vv_over[a])
+            else
+                Δx_avg = if ilo == 0 && ihi == 0
+                    zero(Tres)
+                elseif ilo == 0
+                    2 * (x̄_hi - x̄)
+                elseif ihi == 0
+                    2 * (x̄ - x̄_lo)
+                else
+                    x̄_hi - x̄_lo
+                end
+                J̄_self = Δx_avg > 0 ? Δx_avg / (2 * Δm_i) : zero(Tres)
+                J̄_self > 0 ? Mvv(J̄_self, s_i) : zero(Tres)
+            end
+
+            # Pressure stencil (mirrors M3-3b).
+            P_self = Tres(ρ_ref) * M̄vv_a
+            P_lo_neighbor = if ilo == 0
+                P_self
+            else
+                Mvv_lo = if M_vv_over !== nothing
+                    Tres(M_vv_over[a])
+                else
+                    Tres(ρ_ref) * Mvv(one(Tres) / Tres(ρ_ref), s_lo)
+                end
+                Tres(ρ_ref) * Mvv_lo
+            end
+            P_hi_neighbor = if ihi == 0
+                P_self
+            else
+                Mvv_hi = if M_vv_over !== nothing
+                    Tres(M_vv_over[a])
+                else
+                    Tres(ρ_ref) * Mvv(one(Tres) / Tres(ρ_ref), s_hi)
+                end
+                Tres(ρ_ref) * Mvv_hi
+            end
+            P̄_lo = (P_self + P_lo_neighbor) / 2
+            P̄_hi = (P_self + P_hi_neighbor) / 2
+
+            Δx̄_full = x̄_hi - x̄_lo
+            div̄u_a = if Δx̄_full > 0
+                (ū_hi - ū_lo) / Δx̄_full
+            else
+                zero(Tres)
+            end
+
+            m̄_a = Δm_i
+            γ²_a = M̄vv_a - β̄^2
+
+            # Berry-modification coefficients for this axis. Sign comes
+            # from rows of Ω · X = -dH (see file-level comment block).
+            #
+            # axis 1: α̇_1 = β_1 - (α_2³/(3α_1²)) θ̇_R     ⇒ +(ᾱ_2³/(3ᾱ_1²)) θ̇_R
+            #         β̇_1 = γ_1²/α_1 - β_2 θ̇_R           ⇒ +β̄_2 θ̇_R
+            # axis 2: α̇_2 = β_2 + (α_1³/(3α_2²)) θ̇_R     ⇒ -(ᾱ_1³/(3ᾱ_2²)) θ̇_R
+            #         β̇_2 = γ_2²/α_2 + β_1 θ̇_R           ⇒ -β̄_1 θ̇_R
+            #
+            # The (α_other³ / (3·α_self²)) coefficients use the cached
+            # `ᾱ_self_*` to avoid recomputing across the per-axis loop.
+            berry_α_term, berry_β_term = if a == 1
+                ( (ᾱ_self_2^3) / (3 * ᾱ_self_1^2) * dθR_dt,
+                   β̄_self_2 * dθR_dt )
+            else
+                ( -(ᾱ_self_1^3) / (3 * ᾱ_self_2^2) * dθR_dt,
+                  -β̄_self_1 * dθR_dt )
+            end
+
+            # Residual rows.
+            base = 9 * (i - 1)
+            F[base + a]     = (x_np1 - x_n) / dt - ū                                         # F^x_a
+            F[base + 2 + a] = (u_np1 - u_n) / dt + (P̄_hi - P̄_lo) / m̄_a                       # F^u_a
+            F[base + 4 + a] = (α_np1 - α_n) / dt - β̄ + berry_α_term                          # F^α_a
+            F[base + 6 + a] = (β_np1 - β_n) / dt + div̄u_a * β̄ -
+                              (ᾱ != 0 ? γ²_a / ᾱ : zero(Tres)) + berry_β_term                # F^β_a
+        end
+
+        # F^θ_R: kinematic-equation-driven evolution. M3-3c first cut has
+        # zero off-diagonal strain rate (M3-3d/M3-6 activate this), so
+        # θ_R is conserved per cell across the step.
+        F[9 * (i - 1) + 9] = (θR_np1 - θR_n) / dt
+    end
+    return F
+end
+
+"""
+    cholesky_el_residual_2D_berry(y_np1, y_n, aux, dt)
+
+Allocating wrapper around `cholesky_el_residual_2D_berry!`. Returns a
+fresh residual vector. Used in tests where allocation cost is
+irrelevant.
+"""
+function cholesky_el_residual_2D_berry(y_np1::AbstractVector,
+                                         y_n::AbstractVector,
+                                         aux::NamedTuple,
+                                         dt::Real)
+    Tres = promote_type(eltype(y_np1), eltype(y_n), eltype(aux.s_vec), typeof(dt))
+    F = similar(y_np1, Tres, length(y_np1))
+    cholesky_el_residual_2D_berry!(F, y_np1, y_n, aux, dt)
+    return F
+end
+
+"""
+    pack_state_2d_berry(fields::PolynomialFieldSet,
+                         leaves::AbstractVector{<:Integer})
+        -> Vector{Float64}
+
+9-dof variant of `pack_state_2d`: packs `(x_1, x_2, u_1, u_2, α_1, α_2,
+β_1, β_2, θ_R)` per leaf into a flat length-`9 N` vector.
+"""
+function pack_state_2d_berry(fields::PolynomialFieldSet,
+                              leaves::AbstractVector{<:Integer})
+    N = length(leaves)
+    T = typeof(fields.x_1[leaves[1]][1])
+    y = Vector{T}(undef, 9 * N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        base = 9 * (i - 1)
+        y[base + 1] = fields.x_1[ci][1]
+        y[base + 2] = fields.x_2[ci][1]
+        y[base + 3] = fields.u_1[ci][1]
+        y[base + 4] = fields.u_2[ci][1]
+        y[base + 5] = fields.α_1[ci][1]
+        y[base + 6] = fields.α_2[ci][1]
+        y[base + 7] = fields.β_1[ci][1]
+        y[base + 8] = fields.β_2[ci][1]
+        y[base + 9] = fields.θ_R[ci][1]
+    end
+    return y
+end
+
+"""
+    unpack_state_2d_berry!(fields::PolynomialFieldSet,
+                            leaves::AbstractVector{<:Integer},
+                            y::AbstractVector)
+
+Inverse of `pack_state_2d_berry`: write the flat 9-dof per-leaf state
+back into the 2D field set. Leaves the `:s, :Pp, :Q` slots untouched.
+"""
+function unpack_state_2d_berry!(fields::PolynomialFieldSet,
+                                 leaves::AbstractVector{<:Integer},
+                                 y::AbstractVector)
+    N = length(leaves)
+    @assert length(y) == 9 * N "y length $(length(y)) does not match 9 * N = $(9 * N)"
+    @inbounds for (i, ci) in enumerate(leaves)
+        base = 9 * (i - 1)
+        fields.x_1[ci] = (y[base + 1],)
+        fields.x_2[ci] = (y[base + 2],)
+        fields.u_1[ci] = (y[base + 3],)
+        fields.u_2[ci] = (y[base + 4],)
+        fields.α_1[ci] = (y[base + 5],)
+        fields.α_2[ci] = (y[base + 6],)
+        fields.β_1[ci] = (y[base + 7],)
+        fields.β_2[ci] = (y[base + 8],)
+        fields.θ_R[ci] = (y[base + 9],)
+    end
+    return fields
+end

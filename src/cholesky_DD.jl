@@ -202,3 +202,98 @@ matrix; only the diagonal entries are read.
     γ2 = sqrt(max(g2², zero(T)))
     return SVector{2, T}(γ1, γ2)
 end
+
+# ──────────────────────────────────────────────────────────────────────
+# H_rot solvability constraint (M3-3c §6.4)
+# ──────────────────────────────────────────────────────────────────────
+
+"""
+    h_rot_partial_dtheta(α::SVector{2,T}, β::SVector{2,T}, γ²::SVector{2,T})
+        -> T
+
+Closed-form value of `∂H_rot/∂θ_R` derived from the kernel-orthogonality
+condition `dH · v_ker = 0` on the 5D Poisson manifold. With the kernel
+direction
+`v_ker = (-α_2³/(3α_1²), -β_2, α_1³/(3α_2²), β_1, 1)` in basis
+`(α_1, β_1, α_2, β_2, θ_R)` (verified by `scripts/verify_berry_connection.py`
+CHECK 7), the constraint `dH_Ch · v_ker + ∂H_rot/∂θ_R = 0` gives
+
+    ∂H_rot/∂θ_R = − (γ_1² · α_2³)/(3·α_1) + (γ_2² · α_1³)/(3·α_2)
+                   + (α_1² − α_2²) · β_1 · β_2.
+
+This makes `H = H_Ch + H_rot(θ_R, …)` a valid Hamiltonian on the
+rank-4 5D Poisson manifold.
+
+# Sign convention
+
+The closed form here has the **opposite overall sign** of the
+narrative in `reference/notes_M3_phase0_berry_connection.md` §6.6
+(which writes the magnitude only). The sign here matches the SymPy
+verification output of `scripts/verify_berry_connection.py` CHECK 7:
+solving `Ω · X = -dH` for the θ_R row yields
+`h_rot = -[(γ_1² α_2³)/(3α_1) - (γ_2² α_1³)/(3α_2) - (α_1²-α_2²)β_1β_2]`.
+
+# Algebraic guarantee in the discrete EL
+
+The relation is **automatically satisfied by the per-axis residual
+rows** of `cholesky_el_residual_2D_berry!`: substituting the Berry-
+modified Hamilton equations (rows of Ω · X = -dH solved for α̇_a, β̇_a)
+into the θ_R row identity makes the LHS equal to the closed form
+above. The discrete residual encodes the per-axis rows directly,
+so the kernel-orthogonality identity is structurally guaranteed at
+every Newton iterate. This helper returns the closed form so the
+M3-3c §6.4 verification gate can cross-check it numerically against
+a kernel-orthogonality probe (`h_rot_kernel_orthogonality_residual`).
+
+# Iso-slice behaviour
+
+At `α_1 = α_2 = α_0`, `β_1 = β_2 = β_0`, the closed form simplifies to
+
+    ∂H_rot/∂θ_R = -γ_1² α_0² / 3 + γ_2² α_0² / 3 + 0
+                = -(γ_1² − γ_2²) · α_0² / 3.
+
+When additionally `M_vv,1 = M_vv,2` (so `γ_1² = γ_2²`), this vanishes
+identically — consistent with the iso-slice being a Lagrangian
+submanifold of the 5D Poisson manifold.
+"""
+@inline function h_rot_partial_dtheta(α::SVector{2, T},
+                                       β::SVector{2, T},
+                                       γ²::SVector{2, T}) where {T<:Real}
+    a1, a2 = α[1], α[2]
+    b1, b2 = β[1], β[2]
+    g1², g2² = γ²[1], γ²[2]
+    return -(g1² * a2^3) / (3 * a1) +
+            (g2² * a1^3) / (3 * a2) +
+            (a1^2 - a2^2) * b1 * b2
+end
+
+"""
+    h_rot_kernel_orthogonality_residual(α, β, γ², α̇, β̇)
+        -> T
+
+Numerically evaluate the kernel-orthogonality identity that `∂H_rot/∂θ_R`
+is supposed to enforce. Specifically: when `α̇, β̇` solve the Berry-
+modified per-axis Hamilton equations, the contraction
+
+    R = -α_1²β_2·α̇_1 + (α_2³/3)·β̇_1 + α_2²β_1·α̇_2 - (α_1³/3)·β̇_2
+        + ∂H_rot/∂θ_R
+
+should evaluate to 0 (this is the θ_R row of `Ω · X = -dH`). This
+helper computes `R` directly so the §6.4 verification test can
+sample generic `(α, β, γ)` points, evolve via the boxed Berry-modified
+equations to get `α̇, β̇`, and cross-check that the residual is at
+machine precision.
+
+Returns the residual as a scalar of type `T`.
+"""
+@inline function h_rot_kernel_orthogonality_residual(α::SVector{2, T},
+                                                      β::SVector{2, T},
+                                                      γ²::SVector{2, T},
+                                                      α̇::SVector{2, T},
+                                                      β̇::SVector{2, T}) where {T<:Real}
+    a1, a2 = α[1], α[2]
+    b1, b2 = β[1], β[2]
+    R = -a1^2 * b2 * α̇[1] + (a2^3) * β̇[1] / 3 +
+         a2^2 * b1 * α̇[2] - (a1^3) * β̇[2] / 3
+    return R + h_rot_partial_dtheta(α, β, γ²)
+end

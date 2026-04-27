@@ -219,6 +219,8 @@ export refine_segment!, coarsen_segment_pair!,
 # `reference/notes_M3_3_2d_cholesky_berry.md` §4.1 / §4.3.
 include("cholesky_DD.jl")
 export cholesky_decompose_2d, cholesky_recompose_2d, gamma_per_axis_2d
+# M3-3c: closed-form ∂H_rot/∂θ_R + kernel-orthogonality residual helper.
+export h_rot_partial_dtheta, h_rot_kernel_orthogonality_residual
 
 # --- Phase M3-3a API: 2D Cholesky-sector field types -----------------------
 # `DetField2D{T}` is the working struct for the M3-3 2D 10-dof Newton
@@ -241,6 +243,18 @@ export cholesky_el_residual_2D!, cholesky_el_residual_2D
 export pack_state_2d, unpack_state_2d!,
        build_face_neighbor_tables, build_residual_aux_2D
 export det_step_2d_HG!
+
+# --- Phase M3-3c API: 2D EL residual + Newton WITH Berry coupling ---------
+# Promotes θ_R from a fixed IC value to a Newton unknown. Adds the closed-
+# form Berry partials (`src/berry.jl::berry_partials_2d`) into the
+# per-axis residual rows; adds a 9th `F^θ_R` row encoding the kinematic-
+# equation evolution (trivial drive in M3-3c — off-diagonal velocity
+# gradients enter at M3-3d/M3-6). The Newton system grows from 8N to 9N.
+# See `reference/notes_M3_3_2d_cholesky_berry.md` §4 + §6 and
+# `reference/notes_M3_3c_berry_integration.md`.
+export cholesky_el_residual_2D_berry!, cholesky_el_residual_2D_berry
+export pack_state_2d_berry, unpack_state_2d_berry!
+export det_step_2d_berry_HG!
 
 # --- Phase M3-prep API: Berry-connection 2D/3D stencils -------------------
 # Pure-functional building blocks for the M3-3 (2D Cholesky + Berry

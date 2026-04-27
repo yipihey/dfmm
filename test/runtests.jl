@@ -261,6 +261,30 @@ using Test
         include("test_M3_3b_2d_zero_strain.jl")
         include("test_M3_3b_dimension_lift_zero_strain.jl")
     end
+    @testset verbose = true "Phase M3-3c: Berry coupling + θ_R Newton unknown" begin
+        # M3-3c sub-phase of M3-3 (2D Cholesky + Berry connection).
+        # Promotes θ_R from a fixed IC value to a Newton unknown
+        # (8N → 9N rows). Adds the closed-form Berry partials from
+        # `src/berry.jl` into the per-axis residual rows; F^θ_R is
+        # the kinematic equation (trivial drive in M3-3c — off-diagonal
+        # velocity gradients enter at M3-3d/M3-6). Four tests:
+        #   • Dimension-lift gate re-verification (§6.1): Berry vanishes
+        #     on the 1D-symmetric slice; M1 parity ≤ 1e-12.
+        #   • Berry verification reproduction (§6.2): residual partials
+        #     match `berry_partials_2d` at 5–10 random samples.
+        #   • Iso-pullback ε-expansion (§6.3): Berry contribution is
+        #     O(ε²) along the iso-submanifold tangent direction.
+        #   • H_rot solvability (§6.4): closed-form ∂H_rot/∂θ_R from
+        #     §6.6 satisfies kernel-orthogonality at 5 generic samples;
+        #     Newton converges ≤ 5 iterations on non-isotropic 2D ICs.
+        # See `reference/notes_M3_3_2d_cholesky_berry.md` §4 + §6 and
+        # `reference/notes_M3_3c_berry_integration.md` (this sub-phase's
+        # status note).
+        include("test_M3_3c_dimension_lift_with_berry.jl")
+        include("test_M3_3c_berry_residual.jl")
+        include("test_M3_3c_iso_pullback.jl")
+        include("test_M3_3c_h_rot_solvability.jl")
+    end
     @testset verbose = true "Phase M3-2: Phase 7/8/11 + M2 on HG" begin
         # Phase 7 (heat-flux Q + steady shock + inflow/outflow), Phase 8
         # (variance-gamma stochastic injection), Phase 11 (passive

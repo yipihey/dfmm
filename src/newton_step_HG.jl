@@ -845,3 +845,131 @@ function det_step_2d_HG!(fields::PolynomialFieldSet,
     unpack_state_2d!(fields, leaves, sol.u)
     return fields
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M3-3c: native HG-side 2D Newton step driver WITH Berry coupling
+# and θ_R as a Newton unknown
+# ─────────────────────────────────────────────────────────────────────
+#
+# Counterpart of M3-3b's `det_step_2d_HG!`. The residual is now
+# `cholesky_el_residual_2D_berry!` (in `src/eom.jl`) with 9 dof per
+# cell `(x_a, u_a, α_a, β_a, θ_R)`. The Newton sparsity grows from
+# `cell_adjacency ⊗ 8×8` to `cell_adjacency ⊗ 9×9` (one row+column
+# more per cell; ~17 nonzeros added per cell). The Berry coupling
+# introduces θ_R-α / θ_R-β off-diagonals that the dense per-cell
+# 9×9 sparsity covers.
+
+"""
+    det_step_2d_berry_HG!(fields::PolynomialFieldSet,
+                           mesh::HierarchicalMesh{2},
+                           frame::EulerianFrame{2, T},
+                           leaves::AbstractVector{<:Integer},
+                           bc_spec::FrameBoundaries{2},
+                           dt::Real;
+                           M_vv_override = nothing,
+                           ρ_ref::Real = 1.0,
+                           sparse_jac::Bool = true,
+                           abstol::Real = 1e-13,
+                           reltol::Real = 1e-13,
+                           maxiters::Int = 50) where {T<:Real}
+
+Advance the 2D Cholesky-sector field set by one timestep `dt` via an
+implicit-midpoint Newton solve of `cholesky_el_residual_2D_berry!`
+(M3-3c: Berry coupling + θ_R as Newton unknown). Mutates the 9 Newton-
+unknown slots `(x_a, u_a, α_a, β_a, θ_R)` of `fields` in-place; the
+`(s, Pp, Q)` slots are left untouched.
+
+Arguments mirror `det_step_2d_HG!` (M3-3b). The only structural
+differences are:
+
+  • The Newton system is `9 N × 9 N` rather than `8 N × 8 N`.
+  • The Jacobian sparsity prototype is `cell_adjacency_sparsity` ⊗
+    a dense 9×9 block (vs M3-3b's 8×8).
+  • The residual contains Berry α/β-modification terms and an explicit
+    θ_R kinematic equation row.
+
+Returns `fields` for convenience.
+
+# Constraints
+
+  • `mesh.balanced == true` (asserted).
+  • The off-diagonal `β_{12}, β_{21}` are pinned to zero (omitted from
+    the field set per Q3 of the design note).
+  • The kinematic drive of `θ̇_R` is zero in M3-3c; off-diagonal
+    velocity gradients (KH instability, D.1 falsifier) are M3-3d /
+    M3-6 work.
+"""
+function det_step_2d_berry_HG!(fields::PolynomialFieldSet,
+                                 mesh::HierarchicalMesh{2},
+                                 frame::EulerianFrame{2, T},
+                                 leaves::AbstractVector{<:Integer},
+                                 bc_spec::FrameBoundaries{2},
+                                 dt::Real;
+                                 M_vv_override = nothing,
+                                 ρ_ref::Real = 1.0,
+                                 sparse_jac::Bool = true,
+                                 abstol::Real = 1e-13,
+                                 reltol::Real = 1e-13,
+                                 maxiters::Int = 50) where {T<:Real}
+    @assert mesh.balanced == true "det_step_2d_berry_HG! requires mesh.balanced == true"
+    N = length(leaves)
+    @assert N >= 1 "leaves vector must be non-empty"
+
+    aux = build_residual_aux_2D(fields, mesh, frame, leaves, bc_spec;
+                                 M_vv_override = M_vv_override,
+                                 ρ_ref = ρ_ref)
+    y_n = pack_state_2d_berry(fields, leaves)
+    y0 = copy(y_n)
+
+    f_in_place = (F, u, p_in) -> begin
+        cholesky_el_residual_2D_berry!(F, u, p_in.y_n, p_in.aux, p_in.dt)
+        return nothing
+    end
+    p = (y_n = y_n, aux = aux, dt = T(dt))
+
+    if sparse_jac && N >= 4
+        cell_sparsity = cell_adjacency_sparsity(mesh; depth = 1,
+                                                  leaves_only = true)
+        rows = Int[]
+        cols = Int[]
+        cs_rows, cs_cols, _ = SparseArrays.findnz(cell_sparsity)
+        # Cap at 9×9 = 81 nonzeros per cell-cell adjacency entry.
+        sizehint!(rows, length(cs_rows) * 81)
+        sizehint!(cols, length(cs_rows) * 81)
+        @inbounds for k in eachindex(cs_rows)
+            i = Int(cs_rows[k])
+            j = Int(cs_cols[k])
+            for r in 1:9, c in 1:9
+                push!(rows, 9 * (i - 1) + r)
+                push!(cols, 9 * (j - 1) + c)
+            end
+        end
+        jac_proto = _SA.sparse(rows, cols, ones(Float64, length(rows)),
+                                9 * N, 9 * N, max)
+        nf = NonlinearFunction(f_in_place; jac_prototype = jac_proto)
+        prob = NonlinearProblem(nf, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    else
+        prob = NonlinearProblem(f_in_place, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    end
+
+    F_check = similar(sol.u)
+    cholesky_el_residual_2D_berry!(F_check, sol.u, y_n, aux, T(dt))
+    res_norm = maximum(abs, F_check)
+    if res_norm > 10 * abstol && sol.retcode != ReturnCode.Success
+        error("det_step_2d_berry_HG! Newton solve failed: retcode = $(sol.retcode), " *
+              "‖residual‖∞ = $res_norm")
+    end
+
+    unpack_state_2d_berry!(fields, leaves, sol.u)
+    return fields
+end
