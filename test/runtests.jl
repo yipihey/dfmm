@@ -642,4 +642,23 @@ using Test
         # See `reference/notes_M3_6_phase4_D7_dust_traps.md`.
         include("test_M3_6_phase4_D7_dust_traps.jl")
     end
+    @testset verbose = true "Phase M3-6 Phase 5: D.10 ISM multi-tracer fidelity" begin
+        # M3-6 Phase 5 closes M3-6 entire. Methods paper §10.5 D.10
+        # community-impact test: multi-tracer 2D shocked turbulence
+        # with metallicity-tracking-style fidelity. Uses
+        # `tier_d_ism_tracers_ic_full` (KH-style sheared base flow + N=3
+        # species `TracerMeshHG2D` `[:cold, :warm, :hot]`) driven through
+        # `det_step_2d_berry_HG!` + `inject_vg_noise_HG_2d!` (axes=(1,2),
+        # project_kind=:reanchor) for K iterations. Driver:
+        # `experiments/D10_ism_multi_tracer.jl`.
+        #
+        # Headline result: tracer matrix byte-equal to IC at end-time
+        # (the 2D analog of M2-2's 1D structural bit-exactness
+        # argument). The bit-exactness derives from inspection of the
+        # write sets — neither `det_step_2d_berry_HG!` nor
+        # `inject_vg_noise_HG_2d!` writes `tm.tracers`. The test serves
+        # as a defensive regression guard against future refactors.
+        # See `reference/notes_M3_6_phase5_D10_ism_tracers.md`.
+        include("test_M3_6_phase5_D10_ism_tracers.jl")
+    end
 end
