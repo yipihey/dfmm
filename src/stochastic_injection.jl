@@ -303,6 +303,16 @@ Fields:
                               (mirrors py-1d's `pressure_floor` clip).
   * `Mvv_min_pre::Float64`  — running min of pre-projection `M_vv`.
   * `Mvv_min_post::Float64` — running min of post-projection `M_vv`.
+  * `n_offdiag_events::Int` *(M3-6 Phase 1b)* — number of cell-step
+                              pairs where the 4-component β-cone
+                              `Q = β_1² + β_2² + 2(β_12² + β_21²) ≤
+                              M_vv · headroom_offdiag` was binding (i.e.,
+                              the off-diag β pair was uniformly
+                              scaled). At β_12 = β_21 = 0 this counter
+                              stays at 0 and the projection collapses
+                              byte-equal onto the M2-3 / M3-3d 2-component
+                              path. See `realizability_project_2d!` for
+                              the cone definition.
 """
 mutable struct ProjectionStats
     n_steps::Int
@@ -311,9 +321,10 @@ mutable struct ProjectionStats
     total_dE_inj::Float64
     Mvv_min_pre::Float64
     Mvv_min_post::Float64
+    n_offdiag_events::Int   # M3-6 Phase 1b
 end
 
-ProjectionStats() = ProjectionStats(0, 0, 0, 0.0, Inf, Inf)
+ProjectionStats() = ProjectionStats(0, 0, 0, 0.0, Inf, Inf, 0)
 
 """
     reset!(stats::ProjectionStats)
@@ -328,6 +339,7 @@ function reset!(stats::ProjectionStats)
     stats.total_dE_inj = 0.0
     stats.Mvv_min_pre = Inf
     stats.Mvv_min_post = Inf
+    stats.n_offdiag_events = 0    # M3-6 Phase 1b
     return stats
 end
 
@@ -576,6 +588,38 @@ The 1D bit-equality regression: at `β_2 = 0`, the per-axis target
 collapses to `headroom · β_1²` — identical to the 1D
 `realizability_project!` form. The M3-3d test verifies this on a
 1D-symmetric 2D configuration.
+
+# 4-component β cone (M3-6 Phase 1b)
+
+In addition to the per-axis 2-component cone (legacy), the projection
+applies a *post-hoc* check on the 4-component Cholesky quadratic form
+
+    Q ≡ β_1² + β_2² + 2 (β_12² + β_21²)
+
+which doubles the off-diagonal contributions per the symmetric Cholesky
+covariance convention. With M_vv post the 2-component s-raise, if
+`Q > M_vv · headroom_offdiag`, the 4-component β tuple
+`(β_1, β_2, β_12, β_21)` is uniformly scaled by
+`s_β = √(M_vv · headroom_offdiag / Q)` so the inequality holds exactly.
+
+The default `headroom_offdiag = 2.0` is chosen so that **at β_12 =
+β_21 = 0** the 4-component check is automatically satisfied after the
+2-component s-raise (which gives `M_vv_post ≥ headroom · max(β_1², β_2²)`,
+implying `Q = β_1² + β_2² ≤ 2·max ≤ 2·M_vv_post/headroom = M_vv_post ·
+(2/headroom)`; with `headroom = 1.05` ≤ 2.0 = headroom_offdiag, the
+inequality holds). This is the load-bearing structural property that
+preserves byte-equality with the M2-3 / M3-3d 2-component
+projection on every β_off = 0 configuration.
+
+When the 4-component β-scaling fires, `stats.n_offdiag_events` is
+incremented (the 2-component `n_events` and `n_floor_events` are
+unaffected, as the s-raise has either already fired or is irrelevant
+for that leaf). The per-axis (α, β) and Pp untouched-by-projection
+guarantee from M2-3 §5 is **partially relaxed** here: the 4-component
+β-scaling does mutate `(β_1, β_2, β_12, β_21)`, by design — it is the
+only mechanism that brings off-diag β back into cone. The per-axis α
+and the post-Newton (s, Pp) sectors stay untouched by the β-scaling
+step.
 """
 function realizability_project_2d!(fields, leaves;
                                    project_kind::Symbol = :reanchor,
@@ -584,6 +628,7 @@ function realizability_project_2d!(fields, leaves;
                                    pressure_floor::Real = 1e-8,
                                    ρ_ref::Real = 1.0,
                                    Gamma::Real = GAMMA_LAW_DEFAULT,
+                                   headroom_offdiag::Real = 2.0,
                                    stats::Union{ProjectionStats,Nothing} = nothing)
     if project_kind === :none
         if stats !== nothing
@@ -598,6 +643,7 @@ function realizability_project_2d!(fields, leaves;
     end
 
     h = Float64(headroom)
+    h_off = Float64(headroom_offdiag)
     Mvv_floor_f = Float64(Mvv_floor)
     pf = Float64(pressure_floor)
     ρ_t = Float64(ρ_ref)
@@ -624,43 +670,74 @@ function realizability_project_2d!(fields, leaves;
         Mvv_target_rel = h * β2_max
         Mvv_target = max(Mvv_target_rel, Mvv_floor_f)
 
-        if Mvv_pre >= Mvv_target
+        Mvv_post = Mvv_pre
+        if Mvv_pre < Mvv_target
+            # 2-component (per-axis) projection event: raise s.
             if stats !== nothing
-                stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_pre)
+                stats.n_events += 1
+                if Mvv_target > Mvv_target_rel
+                    stats.n_floor_events += 1
+                end
+            end
+
+            Pxx_pre = ρ_t * Mvv_pre
+            Pxx_new = ρ_t * Mvv_target
+            ΔPxx = Pxx_new - Pxx_pre   # > 0 by construction
+            Pp_take_target = 0.5 * ΔPxx
+            Pp_avail = max(Pp_pre - pf, 0.0)
+            Pp_take = min(Pp_take_target, Pp_avail)
+            Pp_new = Pp_pre - Pp_take
+            floor_gain = (0.5 * ΔPxx) - Pp_take
+            if stats !== nothing
+                # Tracked per cell — caller can multiply by cell volume if
+                # they want a physical-units IE. Same convention as the
+                # 1D projection where ΔIE = floor_gain · Δx_j.
+                stats.total_dE_inj += floor_gain
+            end
+
+            s_new = s_pre + log(Mvv_target / max(Mvv_pre, 1e-300))
+
+            fields.s[ci]  = (s_new,)
+            fields.Pp[ci] = (Pp_new,)
+            Mvv_post = Mvv_target
+        end
+
+        # ---- M3-6 Phase 1b: 4-component β-cone projection ------------
+        # Q = β_1² + β_2² + 2 (β_12² + β_21²). Scale only when
+        # off-diag β are non-zero AND the 4-component cone is violated
+        # post the 2-component s-raise. At β_12 = β_21 = 0, the early
+        # exit below makes this a strict no-op (no field mutation),
+        # preserving byte-equal output with the M2-3 / M3-3d 2-component
+        # projection across every M3-3c regression configuration.
+        β12 = Float64(fields.β_12[ci][1])
+        β21 = Float64(fields.β_21[ci][1])
+        if β12 == 0.0 && β21 == 0.0
+            # No off-diag mass ⇒ 4-component cone reduces to the
+            # 2-component cone, which the s-raise already satisfies (with
+            # the headroom_offdiag ≥ 2/headroom margin documented above).
+            # Skip the cone-check and fall through.
+            if stats !== nothing
+                stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_post)
             end
             continue
         end
 
-        # Projection event.
-        if stats !== nothing
-            stats.n_events += 1
-            if Mvv_target > Mvv_target_rel
-                stats.n_floor_events += 1
+        Q = β1 * β1 + β2 * β2 + 2.0 * (β12 * β12 + β21 * β21)
+        Q_target = h_off * Mvv_post
+        if Q > Q_target
+            # 4-component β-scaling event.
+            scale = sqrt(Q_target / max(Q, 1e-300))
+            fields.β_1[ci]  = (scale * β1,)
+            fields.β_2[ci]  = (scale * β2,)
+            fields.β_12[ci] = (scale * β12,)
+            fields.β_21[ci] = (scale * β21,)
+            if stats !== nothing
+                stats.n_offdiag_events += 1
             end
         end
 
-        Pxx_pre = ρ_t * Mvv_pre
-        Pxx_new = ρ_t * Mvv_target
-        ΔPxx = Pxx_new - Pxx_pre   # > 0 by construction
-        Pp_take_target = 0.5 * ΔPxx
-        Pp_avail = max(Pp_pre - pf, 0.0)
-        Pp_take = min(Pp_take_target, Pp_avail)
-        Pp_new = Pp_pre - Pp_take
-        floor_gain = (0.5 * ΔPxx) - Pp_take
         if stats !== nothing
-            # Tracked per cell — caller can multiply by cell volume if
-            # they want a physical-units IE. Same convention as the
-            # 1D projection where ΔIE = floor_gain · Δx_j.
-            stats.total_dE_inj += floor_gain
-        end
-
-        s_new = s_pre + log(Mvv_target / max(Mvv_pre, 1e-300))
-
-        fields.s[ci]  = (s_new,)
-        fields.Pp[ci] = (Pp_new,)
-
-        if stats !== nothing
-            stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_target)
+            stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_post)
         end
     end
     return fields

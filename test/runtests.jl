@@ -508,4 +508,19 @@ using Test
         # See `reference/notes_M3_6_phase1a_strain_coupling.md`.
         include("test_M3_6_phase1a_strain_coupling.jl")
     end
+
+    @testset verbose = true "Phase M3-6 Phase 1b: KH IC factory + 4-comp realizability" begin
+        # M3-6 Phase 1b adds the `tier_d_kh_ic` / `tier_d_kh_ic_full`
+        # factories (sheared base flow + antisymmetric tilt-mode
+        # perturbation) and extends `realizability_project_2d!` from a
+        # 2-component (β_1, β_2) s-raise projection to a 4-component
+        # (β_1, β_2, β_12, β_21) cone with a post-hoc β-scaling step.
+        # The 4-component check uses headroom_offdiag = 2.0 by default;
+        # at β_12 = β_21 = 0 the projection is byte-equal to the M3-3d
+        # 2-component output. The KH IC + cone are the prerequisites
+        # for M3-6 Phase 1c (Drazin-Reid γ_KH calibration). See
+        # `reference/notes_M3_6_phase1b_kh_ic_realizability.md`.
+        include("test_M3_6_phase1b_kh_ic.jl")
+        include("test_M3_6_phase1b_realizability_4comp.jl")
+    end
 end

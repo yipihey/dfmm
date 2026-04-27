@@ -1193,3 +1193,279 @@ function tier_c_plane_wave_full_ic(; level::Integer = 4,
                    quad_order = quad_order, Gamma = Gamma, cv = cv),
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-6 Phase 1b — D.1 Kelvin–Helmholtz IC factory
+# ─────────────────────────────────────────────────────────────────────
+#
+# Tier-D D.1 Kelvin–Helmholtz initial condition. Sheared base flow
+#
+#     u_1(y) = U_jet · tanh((y − y_0) / w)        (axis-1 streamwise)
+#     u_2(x, y) = 0                                (no transverse base flow)
+#
+# overlaid with a small-amplitude antisymmetric tilt-mode perturbation
+# in the off-diagonal Cholesky factors:
+#
+#     δβ_12(x, y) = perturbation_amp · sin(2π k_x · (x − lo_x) / L_x)
+#                                    · sech²((y − y_0) / w)
+#     δβ_21(x, y) = − δβ_12(x, y)                  (antisymmetric)
+#
+# The antisymmetric tilt mode `(δβ_12 − δβ_21)` is the linearised
+# eigenmode that the off-diagonal Berry sector drives via the Phase
+# 1a strain coupling (`H_rot^off ∝ G̃_12 · (α_1·β_21 + α_2·β_12)/2`)
+# — see CHECK 9 of `scripts/verify_berry_connection_offdiag.py` for the
+# linearisation sketch and §7.6 of
+# `reference/notes_M3_phase0_berry_connection.md` for the kinematic
+# argument.
+#
+# Boundary conditions: PERIODIC along axis 1 (streamwise; the
+# streamwise wavenumber `perturbation_k` selects the wavelength that
+# fits the box) and REFLECTING along axis 2 (the shear layer is
+# bounded between two walls; the velocity vanishes asymptotically as
+# y → 0, 1 only when y_0 is centred and `jet_width ≪ 1`, but
+# REFLECTING walls are still the correct closure for the bounded
+# domain test).
+
+"""
+    tier_d_kh_ic(; level=4, U_jet=1.0, jet_width=0.1,
+                 perturbation_amp=1e-3, perturbation_k=2,
+                 y_0=nothing, ρ0=1.0, P0=1.0,
+                 lo=nothing, hi=nothing,
+                 quad_order=3, T=Float64)
+        -> NamedTuple
+
+D.1 Kelvin–Helmholtz primitive IC. Builds a balanced 2D mesh on
+`[lo, hi]` (default `[0, 1]²`), evaluates the sheared base flow
+`u_1(y) = U_jet · tanh((y − y_0) / jet_width)`, `u_2 = 0` at cell
+centres (analytic, NOT projected — the IC is smooth so the cell
+average and the centre value agree to `O((Δy / w)²)`; we use centre
+sampling for reproducibility against the perturbation overlay), and
+returns a primitive Tier-C-style field set `(rho, ux, uy, P)` plus
+two extra named fields `(δβ_12, δβ_21)` carrying the antisymmetric
+tilt-mode perturbation.
+
+Returns a NamedTuple with `(name, mesh, frame, fields, δβ_12, δβ_21,
+params)`:
+
+  • `fields::PolynomialFieldSet` — primitive `(rho, ux, uy, P)` cell
+    averages.
+  • `δβ_12::Vector{Float64}`, `δβ_21::Vector{Float64}` — leaf-major
+    antisymmetric off-diag β perturbation samples (cell-centre values).
+  • `params::NamedTuple` — IC parameters echo for downstream tests.
+
+# Boundary conditions
+
+The KH IC is intended for a periodic / reflecting BC mix:
+
+    bc_kh = FrameBoundaries{2}(((PERIODIC, PERIODIC),
+                                (REFLECTING, REFLECTING)))
+
+The streamwise wavelength `λ_x = L_x / perturbation_k` fits the box
+exactly when `perturbation_k` is a positive integer; the resulting
+sin-mode perturbation closes back on itself across the seam.
+
+# 1D parity / dimension lift
+
+The KH IC is intrinsically 2D; there is no 1D parity. At
+`perturbation_amp = 0` the IC reduces to a steady sheared base flow
+(the M3-3c regression configurations stay byte-equal — the sheared u_1
+fires the strain stencil but with β_12 = β_21 = 0 IC, F^β_12 / F^β_21
+drives are bounded by `(U_jet/w)/2` and Phase 1a's residual reduces to
+M3-3c at the iso-rest slice).
+"""
+function tier_d_kh_ic(; level::Integer = 4,
+                      U_jet::Real = 1.0,
+                      jet_width::Real = 0.1,
+                      perturbation_amp::Real = 1e-3,
+                      perturbation_k::Integer = 2,
+                      y_0::Union{Real,Nothing} = nothing,
+                      ρ0::Real = 1.0, P0::Real = 1.0,
+                      lo = nothing, hi = nothing,
+                      quad_order::Integer = 3,
+                      T::Type = Float64)
+    lo_t, hi_t = _default_box(2, lo, hi, T;
+                               default_lo = (zero(T), zero(T)),
+                               default_hi = (one(T), one(T)))
+
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    y0_t = y_0 === nothing ? T(0.5) * (lo_t[2] + hi_t[2]) : T(y_0)
+    w_t  = T(jet_width)
+    U_t  = T(U_jet)
+    A_t  = T(perturbation_amp)
+    k_x  = Int(perturbation_k)
+
+    mesh = uniform_eulerian_mesh(2, level)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    leaves = enumerate_leaves(mesh)
+    n = length(leaves)
+    fields = _allocate_tierc_fields(2, n; T = T)
+
+    basis = MonomialBasis{2, 0}()
+    nc = HierarchicalGrids.n_cells(mesh)
+    hg_qo = _hg_quadrature_order(quad_order)
+
+    ρ_const = T(ρ0)
+    P_const = T(P0)
+
+    # Project base-flow primitives onto leaves.
+    _project_scalar_to_leaves!(fields.rho, frame, leaves,
+                                _ -> ρ_const, basis, nc, hg_qo)
+    _project_scalar_to_leaves!(fields.P, frame, leaves,
+                                _ -> P_const, basis, nc, hg_qo)
+    # u_1(y) = U_jet · tanh((y − y_0) / w); u_2 = 0.
+    f_u1 = let U = U_t, y0 = y0_t, w = w_t
+        x -> U * tanh((x[2] - y0) / w)
+    end
+    _project_scalar_to_leaves!(fields.ux, frame, leaves, f_u1, basis, nc, hg_qo)
+    _project_scalar_to_leaves!(fields.uy, frame, leaves,
+                                _ -> zero(T), basis, nc, hg_qo)
+
+    # Per-leaf perturbation samples (centre-evaluated).
+    δβ_12 = Vector{Float64}(undef, n)
+    δβ_21 = Vector{Float64}(undef, n)
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        # δβ_12 = A · sin(2π k_x (x − lo_x) / L_x) · sech²((y − y_0) / w)
+        sech_arg = (cy - Float64(y0_t)) / Float64(w_t)
+        sech_val = 1.0 / cosh(sech_arg)
+        sech2 = sech_val * sech_val
+        sin_phase = sin(2π * Float64(k_x) * (cx - Float64(lo_t[1])) / Float64(L1))
+        δβ_12[j] = Float64(A_t) * sin_phase * sech2
+        δβ_21[j] = -δβ_12[j]   # antisymmetric tilt mode
+    end
+
+    return (
+        name = "tier_d_kh",
+        mesh = mesh, frame = frame, fields = fields,
+        δβ_12 = δβ_12, δβ_21 = δβ_21,
+        params = (level = level, U_jet = U_jet, jet_width = jet_width,
+                   perturbation_amp = perturbation_amp,
+                   perturbation_k = perturbation_k,
+                   y_0 = Float64(y0_t),
+                   ρ0 = ρ0, P0 = P0,
+                   lo = lo_t, hi = hi_t,
+                   L1 = Float64(L1), L2 = Float64(L2),
+                   quad_order = quad_order),
+    )
+end
+
+"""
+    tier_d_kh_ic_full(; level=4, U_jet=1.0, jet_width=0.1,
+                       perturbation_amp=1e-3, perturbation_k=2,
+                       y_0=nothing, ρ0=1.0, P0=1.0,
+                       lo=nothing, hi=nothing, quad_order=3,
+                       Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                       T=Float64)
+        -> NamedTuple
+
+D.1 Kelvin–Helmholtz Cholesky-sector full IC. Allocates a 14-named-
+field 2D Cholesky-sector field set on a balanced HG quadtree, applies
+the IC bridge `cholesky_sector_state_from_primitive` per leaf, then
+overlays the antisymmetric tilt-mode perturbation in the off-diagonal
+β slots (`β_12 = δβ_12`, `β_21 = −δβ_12`).
+
+Returns a NamedTuple shape matching `tier_c_*_full_ic`:
+
+  • `name = "tier_d_kh_full"`
+  • `mesh, frame, leaves, fields` — Cholesky-sector field set ready
+    for `det_step_2d_berry_HG!`.
+  • `ρ_per_cell::Vector{Float64}` — uniform `fill(ρ0, N)`.
+  • `params::NamedTuple` — IC parameters echo plus `(L1, L2, y_0)`.
+
+# Boundary conditions
+
+The recommended BC mix is
+
+    bc_kh = FrameBoundaries{2}(((PERIODIC, PERIODIC),
+                                (REFLECTING, REFLECTING)))
+
+(periodic streamwise, reflecting transverse). The factory does not
+attach a BC; the caller selects it.
+
+# 1D parity / dimension lift
+
+At `perturbation_amp = 0`, the off-diag β slots are exactly zero per
+leaf. The Phase 1a strain stencil fires off the sheared base flow
+(non-zero G̃_12 in the shear layer), driving β_12 / β_21 over time, but
+the IC itself is byte-equal in the off-diag slot to the M3-6 Phase 0
+base case. With `perturbation_amp ≠ 0` the IC seeds the antisymmetric
+tilt mode that the Phase 1c Drazin–Reid calibration measures.
+"""
+function tier_d_kh_ic_full(; level::Integer = 4,
+                            U_jet::Real = 1.0,
+                            jet_width::Real = 0.1,
+                            perturbation_amp::Real = 1e-3,
+                            perturbation_k::Integer = 2,
+                            y_0::Union{Real,Nothing} = nothing,
+                            ρ0::Real = 1.0, P0::Real = 1.0,
+                            lo = nothing, hi = nothing,
+                            quad_order::Integer = 3,
+                            Gamma::Real = GAMMA_LAW_DEFAULT,
+                            cv::Real = CV_DEFAULT,
+                            T::Type = Float64)
+    lo_t, hi_t = _default_box(2, lo, hi, T;
+                               default_lo = (zero(T), zero(T)),
+                               default_hi = (one(T), one(T)))
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    y0_t = y_0 === nothing ? T(0.5) * (lo_t[2] + hi_t[2]) : T(y_0)
+    w_t  = T(jet_width)
+    U_t  = T(U_jet)
+    A_t  = T(perturbation_amp)
+    k_x  = Int(perturbation_k)
+
+    mesh = HierarchicalMesh{2}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_2d_fields(mesh; T = T)
+
+    ρ_per_cell = fill(Float64(ρ0), length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        # Sheared base flow at cell centre.
+        u1 = Float64(U_t) * tanh((cy - Float64(y0_t)) / Float64(w_t))
+        u2 = 0.0
+        # Apply the IC bridge to get the cold-limit Cholesky-sector
+        # state with α = 1, β = 0, θ_R = 0, s = s(ρ, P).
+        v_base = cholesky_sector_state_from_primitive(Float64(ρ0), u1, u2,
+                                                        Float64(P0),
+                                                        (cx, cy);
+                                                        Gamma = Gamma, cv = cv)
+        # Overlay the antisymmetric tilt-mode perturbation in
+        # off-diagonal β. δβ_21 = −δβ_12.
+        sech_arg = (cy - Float64(y0_t)) / Float64(w_t)
+        sech_val = 1.0 / cosh(sech_arg)
+        sech2 = sech_val * sech_val
+        sin_phase = sin(2π * Float64(k_x) * (cx - Float64(lo_t[1])) / Float64(L1))
+        δβ12 = Float64(A_t) * sin_phase * sech2
+        v = DetField2D{Float64}(
+            v_base.x, v_base.u, v_base.alphas, v_base.betas,
+            (δβ12, -δβ12),
+            v_base.θ_R, v_base.s, v_base.Pp, v_base.Q,
+        )
+        write_detfield_2d!(fields, ci, v)
+    end
+
+    return (
+        name = "tier_d_kh_full",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        params = (level = level, U_jet = U_jet, jet_width = jet_width,
+                   perturbation_amp = perturbation_amp,
+                   perturbation_k = perturbation_k,
+                   y_0 = Float64(y0_t),
+                   ρ0 = ρ0, P0 = P0,
+                   lo = lo_t, hi = hi_t,
+                   L1 = Float64(L1), L2 = Float64(L2),
+                   quad_order = quad_order, Gamma = Gamma, cv = cv),
+    )
+end

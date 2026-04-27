@@ -411,4 +411,13 @@ export s_from_pressure_density,
 export tier_c_sod_full_ic, tier_c_cold_sinusoid_full_ic,
        tier_c_plane_wave_full_ic
 
+# --- Phase M3-6 Phase 1b API: D.1 KH IC factory --------------------------
+# `tier_d_kh_ic` (primitive view) and `tier_d_kh_ic_full` (full Cholesky-
+# sector field set) factories for the D.1 Kelvin-Helmholtz falsifier
+# (M3-6 Phase 1c calibration). Sheared base flow `u_1(y) = U_jet ·
+# tanh((y - y_0)/w)` overlaid with an antisymmetric tilt-mode
+# perturbation `δβ_12 = -δβ_21` in the off-diagonal Cholesky factors.
+# See `reference/notes_M3_6_phase1b_kh_ic_realizability.md`.
+export tier_d_kh_ic, tier_d_kh_ic_full
+
 end # module
