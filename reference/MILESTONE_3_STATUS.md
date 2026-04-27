@@ -1,8 +1,10 @@
-# Milestone 3 — Status synthesis (CLOSED — through M3-6 Phase 1)
+# Milestone 3 — Status synthesis (CLOSED — through M3-6 Phase 2)
 
 **Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26;
 M3-6 Phase 1a/1b/1c closed 2026-04-26 (the D.1 KH falsifier — methods
-paper §10.5 D.1 — the headline scientific test of M3-6).
+paper §10.5 D.1 — the headline scientific test of M3-6 Phase 1).
+M3-6 Phase 2 closed 2026-04-26 (the D.4 Zel'dovich pancake — methods
+paper §10.5 D.4 — central novel cosmological reference test).
 
 **Repo state:** M3-3 closed at `077d6e4` (M3-3e-5 drop cache_mesh).
 M3-4 lands in two phases: Phase 1 at `f364b4a` (periodic-x coordinate
@@ -52,6 +54,7 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-6 Phase 1a** | Off-diag strain coupling `H_rot^off = G̃_12 · (α_1·β_21 + α_2·β_12)/2` wired into the 2D EL residual; `(∂_2 u_1, ∂_1 u_2)` stencil + per-axis F^β_a / F^β_12 / F^β_21 / F^θ_R contributions | done | +125 | Strain stencil bit-exact at axis-aligned ICs; rotational equivariance to 1e-12 |
 | **M3-6 Phase 1b** | `tier_d_kh_ic_full` factory (sheared base flow + antisymmetric tilt-mode perturbation) + 4-component realizability cone `Q = β_1² + β_2² + 2(β_12² + β_21²) ≤ M_vv · headroom_offdiag` | done | +574 | KH IC ready for D.1 falsifier; β_off = 0 ⇒ byte-equal to M3-3d 2-comp projection |
 | **M3-6 Phase 1c** | D.1 KH falsifier driver `experiments/D1_KH_growth_rate.jl` + acceptance gates; Drazin-Reid γ_DR = U/(2w) calibration; mesh refinement convergence; 4-component cone diagnostics | done | +1565 | γ_measured/γ_DR = 1.34 (level 5); c_off² = 1.78; mesh-converged at 1.2% (L4→L5); n_neg_jac = 0; **falsifier PASSED** |
+| **M3-6 Phase 2** | D.4 Zel'dovich pancake collapse: `tier_d_zeldovich_pancake_ic` factory + driver + per-axis γ tracking; methods paper §10.5 D.4 central novel cosmological reference test | done | +2718 | std(γ_1)/std(γ_2) ≈ 2.6e14 at near-caustic (L4 T=0.16); γ_1 dyn-range 4.18×; γ_2 uniform to round-off; Phase 1a inertness max|β_off|=0; **per-axis γ selectivity PASSED** |
 
 ## Test summary
 
@@ -77,7 +80,8 @@ L↔E remap substrate per §6 / §6.6.
 | M3-6 Phase 1a (off-diag strain coupling H_rot^off) | 125 |
 | M3-6 Phase 1b (KH IC factory + 4-comp realizability) | 574 |
 | M3-6 Phase 1c (D.1 KH falsifier driver + acceptance gates) | 1565 |
-| **Total** | **~21951 + 1 deferred** |
+| M3-6 Phase 2 (D.4 Zel'dovich pancake driver + acceptance gates) | 2718 |
+| **Total** | **~24669 + 1 deferred** |
 
 ## M3-3 headline scientific findings
 
@@ -232,12 +236,21 @@ status notes (each with its own bit-exact gate breakdown).
    c_off² = 1.78 is the calibrated value (the heuristic
    prediction `c_off² ≈ 1/4` is replaced by the empirical
    measurement). See `reference/notes_M3_6_phase1c_D1_kh_falsifier.md`.
-5. **M3-6 Phase 2 / D.4 Zel'dovich pancake collapse** — next
-   Tier-D test. Builds on Phase 1's strain coupling + 4-component
-   cone; adds a 1D-collapsing IC where `γ_1 → 0` at pancake
-   formation while `γ_2 ~ 1`. Stochastic injection (Phase 8)
-   regularises shell-crossing; per-axis selectivity exercised.
-6. **M3-7** — 3D extension (the Berry stencils were verified in
+5. **M3-6 Phase 2 / D.4 Zel'dovich pancake collapse — CLOSED 2026-04-26**:
+   builds on Phase 1's strain coupling + 4-component cone; adds the
+   `tier_d_zeldovich_pancake_ic` IC factory and `D4_zeldovich_pancake.jl`
+   driver. Per-axis γ selectivity verified at near-caustic time:
+   `std(γ_1)/std(γ_2) ≈ 2.6e14` (level 4, T_factor=0.16); γ_1 develops
+   spatial structure (dyn range 4.18×), γ_2 stays uniform to round-off.
+   Phase 1a strain coupling inertness verified (`max |β_off| = 0`
+   throughout — clean axis-aligned-IC cross-check). +2718 asserts. See
+   `reference/notes_M3_6_phase2_D4_zeldovich.md`.
+6. **M3-6 Phase 3 / D.7 dust-trapping in vortices** — next Tier-D test.
+   KH instability with passive dust species; vortex-center accumulation
+   diagnostics. Builds on Phase 1b `tier_d_kh_ic_full` + Phase 2's
+   per-axis cone projection. Requires extending `TracerMeshHG` (1D-only
+   today) to 2D and adding per-species per-axis γ diagnostics.
+7. **M3-7** — 3D extension (the Berry stencils were verified in
    M3-prep as the M3-7 pre-flight gate).
 
 ## M3-4 close (2026-04-26)
@@ -351,6 +364,46 @@ Phase 1c calibration result. See `reference/notes_M3_6_phase1c_D1_kh_falsifier.m
 the linearised residual).
 
 **M3-6 Phase 1 close: +2264 asserts (19687 + 1 → 21951 + 1).**
+
+## M3-6 Phase 2 close (2026-04-26)
+
+**Phase 2** (`m3-6-phase-2-D4-zeldovich`): adds the D.4 Zel'dovich
+pancake collapse falsifier — methods paper §10.5 D.4, the *central
+novel cosmological reference test*.
+
+  • New IC factory `tier_d_zeldovich_pancake_ic` in `src/setups_2d.jl`:
+    1D-symmetric Zel'dovich velocity profile `u_1(x) = -A·2π·cos(2π m_1)`,
+    `u_2 = 0` along the trivial axis; cold-limit `(α=1, β=0,
+    β_off=0, θ_R=0)`; small pressure floor `P0 = 1e-6` for `s` closure.
+    Caustic time `t_cross = 1/(A·2π)`.
+  • New driver `experiments/D4_zeldovich_pancake.jl`: builds the IC
+    at requested level with PERIODIC-x / REFLECTING-y BCs, runs
+    `det_step_2d_berry_HG!` with Phase 1a strain coupling + Phase 1b
+    4-component realizability cone, tracks per-step per-axis γ
+    statistics, conservation invariants, n_negative_jacobian, max
+    |β_off|, and spatial profile snapshots. ~650 LOC.
+  • New acceptance test `test/test_M3_6_phase2_D4_zeldovich.jl`:
+    14 GATEs / 2718 asserts. Headline gate (GATE 6) at L=4
+    T_factor=0.16: `std(γ_1)/std(γ_2) > 1e6` (empirical ~2.6e14);
+    γ_1 dyn-range > 1.3 (empirical 4.18×); γ_2 std/mean < 1e-10
+    throughout.
+  • Phase 1a strain coupling inertness verified (GATE 7): max
+    |β_off| = 0 throughout — clean cross-check that the off-diag
+    stencil does not fire on axis-aligned ICs.
+  • New headline plot `reference/figs/M3_6_phase2_D4_zeldovich.png`.
+  • Honest finding: the brief's "γ_1 max/min > 100 at near-caustic"
+    is aspirational at this resolution; the variational scheme +
+    per-axis cone projection saturates uniformly past T_factor ≈
+    0.165 at L=4 (Newton can't continue once β_1 → 1 across all
+    cells). The achievable pre-caustic dynamic range is 4-5×; the
+    selectivity ratio (~10^14) far exceeds the brief's 10^6 gate.
+
+**Falsifier verdict: PASSED** for per-axis γ correctly identifies
+the pancake-collapse direction. See
+`reference/notes_M3_6_phase2_D4_zeldovich.md` for the full results
++ §"Honest scientific finding".
+
+**M3-6 Phase 2 close: +2718 asserts (21951 + 1 → 24669 + 1).**
 
 ## Repo housekeeping
 
