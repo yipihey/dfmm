@@ -455,4 +455,25 @@ export DetField3D
 export cholesky_decompose_3d, cholesky_recompose_3d, gamma_per_axis_3d
 export rotation_matrix_3d
 
+# --- Phase M3-6 Phase 3 API: 2D substrate (tracers + stoch + γ-diag) -----
+# Three deliverables, each scoped to extend a 1D substrate to 2D:
+#  (a) `TracerMeshHG2D` — per-species per-cell passive scalars on a
+#      `HierarchicalMesh{2}` + 14-named-field 2D Cholesky-sector field
+#      set, with refine/coarsen mass conservation via
+#      `register_tracers_on_refine_2d!`. Pure-Lagrangian byte-exact
+#      preservation (Phase 11 + M2-2 invariants on the 2D path).
+#  (b) `inject_vg_noise_HG_2d!` — per-axis VG stochastic injection on
+#      the 2D field set, with explicit `axes` selectivity (axis-1
+#      injection leaves axis-2 fields byte-equal). Honours the M3-6
+#      Phase 1b 4-component β-cone via `realizability_project_2d!`.
+#  (c) `gamma_per_axis_2d_per_species_field` — per-species wrapper
+#      over `gamma_per_axis_2d_field` for D.7 dust-trap and D.10 ISM-
+#      tracer per-species γ diagnostics.
+# See `reference/notes_M3_6_phase3_2d_substrate.md`.
+export TracerMeshHG2D, advect_tracers_HG_2d!,
+       set_species!, species_index, n_species, n_cells_2d,
+       register_tracers_on_refine_2d!
+export inject_vg_noise_HG_2d!, InjectionDiagnostics2D
+export gamma_per_axis_2d_per_species, gamma_per_axis_2d_per_species_field
+
 end # module

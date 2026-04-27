@@ -1016,3 +1016,119 @@ function step_with_amr_2d!(fields, mesh::HierarchicalMesh{2},
         unregister_refinement_listener!(mesh, handle)
     end
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-6 Phase 3 (a): 2D tracer refinement listener.
+# ─────────────────────────────────────────────────────────────────────
+
+"""
+    _hierarchical_mesh_dim(mesh::HierarchicalMesh{D}) -> Int
+
+Extract the spatial dimension `D` from a `HierarchicalMesh{D, M}`
+type parameter. Used by `register_tracers_on_refine_2d!` since HG
+does not export `spatial_dimension` for the cubical mesh (only for
+`SimplicialMesh`).
+"""
+@inline _hierarchical_mesh_dim(::HierarchicalMesh{D, M}) where {D, M} = D
+
+"""
+    register_tracers_on_refine_2d!(tm::TracerMeshHG2D) -> ListenerHandle
+
+Register an HG `register_refinement_listener!` callback that keeps
+`tm.tracers` consistent across refine/coarsen events on `tm.mesh`.
+After each `refine_cells!` / `coarsen_cells!` (or
+`refine_by_indicator!`) call, the listener:
+
+  1. Resizes the tracer matrix's column dimension to `n_cells(mesh)`
+     post-event (preserving the per-species row count).
+  2. For each refined parent → children mapping in
+     `event.new_children`, copies the parent's per-species
+     concentration into every child (piecewise-constant
+     prolongation, exactly mass-conservative under equal-volume
+     refinement: `c_child = c_parent`, so total mass `Σ c·V` is
+     preserved bit-exactly).
+  3. For each coarsened parent in `event.coarsened_parents`,
+     averages the (now-removed) children's per-species
+     concentrations into the parent (volume-weighted mean; equal-
+     volume children make this the plain arithmetic mean, also
+     exactly mass-conservative).
+
+Mirrors `register_field_set_on_refine!`'s listener shape but operates
+on the `tm.tracers::Matrix{T}` storage instead of a
+`PolynomialFieldSet`. Captures `tm` by reference; in-place
+`resize!` keeps the matrix's identity stable across events.
+
+# Multi-species independence
+
+Each species row is processed independently (no cross-row reads or
+writes). Refining or coarsening species `k` does not perturb species
+`k′ ≠ k` — verified by the M3-6 Phase 3 multi-species independence
+gate.
+
+# Lifecycle
+
+Returns the `ListenerHandle` so callers can
+`unregister_refinement_listener!(tm.mesh, handle)` at the end of
+the run. Forgetting to unregister is a leak (the listener stays
+captured in `tm.mesh.refinement_listeners`); not a correctness
+issue for short-lived test runs but should be paired with the
+`register` call in production drivers.
+"""
+function register_tracers_on_refine_2d!(tm)
+    mesh = tm.mesh
+    # Spatial dimension D is encoded in the mesh's type parameter:
+    # `HierarchicalMesh{D}`. HG does NOT export `spatial_dimension` for
+    # the cubical mesh (it's defined only on `SimplicialMesh`), so we
+    # extract D from the type itself.
+    D = _hierarchical_mesh_dim(mesh)
+    cb = function(event::RefinementEvent)
+        new_n = Int(HierarchicalGrids.n_cells(mesh))
+        index_remap = event.index_remap
+        old_n = length(index_remap)
+        K = size(tm.tracers, 1)
+        # Snapshot old values, reallocate column-wise via a temporary,
+        # prolongate refined parents into children, average across
+        # coarsened groups. The matrix reallocation pattern matches
+        # `register_field_set_on_refine!` field-by-field, applied per
+        # species row.
+        old_mat = copy(tm.tracers)
+        new_mat = zeros(eltype(tm.tracers), K, new_n)
+        @inbounds for old_i in 1:old_n
+            new_i = Int(index_remap[old_i])
+            if new_i != 0
+                for k in 1:K
+                    new_mat[k, new_i] = old_mat[k, old_i]
+                end
+            end
+        end
+        # Refined parents: piecewise-constant prolongation per species.
+        for k_event in eachindex(event.refined_parents)
+            old_parent = Int(event.refined_parents[k_event])
+            child_range = event.new_children[k_event]
+            for child in child_range
+                for k in 1:K
+                    new_mat[k, Int(child)] = old_mat[k, old_parent]
+                end
+            end
+        end
+        # Coarsened parents: volume-weighted (equal-volume mean) per
+        # species.
+        n_per_group = 1 << D
+        for k_event in eachindex(event.coarsened_parents)
+            new_parent = Int(event.coarsened_parents[k_event])
+            for k in 1:K
+                child_acc = 0.0
+                for offset in 0:(n_per_group - 1)
+                    old_child = Int(event.removed_old_indices[
+                        (k_event - 1) * n_per_group + offset + 1])
+                    child_acc += old_mat[k, old_child]
+                end
+                new_mat[k, new_parent] = child_acc / n_per_group
+            end
+        end
+        # Replace `tm.tracers` storage in place.
+        tm.tracers = new_mat
+        return nothing
+    end
+    return register_refinement_listener!(mesh, cb)
+end

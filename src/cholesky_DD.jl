@@ -243,6 +243,63 @@ end
 # `allocate_cholesky_2d_fields` in `src/setups_2d.jl`.
 
 # ──────────────────────────────────────────────────────────────────────
+# Per-species per-axis γ diagnostic — M3-6 Phase 3 (c)
+# ──────────────────────────────────────────────────────────────────────
+
+"""
+    gamma_per_axis_2d_per_species(β::SVector{2, T},
+                                    M_vv_diag_per_species::AbstractVector)
+        -> Matrix{T}
+
+Per-species per-axis γ math primitive. Generalises
+`gamma_per_axis_2d(β, M_vv_diag)` to multiple species, each with its
+own per-axis `M_vv_diag` 2-tuple. Returns a `(n_species, 2)` matrix
+of γ values:
+
+    γ[k, a] = √max(M_vv_diag_per_species[k][a] − β[a]², 0)
+
+The shared per-axis `β` is the fluid-state Cholesky factor (one per
+fluid cell, NOT per species — the variational scheme has a single
+fluid β shared across all passive scalar species). Each species'
+γ²_a = M_vv,aa(species k) − β_a² differs only via the species-
+specific `M_vv,aa` (e.g. dust ⇒ `M_vv = 0` ⇒ γ = 0; gas ⇒
+`M_vv = Mvv(J, s)` ⇒ γ as in the single-species form).
+
+# Use cases
+
+  • D.7 dust traps: `M_vv_dust = (0, 0)` (pressureless cold dust)
+    and `M_vv_gas = (Mvv(J, s), Mvv(J, s))` (gas EOS) — the per-
+    species γ tracks how the cold dust streams collapse independently
+    of the gas equation of state.
+  • D.10 ISM tracers: per-species `M_vv` may carry the species-
+    dependent thermal velocity dispersion (warm/hot/cold ISM phases).
+
+The single-species `n_species == 1` path reduces byte-equally to
+`gamma_per_axis_2d(β, M_vv_diag_per_species[1])`.
+
+# Math source
+
+Per-axis γ²_a = M_vv,aa − β_a² lifts trivially to the multi-species
+case because `β` is a fluid-state field (one β per fluid cell)
+shared across passive species. The per-species `M_vv,aa(k)` then
+parametrises the per-species γ.
+"""
+@inline function gamma_per_axis_2d_per_species(β::SVector{2, T},
+                                                 M_vv_diag_per_species
+                                                 ) where {T<:Real}
+    K = length(M_vv_diag_per_species)
+    out = zeros(T, K, 2)
+    @inbounds for k in 1:K
+        m = M_vv_diag_per_species[k]
+        γ1² = T(m[1]) - β[1] * β[1]
+        γ2² = T(m[2]) - β[2] * β[2]
+        out[k, 1] = sqrt(max(γ1², zero(T)))
+        out[k, 2] = sqrt(max(γ2², zero(T)))
+    end
+    return out
+end
+
+# ──────────────────────────────────────────────────────────────────────
 # H_rot solvability constraint (M3-3c §6.4)
 # ──────────────────────────────────────────────────────────────────────
 

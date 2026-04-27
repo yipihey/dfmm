@@ -600,4 +600,29 @@ using Test
         # sub-phase's status note).
         include("test_M3_7_prep_3d_scaffolding.jl")
     end
+    @testset verbose = true "Phase M3-6 Phase 3: 2D substrate" begin
+        # M3-6 Phase 3 (a/b/c) lifts three M3-3 / M3-3e 1D substrates
+        # to the 2D path so the M3-6 Phase 4 (D.7 dust traps) and
+        # Phase 5 (D.10 ISM tracers) drivers can plug in:
+        #
+        #   (a) `TracerMeshHG2D` — per-species per-cell passive
+        #       scalars on `HierarchicalMesh{2}` + 14-named-field 2D
+        #       Cholesky-sector field set. Pure-Lagrangian byte-exact
+        #       preservation (Phase 11 + M2-2 invariants on the 2D
+        #       path); refine/coarsen mass conservation via
+        #       `register_tracers_on_refine_2d!`.
+        #
+        #   (b) `inject_vg_noise_HG_2d!` — per-axis VG stochastic
+        #       injection on the 2D field set with `axes` selectivity
+        #       (axis-1 injection leaves axis-2 fields byte-equal).
+        #       Honours the M3-6 Phase 1b 4-component β-cone.
+        #
+        #   (c) `gamma_per_axis_2d_per_species_field` — per-species
+        #       wrapper over `gamma_per_axis_2d_field` for D.7 dust
+        #       and D.10 ISM-tracer per-species γ diagnostics.
+        # See `reference/notes_M3_6_phase3_2d_substrate.md`.
+        include("test_M3_6_phase3_tracer_2d.jl")
+        include("test_M3_6_phase3_stochastic_2d.jl")
+        include("test_M3_6_phase3_gamma_per_species.jl")
+    end
 end

@@ -588,6 +588,201 @@ end
 # M2-3 — realizability projection (M3-2 Block 4b).
 # ─────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────
+# M3-6 Phase 3 (a): 2D passive tracer mesh.
+# ─────────────────────────────────────────────────────────────────────
+#
+# Extends the 1D `TracerMeshHG` substrate to 2D `HierarchicalMesh{2}` +
+# 2D `PolynomialFieldSet` (the 14-named-field set allocated by
+# `allocate_cholesky_2d_fields`). The storage is per-species per-cell
+# (NOT per-leaf) so that HG's `register_refinement_listener!` can
+# resize the matrix uniformly with the field set.
+#
+# Mirrors M3-3e-3's 1D pattern (per-species concentration in a Matrix
+# with rows = species, columns = cells), generalized to 2D Lagrangian
+# topology. In pure-Lagrangian regions the matrix is never written,
+# yielding bit-exact preservation by construction (Phase 11 + M2-2
+# invariants on the 2D path).
+#
+# # Mesh-cell vs leaf-cell indexing
+#
+# The 2D field set in `setups_2d.jl::allocate_cholesky_2d_fields` is
+# sized to `n_cells(mesh)` — including non-leaf parents — so that
+# `halo_view`-based neighbor access stays 1-to-1 against
+# `mesh.cells[i]`. The tracer matrix follows the same convention:
+# `tracers[k, ci]` is the per-cell concentration of species `k` at
+# mesh-cell index `ci`. Non-leaf entries are unused (post-refinement
+# coarsening writes them via the listener; before any AMR they are
+# at the IC default).
+#
+# # Refine/coarsen listener
+#
+# `register_tracers_on_refine_2d!` registers an HG refinement listener
+# that mirrors `register_field_set_on_refine!`'s shape:
+#  • Refine: parent's per-species concentration is copied piecewise-
+#    constant into all 2^D children (concentration = mass/volume is
+#    invariant under equal-volume splitting, so this is exactly
+#    conservative for the per-cell mass `c·V`).
+#  • Coarsen: children's per-species concentrations are averaged into
+#    the parent (volume-weighted average; equal-volume children make
+#    this a plain arithmetic mean, also exactly conservative for
+#    per-cell mass).
+# The listener handle is returned so callers can unregister at the
+# field set's lifecycle end. Captures `tm` by reference (the matrix
+# is mutated in place via `resize!`).
+
+"""
+    TracerMeshHG2D{T<:Real}
+
+Per-species, per-cell passive-scalar field bundle attached to a 2D
+HierarchicalGrids mesh + 2D `PolynomialFieldSet` (the 14-named-field
+set allocated by `allocate_cholesky_2d_fields`). The 2D-counterpart
+of `TracerMeshHG` (1D); decouples M3-6 Phase 3's 2D dust-trap (D.7)
+and ISM-tracer (D.10) infrastructure from the 1D path's bit-equality
+contract.
+
+Storage:
+- `mesh::HierarchicalMesh{2}` — the fluid mesh (shared, not owned).
+- `fields::Any` — the 14-named-field 2D field set (shared, not owned).
+- `tracers::Matrix{T}` — `(N_species, n_cells(mesh))` per-cell
+  concentrations. Indexed by mesh-cell index `ci` (NOT leaf-major)
+  so it tracks the field set's storage contract 1-to-1.
+- `names::Vector{Symbol}` — species labels.
+
+Construct via `TracerMeshHG2D(fields, mesh; n_species, names)`.
+
+# Mass conservation / preservation contracts
+
+  • **Pure-Lagrangian preservation (Phase 11 invariant lifted to 2D):**
+    in the absence of refine/coarsen events, the matrix is never
+    mutated by the dfmm path. Bit-exact preservation holds across
+    arbitrary numbers of `det_step_2d_berry_HG!` calls.
+
+  • **Refine/coarsen mass conservation (M2-2 invariant lifted to 2D):**
+    via the refinement listener registered by
+    `register_tracers_on_refine_2d!`. Each per-species per-cell
+    concentration `c` represents a mass `c · V_cell`; under isotropic
+    refinement the parent volume splits equally into `2^D = 4`
+    children with `V_child = V_parent / 4`. Setting
+    `c_child = c_parent` per child preserves total mass exactly
+    (`Σ_children c_child · V_child = c_parent · V_parent`). Coarsen is
+    the inverse: `c_parent = (Σ_children c_child · V_child) / V_parent
+    = mean(c_children)`.
+
+  • **Multi-species independence:** the listener walks each species
+    row independently — refine/coarsen of species `k` does not touch
+    species `k′ ≠ k` (no cross-contamination).
+"""
+mutable struct TracerMeshHG2D{T<:Real}
+    mesh::Any
+    fields::Any
+    tracers::Matrix{T}
+    names::Vector{Symbol}
+end
+
+"""
+    TracerMeshHG2D(fields, mesh::HierarchicalMesh{2};
+                    n_species = 1, names = nothing, T = Float64)
+        -> TracerMeshHG2D{T}
+
+Allocate a `TracerMeshHG2D` for `n_species` rows on `(mesh, fields)`.
+The matrix is sized to `(n_species, n_cells(mesh))` — including non-
+leaf cells — so it stays 1-to-1 with the field-set storage contract.
+At allocation time, all entries are zero.
+"""
+function TracerMeshHG2D(fields, mesh;
+                          n_species::Integer = 1,
+                          names::Union{Nothing,AbstractVector{Symbol}} = nothing,
+                          T::Type = Float64)
+    @assert n_species ≥ 1 "TracerMeshHG2D requires at least one species"
+    nc = HierarchicalGrids.n_cells(mesh)
+    values = zeros(T, n_species, nc)
+    nms = if names === nothing
+        [Symbol("species", k) for k in 1:n_species]
+    else
+        @assert length(names) == n_species "names length must match n_species"
+        collect(Symbol, names)
+    end
+    return TracerMeshHG2D{T}(mesh, fields, values, nms)
+end
+
+"""
+    n_species(tm::TracerMeshHG2D) -> Int
+"""
+n_species(tm::TracerMeshHG2D) = size(tm.tracers, 1)
+
+"""
+    n_cells_2d(tm::TracerMeshHG2D) -> Int
+
+Number of mesh cells in the underlying `HierarchicalMesh{2}` (matches
+`HierarchicalGrids.n_cells(tm.mesh)`).
+"""
+n_cells_2d(tm::TracerMeshHG2D) = size(tm.tracers, 2)
+
+"""
+    species_index(tm::TracerMeshHG2D, name::Symbol) -> Int
+
+Look up a species' row index by its symbolic name. Raises an
+`ArgumentError` if the name is not present.
+"""
+function species_index(tm::TracerMeshHG2D, name::Symbol)
+    k = findfirst(==(name), tm.names)
+    k === nothing && throw(ArgumentError(
+        "species name $name not found; have $(tm.names)"))
+    return k
+end
+
+"""
+    set_species!(tm::TracerMeshHG2D, name_or_index, values_or_f, leaves) -> tm
+
+Initialise species `name_or_index` from per-leaf `values_or_f`.
+
+  • Vector form `values::AbstractVector` of length `length(leaves)`:
+    sets `tm.tracers[k, ci] = values[i]` for each `(i, ci)` in
+    `enumerate(leaves)`.
+  • Functional form `f::Function`: sets `tm.tracers[k, ci] = f(ci)`
+    for each `ci` in `leaves`. Callers can compute cell centers via
+    `cell_physical_box(frame, ci)` from inside `f`.
+
+Non-leaf cells are left untouched (the field-set convention; refine
+/ coarsen events propagate values into them via the listener).
+"""
+function set_species!(tm::TracerMeshHG2D, k::Integer,
+                       values::AbstractVector,
+                       leaves::AbstractVector{<:Integer})
+    @assert 1 ≤ k ≤ n_species(tm) "species index $k out of range"
+    @assert length(values) == length(leaves) "values length $(length(values)) ≠ length(leaves) $(length(leaves))"
+    @inbounds for (i, ci) in enumerate(leaves)
+        tm.tracers[k, ci] = values[i]
+    end
+    return tm
+end
+set_species!(tm::TracerMeshHG2D, name::Symbol, values::AbstractVector,
+              leaves::AbstractVector{<:Integer}) =
+    set_species!(tm, species_index(tm, name), values, leaves)
+
+function set_species!(tm::TracerMeshHG2D, k::Integer, f::Function,
+                       leaves::AbstractVector{<:Integer})
+    @assert 1 ≤ k ≤ n_species(tm) "species index $k out of range"
+    @inbounds for ci in leaves
+        tm.tracers[k, ci] = f(ci)
+    end
+    return tm
+end
+set_species!(tm::TracerMeshHG2D, name::Symbol, f::Function,
+              leaves::AbstractVector{<:Integer}) =
+    set_species!(tm, species_index(tm, name), f, leaves)
+
+"""
+    advect_tracers_HG_2d!(tm::TracerMeshHG2D, dt) -> tm
+
+No-op step (pure-Lagrangian frame, 2D path): the tracer matrix is
+never mutated. Provided for symmetry with `det_step_2d_berry_HG!`
+driver loops. Bit-exact preservation: any number of consecutive
+calls leaves the matrix byte-identical.
+"""
+@inline advect_tracers_HG_2d!(tm::TracerMeshHG2D, dt::Real) = tm
+
 """
     realizability_project_HG!(mesh::DetMeshHG; kind = :reanchor,
                               headroom = 1.05, Mvv_floor = 1e-2,
@@ -718,4 +913,422 @@ function realizability_project_HG!(mesh::DetMeshHG{T};
         end
     end
     return mesh
+end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-6 Phase 3 (b): 2D variance-gamma stochastic injection.
+# ─────────────────────────────────────────────────────────────────────
+#
+# Per-axis variance-gamma stochastic injection on the 2D
+# `PolynomialFieldSet` substrate. Axis-selective by design: callers
+# pass `axes::NTuple{N,Int}` (a subset of `(1, 2)`) and only those
+# axes receive injection. The RNG draws, divu evaluation, and
+# per-axis state updates are independent across axes — verified by
+# the M3-6 Phase 3 selectivity gate.
+#
+# # Per-axis recipe (per axis a in axes)
+#
+#  1. Compute axis-a divu per leaf from face-neighbor `u_a`
+#     differences along axis `a` (using the precomputed
+#     `face_lo_idx[a], face_hi_idx[a]` tables from
+#     `build_face_neighbor_tables(mesh, leaves, bc_spec)`). For
+#     boundary cells where `face_*_idx == 0`, divu_a is set to 0
+#     (no injection contribution).
+#  2. Draw VG noise `η_a[i]` for `i = 1:N` in linear leaf order, then
+#     periodically smooth (3-point along axis a) into the per-axis
+#     η buffer.
+#  3. Per leaf: drift `C_A · ρ · divu_a · Δt`, noise `C_B · ρ ·
+#     √(max(-divu_a, 0) · Δt) · η_a`, amplitude limiter, KE-debit
+#     into `(s, Pp)` (entropy re-anchored from the new `M_vv`).
+#  4. Vertex velocity update on axis `a` only: `u_a += δ_a / ρ`
+#     (per-leaf — the 2D path stores cell-centered `u_a`, not
+#     vertex velocities, so the update is applied directly).
+#
+# Other axes (not in `axes`) are NOT touched on this call — neither
+# divu evaluation nor RNG draws nor field writes. This is the per-
+# axis selectivity contract, the load-bearing structural property
+# the M3-6 Phase 2 D.4 Zel'dovich pancake handoff item requires.
+#
+# # 4-component cone (M3-6 Phase 1b)
+#
+# After per-axis injection, the optional 2D realizability projection
+# (`realizability_project_2d!`) enforces both the per-axis cone
+# `M_vv,aa ≥ headroom · β_a²` and the 4-component cone
+# `Q = β_1² + β_2² + 2(β_12² + β_21²) ≤ M_vv · headroom_offdiag`.
+# When `params.project_kind == :none` the projection is skipped.
+
+"""
+    InjectionDiagnostics2D
+
+Per-axis, per-cell stochastic injection diagnostics on a 2D
+`PolynomialFieldSet`. The 2D analog of `InjectionDiagnostics`. Each
+axis's vectors carry only the cells that received injection on this
+call (set by the `axes` keyword to `inject_vg_noise_HG_2d!`).
+
+Fields:
+  • `divu::NTuple{2, Vector{Float64}}` — per-axis cell-centered divu_a.
+  • `eta::NTuple{2, Vector{Float64}}`  — per-axis smoothed VG draws.
+  • `delta_rhou::NTuple{2, Vector{Float64}}` — per-axis δ(ρu_a) after
+                                                amplitude-limiting.
+  • `delta_KE_vol::NTuple{2, Vector{Float64}}` — per-axis ΔKE injected.
+  • `compressive::NTuple{2, BitVector}` — per-axis compressive mask.
+
+For axes not in the `axes` set, the corresponding vectors stay at
+their initial zero values (set by the `InjectionDiagnostics2D(N)`
+constructor).
+"""
+struct InjectionDiagnostics2D
+    divu::NTuple{2, Vector{Float64}}
+    eta::NTuple{2, Vector{Float64}}
+    delta_rhou::NTuple{2, Vector{Float64}}
+    delta_KE_vol::NTuple{2, Vector{Float64}}
+    compressive::NTuple{2, BitVector}
+end
+
+InjectionDiagnostics2D(N::Int) = InjectionDiagnostics2D(
+    (zeros(Float64, N), zeros(Float64, N)),
+    (zeros(Float64, N), zeros(Float64, N)),
+    (zeros(Float64, N), zeros(Float64, N)),
+    (zeros(Float64, N), zeros(Float64, N)),
+    (falses(N), falses(N)),
+)
+
+"""
+    inject_vg_noise_HG_2d!(fields, mesh::HierarchicalMesh{2},
+                            frame::EulerianFrame{2, T},
+                            leaves, bc_spec, dt;
+                            params::NoiseInjectionParams,
+                            rng,
+                            axes::NTuple{N,Int} = (1, 2),
+                            ρ_ref::Real = 1.0,
+                            Gamma::Real = GAMMA_LAW_DEFAULT,
+                            diag::InjectionDiagnostics2D =
+                                InjectionDiagnostics2D(length(leaves)),
+                            proj_stats::Union{ProjectionStats,Nothing} = nothing)
+        -> (fields, diag)
+
+Per-axis variance-gamma stochastic injection on the 2D Cholesky-
+sector field set. Walks `leaves` in leaf-major order and applies
+per-axis drift + VG noise to `(β_a, u_a, s, Pp)` for each axis
+`a ∈ axes`. Axes NOT in `axes` are byte-untouched: neither divu
+evaluation nor RNG draws nor field writes for those axes fire.
+
+Returns `(fields, diag)`. The `diag::InjectionDiagnostics2D`
+accumulator records per-axis per-cell statistics for downstream
+self-consistency monitoring.
+
+# Per-axis selectivity contract (load-bearing)
+
+  • `axes = (1,)`: axis-1 fields `(β_1, u_1)` are mutated; axis-2
+    fields `(β_2, u_2)` are byte-equal pre/post. RNG draws happen
+    only for axis 1 (one buffer of length N). The s/Pp scalars
+    can be touched (per-axis KE-debit), but the trivial-axis test
+    case (axis-2-aligned IC with `divu_2 = 0` everywhere) leaves
+    them invariant by zero noise amplitude.
+  • `axes = (2,)`: symmetric (axis-1 fields untouched).
+  • `axes = (1, 2)`: both axes injected; RNG advances first by one
+    length-N buffer for axis 1, then by another for axis 2, in that
+    order.
+
+# 4-component realizability cone
+
+After per-axis injection, the optional projection
+`realizability_project_2d!(fields, leaves; project_kind =
+params.project_kind, ...)` enforces both the per-axis 2-component
+cone (`M_vv,aa ≥ headroom · β_a²`) and the 4-component cone
+(`Q = β_1² + β_2² + 2(β_12² + β_21²) ≤ M_vv · headroom_offdiag`).
+With `params.project_kind = :none` the projection is a no-op
+(only `proj_stats.n_steps` is incremented).
+
+# 1D parity gate (axis-aligned IC ⊂ 2D)
+
+For an axis-1-aligned 2D IC (`u_2 = 0`, `β_2 = 0`, `M_vv,11 =
+M_vv,22 = Mvv(J, s)` from the isotropic EOS), and `axes = (1,)`,
+the axis-1 sub-recipe is byte-equal to the 1D `inject_vg_noise_HG!`
+modulo the per-cell vs per-vertex `u` storage convention. This is
+the M3-6 Phase 3 RNG-bit-equal cross-check (verified at the test
+level).
+
+# Math source
+
+Per-axis injection on `(β_a, u_a)` follows the same boxed-Hamilton
+ledger M1's 1D path uses (see `reference/notes_phase8_stochastic_injection.md`
+§3.2): `δ(ρu_a) = drift_a + noise_a`, KE-debit
+`ΔKE_vol = u_a · δ + ½ δ²/ρ` taken half-each from `(P_xx, P_⊥) =
+(ρ M_vv, Pp)`, entropy re-anchored from the new `M_vv`. The 2D
+extension simply runs this independently per axis with axis-a
+divu and axis-a η.
+"""
+function inject_vg_noise_HG_2d!(fields, mesh,
+                                  frame,
+                                  leaves::AbstractVector{<:Integer},
+                                  bc_spec, dt::Real;
+                                  params::NoiseInjectionParams,
+                                  rng,
+                                  axes::Tuple = (1, 2),
+                                  ρ_ref::Real = 1.0,
+                                  Gamma::Real = GAMMA_LAW_DEFAULT,
+                                  diag::InjectionDiagnostics2D =
+                                      InjectionDiagnostics2D(length(leaves)),
+                                  proj_stats::Union{ProjectionStats,Nothing} = nothing)
+    N = length(leaves)
+    Δt = Float64(dt)
+    ρ_t = Float64(ρ_ref)
+    Γ = Float64(Gamma)
+
+    # Pre-compute face-neighbor tables (per-axis lo/hi neighbor indices
+    # in leaf-major order). `face_*_idx[a][i] == 0` ⇒ boundary / out-of-
+    # domain on axis `a` for leaf `i`; injection skipped for that cell.
+    face_lo_idx, face_hi_idx = build_face_neighbor_tables(mesh, leaves, bc_spec)
+
+    # Per-cell ρ, Mvv, s, Pp snapshot (used by all axes to apply KE-debit
+    # / entropy re-anchor in a consistent order).
+    ρ_v   = fill(ρ_t, N)         # zero-strain limit; M3-4 IC bridge
+    s_v   = Vector{Float64}(undef, N)
+    Pp_v  = Vector{Float64}(undef, N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        s_v[i]  = Float64(fields.s[ci][1])
+        Pp_v[i] = Float64(fields.Pp[ci][1])
+        if !isfinite(Pp_v[i])
+            Pp_v[i] = 0.0
+        end
+    end
+
+    # Per-axis loop. Axes NOT in `axes` are skipped — no RNG draws,
+    # no divu eval, no field writes ⇒ byte-equal selectivity.
+    for a in axes
+        @assert a == 1 || a == 2 "inject_vg_noise_HG_2d!: axis $a out of range"
+        # ── (1) Per-axis divu_a from face-neighbor u_a differences. ──
+        divu_a = diag.divu[a]
+        face_lo = face_lo_idx[a]
+        face_hi = face_hi_idx[a]
+        @inbounds for (i, ci) in enumerate(leaves)
+            ilo = face_lo[i]
+            ihi = face_hi[i]
+            if ilo == 0 || ihi == 0
+                divu_a[i] = 0.0
+                diag.compressive[a][i] = false
+                continue
+            end
+            ci_lo = leaves[ilo]
+            ci_hi = leaves[ihi]
+            lo_self, hi_self = cell_physical_box(frame, ci)
+            lo_lo, hi_lo     = cell_physical_box(frame, ci_lo)
+            lo_hi, hi_hi     = cell_physical_box(frame, ci_hi)
+            # Centered finite-difference: (u_a(hi) - u_a(lo)) / (x_a(hi) - x_a(lo))
+            x_self = 0.5 * (lo_self[a] + hi_self[a])
+            x_lo   = 0.5 * (lo_lo[a]   + hi_lo[a])
+            x_hi   = 0.5 * (lo_hi[a]   + hi_hi[a])
+            u_a_field = a == 1 ? fields.u_1 : fields.u_2
+            u_lo = Float64(u_a_field[ci_lo][1])
+            u_hi = Float64(u_a_field[ci_hi][1])
+            Δx = x_hi - x_lo
+            # Periodic-wrap: if neighbor's box is on opposite wall, add
+            # the box length to keep Δx > 0. For non-wrap interior the
+            # raw difference is already correct.
+            L_a = Float64(frame.hi[a] - frame.lo[a])
+            if Δx ≤ 0
+                Δx += L_a
+            end
+            divu_a[i] = (u_hi - u_lo) / Δx
+            diag.compressive[a][i] = divu_a[i] < 0
+        end
+
+        # ── (2) Draw VG noise per axis (length-N buffer) and smooth. ──
+        eta_white = Vector{Float64}(undef, N)
+        rand_variance_gamma!(rng, eta_white, params.λ, params.θ_factor)
+        eta_a = diag.eta[a]
+        if params.ell_corr > 0 && N >= 3
+            smooth_periodic_3pt!(eta_a, eta_white)
+        else
+            copyto!(eta_a, eta_white)
+        end
+
+        # ── (3) Per-cell drift / noise / limiter / KE-debit / entropy. ─
+        @inbounds for (i, ci) in enumerate(leaves)
+            ρ_i = ρ_v[i]
+            divu_i = divu_a[i]
+            drift_term = params.C_A * ρ_i * divu_i * Δt
+            compression = max(-divu_i, 0.0)
+            noise_amp = params.C_B * ρ_i * sqrt(compression * Δt)
+            δ_drift = drift_term
+            δ_noise = noise_amp * eta_a[i]
+            δ = δ_drift + δ_noise
+
+            # Read per-axis u_a and current s, Pp.
+            u_a_field = a == 1 ? fields.u_1 : fields.u_2
+            β_a_field = a == 1 ? fields.β_1 : fields.β_2
+            u_pre = Float64(u_a_field[ci][1])
+            s_pre = s_v[i]
+            Mvv_pre = Float64(Mvv(1.0 / ρ_i, s_pre; Gamma = Γ))
+            Pxx_pre = ρ_i * Mvv_pre
+            Pp_pre  = Pp_v[i]
+
+            # Amplitude limiter against IE budget.
+            IE_local = 0.5 * Pxx_pre + Pp_pre
+            KE_budget = params.ke_budget_fraction * IE_local
+            abs_u = abs(u_pre)
+            disc = abs_u * abs_u + 2.0 * KE_budget / max(ρ_i, 1e-30)
+            δ_max = (-abs_u + sqrt(max(disc, 0.0))) * ρ_i
+            if δ > δ_max
+                δ = δ_max
+            elseif δ < -δ_max
+                δ = -δ_max
+            end
+            diag.delta_rhou[a][i] = δ
+
+            # KE-debit to (P_xx, P_⊥); re-anchor entropy.
+            ΔKE_vol = u_pre * δ + 0.5 * δ * δ / ρ_i
+            diag.delta_KE_vol[a][i] = ΔKE_vol
+            Pxx_new = Pxx_pre - (2.0 / 3.0) * ΔKE_vol
+            Pp_new  = Pp_pre  - (2.0 / 3.0) * ΔKE_vol
+            # Apply pressure floor ONLY when a non-zero injection
+            # actually perturbed the cell. This preserves the cold-
+            # limit `Pp = 0` IC byte-exactly across no-op steps (uniform
+            # IC, ΔKE_vol = 0). The 1D path's IC sets Pp to the
+            # isotropic Maxwellian and never sits at 0; in 2D the IC
+            # bridge sets Pp = 0 (cold limit) and we must not silently
+            # raise it to the floor when no injection fired.
+            if ΔKE_vol != 0.0
+                if Pxx_new < params.pressure_floor
+                    Pxx_new = params.pressure_floor
+                end
+                if Pp_new < params.pressure_floor
+                    Pp_new = params.pressure_floor
+                end
+            end
+
+            Mvv_new = Pxx_new / ρ_i
+            if Mvv_new > 0 && Mvv_pre > 0
+                s_new = s_pre + log(Mvv_new / Mvv_pre)
+            else
+                s_new = s_pre
+            end
+
+            # Mutate `(s, Pp, u_a)` only; β_a left untouched (the 2D
+            # variational integrator's β_a is a Newton unknown driven
+            # by the pressure stencil, not the post-Newton injection
+            # — same ledger as the 1D path's `β` post-Newton update).
+            #
+            # u_a update: δ/ρ_i is the per-cell velocity increment.
+            u_new = u_pre + δ / ρ_i
+            u_a_field[ci] = (u_new,)
+
+            # Stage `s, Pp` updates into local snapshot so sequential
+            # axes (axis 2 after axis 1, when `axes = (1, 2)`) see the
+            # updated thermodynamic state — exactly as the operator-
+            # split per-step ledger requires.
+            s_v[i]  = s_new
+            Pp_v[i] = Pp_new
+        end
+    end
+
+    # Write the staged s, Pp back to the field set.
+    @inbounds for (i, ci) in enumerate(leaves)
+        fields.s[ci]  = (s_v[i],)
+        fields.Pp[ci] = (Pp_v[i],)
+    end
+
+    # ── (4) Realizability projection (per-axis + 4-comp cone). ────────
+    if params.project_kind === :none
+        if proj_stats !== nothing
+            proj_stats.n_steps += 1
+        end
+    else
+        realizability_project_2d!(fields, leaves;
+                                   project_kind = params.project_kind,
+                                   headroom = params.realizability_headroom,
+                                   Mvv_floor = params.Mvv_floor,
+                                   pressure_floor = params.pressure_floor,
+                                   ρ_ref = ρ_ref,
+                                   Gamma = Gamma,
+                                   stats = proj_stats)
+    end
+
+    return fields, diag
+end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-6 Phase 3 (c): per-species per-axis γ diagnostic field walker.
+# ─────────────────────────────────────────────────────────────────────
+#
+# Wraps `gamma_per_axis_2d_field` (in `src/diagnostics.jl`) over
+# multiple species. Each species can carry its own `M_vv` override
+# (e.g. dust species are pressureless ⇒ M_vv ≡ 0; gas species use
+# the EOS Mvv(J, s)).
+#
+# Returns a `Float64` 3-tensor of shape (N_species, 2, N_leaves) so
+# downstream callers can index `out[k, a, i]` for species `k`, axis
+# `a`, leaf `i`. (The brief mentions `SArray{N_species, 2, T}` but
+# that's the per-leaf shape; the field walker returns a stacked
+# Array{T,3} for memory efficiency over many leaves.)
+
+"""
+    gamma_per_axis_2d_per_species_field(fields, leaves;
+                                          M_vv_override_per_species = nothing,
+                                          ρ_ref = 1.0,
+                                          Gamma = GAMMA_LAW_DEFAULT,
+                                          n_species = 1)
+        -> Array{Float64, 3}
+
+Per-species per-axis γ diagnostic on the 2D Cholesky-sector field
+set. Walks `leaves` and computes for each leaf, axis, and species
+
+    γ[k, a, i] = √max(M_vv,aa[k] − β_a²[i], 0)         for a = 1, 2.
+
+where `β_a` is read from `fields.β_a[ci]` (shared across species —
+the per-axis β is a fluid-state Newton unknown, not a per-species
+field) and `M_vv,aa[k]` comes from either a per-species override or
+the EOS-derived `Mvv(J, s)`.
+
+Returns an `Array{Float64, 3}` of shape `(n_species, 2,
+length(leaves))`.
+
+# `M_vv_override_per_species`
+
+Either `nothing` (use EOS-derived `Mvv(J, s)` for every species,
+isotropic) or a vector / tuple of length `n_species`, each entry
+itself a 2-tuple `(M_vv,11_k, M_vv,22_k)`. The dust-trap (D.7) use
+case sets `M_vv_k = (0, 0)` for the pressureless dust species
+while the gas species use the EOS.
+
+# Multi-species independence (M3-6 Phase 3 gate)
+
+Each species' γ is computed independently — no cross-species reads
+or writes. The single-species `n_species == 1` path reduces byte-
+equally to `gamma_per_axis_2d_field(fields, leaves; M_vv_override =
+M_vv_override_per_species[1])`.
+
+# Wraps the math primitive
+
+Internally calls `gamma_per_axis_2d_field` per species (or inlines
+the equivalent loop). The math primitive is
+`gamma_per_axis_2d(β, M_vv_diag) = SVector{2, T}(...)` in
+`src/cholesky_DD.jl` §"Per-axis γ diagnostic"; this walker is the
+multi-species field-set-layer wrapper.
+"""
+function gamma_per_axis_2d_per_species_field(fields, leaves;
+                                                M_vv_override_per_species = nothing,
+                                                ρ_ref::Real = 1.0,
+                                                Gamma::Real = GAMMA_LAW_DEFAULT,
+                                                n_species::Integer = 1)
+    @assert n_species ≥ 1 "n_species must be ≥ 1"
+    if M_vv_override_per_species !== nothing
+        @assert length(M_vv_override_per_species) == n_species "M_vv_override_per_species length must match n_species"
+    end
+    N = length(leaves)
+    out = zeros(Float64, n_species, 2, N)
+    @inbounds for k in 1:n_species
+        Mvv_k = M_vv_override_per_species === nothing ? nothing :
+                M_vv_override_per_species[k]
+        γ_mat = gamma_per_axis_2d_field(fields, leaves;
+                                         M_vv_override = Mvv_k,
+                                         ρ_ref = ρ_ref,
+                                         Gamma = Gamma)
+        for i in 1:N
+            out[k, 1, i] = γ_mat[1, i]
+            out[k, 2, i] = γ_mat[2, i]
+        end
+    end
+    return out
 end
