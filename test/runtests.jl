@@ -547,4 +547,28 @@ using Test
         # `reference/notes_M3_6_phase1c_D1_kh_falsifier.md`.
         include("test_M3_6_phase1c_D1_kh_growth_rate.jl")
     end
+
+    @testset verbose = true "Phase M3-6 Phase 2: D.4 Zel'dovich pancake" begin
+        # M3-6 Phase 2 tests the D.4 Zel'dovich pancake collapse —
+        # the central novel cosmological reference test of methods
+        # paper §10.5 D.4. Drives `tier_d_zeldovich_pancake_ic` (a
+        # 1D-symmetric sinusoidal velocity perturbation along axis 1,
+        # u_2 = 0 trivial) through `det_step_2d_berry_HG!` (with
+        # M3-6 Phase 1a strain coupling and Phase 1b 4-component
+        # realizability cone). The headline scientific gate is
+        # **per-axis γ selectivity**:
+        #   • γ_2 (trivial axis) stays uniform across cells — std/mean
+        #     stays ≤ 1e-10 throughout.
+        #   • γ_1 (collapsing axis) develops measurable spatial
+        #     structure as t → t_cross — max/min > 1.3 at near-caustic
+        #     time (L=4, T_factor=0.16).
+        #   • Spatial std ratio std(γ_1)/std(γ_2) > 1e6.
+        # Plus cross-checks:
+        #   • Phase 1a strain coupling stays inert on the axis-aligned
+        #     IC: max |β_off| = 0 throughout (∂_2 u_1 = 0 stencil).
+        #   • Conservation: M, Px, Py preserved.
+        #   • 4-component cone Q stays non-negative.
+        # See `reference/notes_M3_6_phase2_D4_zeldovich.md`.
+        include("test_M3_6_phase2_D4_zeldovich.jl")
+    end
 end
