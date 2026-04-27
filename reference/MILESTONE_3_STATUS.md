@@ -1,17 +1,21 @@
-# Milestone 3 — Status synthesis (CLOSED — through M3-5 + M3-4)
+# Milestone 3 — Status synthesis (CLOSED — through M3-6 Phase 0)
 
-**Date:** 2026-04-27 (combined close).
+**Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26.
 
 **Repo state:** M3-3 closed at `077d6e4` (M3-3e-5 drop cache_mesh).
 M3-4 lands in two phases: Phase 1 at `f364b4a` (periodic-x coordinate
 wrap on 2D EL residual) and Phase 2 (IC bridge + C.1 / C.2 / C.3
 acceptance drivers). M3-5 closed on `m3-5-bayesian-remap` with HG
 `compute_overlap` + `polynomial_remap` wiring + IntExact audit harness.
-**~19297 + 1 deferred tests** pass byte-equal across the 15 phase
+**M3-6 Phase 0** closed on `m3-6-phase-0-offdiag-beta`: re-activates the
+off-diagonal Cholesky pair `β_12, β_21` in the 2D residual, prerequisite
+for the M3-6 Phase 1 D.1 KH falsifier driver.
+**~19687 + 1 deferred tests** pass byte-equal across the 16 phase
 blocks. The 2D scientific phase is complete through Tier-C
-consistency; the 1D `cache_mesh::Mesh1D` shim is retired in full; the
-1D ⊂ 2D consistency gates fire across C.1 / C.2 / C.3 IC families;
-Bayesian L↔E remap is wired with conservation regression.
+consistency + off-diagonal β reactivation; the 1D `cache_mesh::Mesh1D`
+shim is retired in full; the 1D ⊂ 2D consistency gates fire across
+C.1 / C.2 / C.3 IC families; Bayesian L↔E remap is wired with
+conservation regression. M3-6 Phase 1 (D.1 KH) is unblocked.
 
 **Per methods paper §10.7:** "Milestone 3: 2D principal-axis-decomposed
 Cholesky integrator with Berry-connection coupling, on the
@@ -42,6 +46,7 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-4 P2 (c)** | C.2 2D cold sinusoid driver | done | 11 | std(γ_1)/std(γ_2) > 1e10 for k=(1,0) |
 | **M3-4 P2 (d)** | C.3 2D plane wave driver | done | 2583 | Rotational invariance + bounded mode amplitude |
 | **M3-5** | Bayesian L↔E remap (`compute_overlap` + `polynomial_remap_l_to_e!`/`_e_to_l!` wired via `BayesianRemapState`); IntExact audit; Liouville monotone-necessary diagnostic | done | +86 | 9/9 IntExact battery passes; mass conserved 0..6.7e-16 over 5 cycles; partition-of-unity to 1e-12 |
+| **M3-6 Phase 0** | Off-diagonal `β_12, β_21` re-activated in `DetField2D` + 2D residual; 11-dof Newton system; trivial-drive new rows preserve M3-3c byte-equal at β_12=β_21=0 | done | +390 | 9 SymPy CHECKs reproduced numerically; §Dimension-lift gate at 0.0 absolute |
 
 ## Test summary
 
@@ -63,7 +68,8 @@ L↔E remap substrate per §6 / §6.6.
 | M3-4 Phase 2 (b) C.1 1D-symmetric Sod driver | 590 |
 | M3-4 Phase 2 (c) C.2 cold sinusoid driver | 11 |
 | M3-4 Phase 2 (d) C.3 plane wave driver | 2583 |
-| **Total** | **~19297 + 1 deferred** |
+| M3-6 Phase 0 (off-diagonal β reactivation) | 390 |
+| **Total** | **~19687 + 1 deferred** |
 
 ## M3-3 headline scientific findings
 
@@ -180,7 +186,8 @@ status notes (each with its own bit-exact gate breakdown).
 **Unblocked for M4:**
 - Tier D (KH instability, pancake collapse, wave-pool spectra) on the
   full 2D substrate.
-- Off-diagonal β_{12}, β_{21} sector activation (M3-6 / D.1 KH).
+- M3-6 Phase 1 (D.1 KH falsifier driver) — Phase 0 has scaffolded the
+  11-dof residual; Phase 1 plumbs the off-diagonal strain coupling.
 - M3-5 higher-order Bernstein per-cell reconstruction.
 
 ## Recommended next moves
@@ -196,10 +203,20 @@ status notes (each with its own bit-exact gate breakdown).
    `remap_round_trip!`; IntExact audit gate; Liouville
    monotone-necessary diagnostic. **CLOSED 2026-04-26.** See
    `reference/notes_M3_5_bayesian_remap.md`.
-3. **M3-6 / D.1 KH falsifier** — activate off-diagonal β_{12}, β_{21}
-   sector and run KH instability benchmarks; M3-5's
+3. **M3-6 Phase 0 — CLOSED 2026-04-26**: re-activated off-diagonal
+   β_{12}, β_{21} in `DetField2D` and the 2D residual (11-dof Newton
+   system). At β_{12}=β_{21}=0 IC the new rows trivialise and the
+   residual reduces byte-equal to M3-3c. The 9 SymPy CHECKs from
+   `scripts/verify_berry_connection_offdiag.py` are reproduced
+   numerically at the residual / Jacobian level. Test delta: +390
+   asserts. See `reference/notes_M3_6_phase0_offdiag_beta.md`.
+4. **M3-6 Phase 1 / D.1 KH falsifier** — plumb the off-diagonal
+   strain-coupling drive `H_rot^off ∝ G̃_12 · (α_1·β_21 + α_2·β_12)/2`
+   into the F^β_a, F^β_12, F^β_21, F^θ_R rows; design the KH IC factory
+   `tier_d_kh_ic`; calibrate the `c_off^2 ≈ 1/4` correction to the
+   classical Drazin–Reid growth rate. M3-5's
    `det_run_with_remap_HG!` stub provides the integration site.
-4. **M3-7** — 3D extension (the Berry stencils were verified in
+5. **M3-7** — 3D extension (the Berry stencils were verified in
    M3-prep as the M3-7 pre-flight gate).
 
 ## M3-4 close (2026-04-26)
@@ -223,6 +240,39 @@ residual. Closes the M3-3c handoff prerequisite. +46 asserts.
     conservation gates pass.
 
 **M3-4 close: +5836 asserts (13375 + 1 → 19211 + 1).**
+
+## M3-6 Phase 0 close (2026-04-26)
+
+**Phase 0** (`m3-6-phase-0-offdiag-beta`): re-activates the off-diagonal
+Cholesky pair `β_12, β_21` in the 2D residual after their omission in
+M3-3a Q3. Prerequisite for the M3-6 Phase 1 D.1 KH falsifier driver
+(the headline scientific test of M3-6).
+
+  • `DetField2D{T}` extended with `betas_off::NTuple{2, T}` field;
+    `n_dof_newton` 10 → 12. Backward-compat constructors default
+    `betas_off = (0, 0)` so all pre-M3-6 IC factories continue to
+    produce M3-3c-equivalent state byte-equally.
+  • `allocate_cholesky_2d_fields` extended to 14 named scalar fields
+    (12 prior + `:β_12, :β_21`).
+  • `cholesky_el_residual_2D_berry!` extended to 11 dof per cell
+    (was 9). Per-axis F^β_a rows pick up off-diag β coupling terms
+    derived from rows of `Ω · X = -dH` with the corrected antisymmetric
+    Ω entries (per `scripts/verify_berry_connection_offdiag.py`). New
+    trivial-drive F^β_12, F^β_21 rows mirror F^θ_R's structure.
+  • `det_step_2d_berry_HG!` Jacobian sparsity prototype is now
+    `cell_adjacency ⊗ 11×11` (was 9×9).
+  • §Dimension-lift gate at β_12=β_21=0: byte-equal to M3-3c (every
+    M3-6 addition is multiplied by β_12, β_21, β̇_12, or β̇_21, which
+    are pinned at zero by IC + trivial-drive). Verified across single-
+    step + 100-step + 8×8 mesh + non-trivial active β_1 IC.
+  • §Berry-offdiag CHECKs 1-9 reproduced numerically (FD probes of
+    the residual Jacobian against the closed-form Hamilton-equation
+    derivation; tolerance 1e-9).
+  • §Realizability projection runs cleanly on the 14-named-field set;
+    off-diag β unchanged across projection (per-cell-cone projection
+    extension is M3-6 Phase 1's job).
+
+**M3-6 Phase 0 close: +390 asserts (19297 + 1 → 19687 + 1).**
 
 ## Repo housekeeping
 
