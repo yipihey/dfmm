@@ -464,4 +464,10 @@ using Test
         # documented in MILESTONE_3_STATUS Open Issue #2 (Sod L∞ ~10-20%).
         include("test_M3_4_C1_sod.jl")
     end
+    @testset verbose = true "Phase M3-4 Phase 2 (c): C.2 2D cold sinusoid" begin
+        # M3-4 Phase 2 (c): C.2 2D cold sinusoid acceptance driver.
+        # Per-axis γ selectivity for k = (1, 0); genuine 2D structure for
+        # k = (1, 1); conservation gates.
+        include("test_M3_4_C2_cold_sinusoid.jl")
+    end
 end
