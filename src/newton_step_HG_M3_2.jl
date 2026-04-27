@@ -595,10 +595,22 @@ end
                               pressure_floor = 1e-8, stats = nothing)
         -> mesh
 
-HG-side wrapper around `realizability_project!`. Refreshes the
-cached `Mesh1D` from the HG field set, calls
-`realizability_project!` on the cache mesh, writes back. Bit-exact
-parity with the M1 path.
+HG-side native realizability projection (M3-3e-4). Iterates the HG
+`PolynomialFieldSet` directly — no `cache_mesh` round-trip. Mirrors
+M1's `realizability_project!` line-for-line on the physics: per-cell
+projection that pushes the state back inside the realizability cone
+`M_vv ≥ headroom · β²` (with `Mvv_floor` absolute safety floor),
+debiting the extra internal energy from `P_⊥` first and admitting any
+residual as a silent floor-gain.
+
+The projection is per-cell with no inter-cell coupling, so the lift
+is mechanical: read `(α, β, x, u, s, Pp, Q)` from `fields[j][1]`,
+apply the unchanged per-cell math, write `(s, Pp)` back.
+
+Bit-equality contract: with the same `(kind, headroom, Mvv_floor,
+pressure_floor)` and IC, the per-cell `(s, Pp)` post-projection plus
+the `ProjectionStats` accumulator are byte-identical to M1's
+`realizability_project!` running on a parallel `Mesh1D`.
 """
 function realizability_project_HG!(mesh::DetMeshHG{T};
                                     kind::Symbol = :reanchor,
@@ -606,13 +618,105 @@ function realizability_project_HG!(mesh::DetMeshHG{T};
                                     Mvv_floor::Real = 1e-2,
                                     pressure_floor::Real = 1e-8,
                                     stats::Union{ProjectionStats,Nothing} = nothing) where {T<:Real}
-    sync_cache_from_HG!(mesh)
-    realizability_project!(mesh.cache_mesh;
-                           kind = kind,
-                           headroom = headroom,
-                           Mvv_floor = Mvv_floor,
-                           pressure_floor = pressure_floor,
-                           stats = stats)
-    sync_HG_from_cache!(mesh)
+    if kind === :none
+        if stats !== nothing
+            stats.n_steps += 1
+        end
+        return mesh
+    end
+    @assert kind === :reanchor "realizability_project_HG!: unsupported kind=$(kind)"
+
+    fs = mesh.fields
+    N = n_cells(mesh)
+    h = Float64(headroom)
+    Mvv_floor_f = Float64(Mvv_floor)
+    pf = Float64(pressure_floor)
+    L_box = mesh.L_box
+    Δm_vec = mesh.Δm
+
+    if stats !== nothing
+        stats.n_steps += 1
+    end
+
+    @inbounds for j in 1:N
+        # Cell density ρ_j = Δm_j / (x_{j+1} - x_j) with periodic wrap.
+        j_right = j == N ? 1 : j + 1
+        wrap = (j == N) ? L_box : zero(T)
+        x_j  = T(fs.x[j][1])
+        x_jr = T(fs.x[j_right][1]) + wrap
+        Δx_j = x_jr - x_j
+        ρ_j  = Float64(Δm_vec[j] / Δx_j)
+        J_j  = 1.0 / ρ_j
+
+        s_pre  = Float64(fs.s[j][1])
+        β_pre  = Float64(fs.beta[j][1])
+        Mvv_pre = Float64(Mvv(J_j, s_pre))
+        Pp_pre = Float64(fs.Pp[j][1])
+        if !isfinite(Pp_pre)
+            Pp_pre = ρ_j * Mvv_pre  # legacy NaN sentinel — treat isotropic
+        end
+
+        if stats !== nothing
+            stats.Mvv_min_pre = min(stats.Mvv_min_pre, Mvv_pre)
+        end
+
+        # Realizability target. We require M_vv ≥ headroom · β² so the
+        # next Newton step's γ² = M_vv − β² has a strict positive
+        # margin; we *also* require M_vv ≥ Mvv_floor.
+        Mvv_target_rel = h * β_pre * β_pre
+        Mvv_target = max(Mvv_target_rel, Mvv_floor_f)
+
+        if Mvv_pre >= Mvv_target
+            if stats !== nothing
+                stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_pre)
+            end
+            continue
+        end
+
+        # Projection event: raise s so M_vv = Mvv_target, take the
+        # extra energy from P_⊥ first (stays ≥ pressure_floor), then
+        # admit any residual as a silent floor-gain.
+        if stats !== nothing
+            stats.n_events += 1
+            if Mvv_target > Mvv_target_rel
+                stats.n_floor_events += 1
+            end
+        end
+
+        Pxx_pre = ρ_j * Mvv_pre
+        Pxx_new = ρ_j * Mvv_target
+        ΔPxx = Pxx_new - Pxx_pre   # > 0 by construction
+
+        # IE_per_volume = ½ Pxx + Pp. Debit ½ ΔPxx from P_⊥ (the
+        # 1D-3D effective-dimensions split closing the paired-pressure
+        # ledger; methods paper §9.6 / M2-3 notes §3).
+        Pp_take_target = 0.5 * ΔPxx
+        Pp_avail = max(Pp_pre - pf, 0.0)
+        Pp_take = min(Pp_take_target, Pp_avail)
+        Pp_new = Pp_pre - Pp_take
+
+        # IE budget: with Pp_take = ½·ΔPxx the cell's IE is conserved.
+        # Residual `0.5·ΔPxx - Pp_take ≥ 0` is admitted as a silent
+        # floor-gain (mirrors py-1d's pressure_floor semantics). Use the
+        # `J·Δm` ordering (matches M1's `J_j * seg.Δm` byte-for-byte —
+        # the geometric `(x_{j+1} - x_j)` form differs at the last bit
+        # due to the J = 1/ρ reciprocal).
+        floor_gain = (0.5 * ΔPxx) - Pp_take
+        if stats !== nothing
+            Δx_for_E = J_j * Float64(Δm_vec[j])
+            stats.total_dE_inj += floor_gain * Δx_for_E
+        end
+
+        # Re-anchor entropy from the new M_vv.
+        s_new = s_pre + log(Mvv_target / max(Mvv_pre, 1e-300))
+
+        # Mutate `(s, Pp)` only; (x, u, α, β, Q) untouched.
+        fs.s[j]  = (T(s_new),)
+        fs.Pp[j] = (T(Pp_new),)
+
+        if stats !== nothing
+            stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_target)
+        end
+    end
     return mesh
 end

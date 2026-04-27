@@ -395,4 +395,14 @@ using Test
         # `reference/notes_M3_3e_3_amr_tracers_native.md`.
         include("test_M3_3e_3_amr_tracer_native_vs_cache.jl")
     end
+    @testset verbose = true "Phase M3-3e-4: native realizability_project_HG! vs cache_mesh" begin
+        # M3-3e-4 defensive cross-check: native `realizability_project_HG!`
+        # must produce byte-equal state to running M1's
+        # `realizability_project!` on a parallel `Mesh1D`. Per-cell projection
+        # has no inter-cell coupling so the lift is mechanical; this test
+        # captures the assumption explicitly. After M3-3e-5 drops the
+        # cache_mesh field this test will be retired. See
+        # `reference/notes_M3_3e_4_realizability_native.md`.
+        include("test_M3_3e_4_realizability_native_vs_cache.jl")
+    end
 end
