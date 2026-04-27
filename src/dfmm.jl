@@ -321,4 +321,68 @@ export action_error_indicator_2d_per_axis,
 # `reference/notes_M3_4_tier_c_consistency.md`.
 export build_periodic_wrap_tables
 
+# --- Phase M3-5 API: Bayesian L↔E remap ----------------------------------
+# Wires HG's `compute_overlap` + `polynomial_remap_l_to_e!` /
+# `polynomial_remap_e_to_l!` into a dfmm-side per-step driver. The remap
+# conservatively transfers per-cell polynomial fields between a deforming
+# Lagrangian `SimplicialMesh{D, T}` and a fixed Eulerian
+# `HierarchicalMesh{D}` background, per the methods paper §6 (Bayesian
+# remap with the law of total cumulants). HG's `RemapDiagnostics` is
+# exposed via `liouville_monotone_increase_diagnostic` per §6.6.
+#
+# IntExact backend (HG commit `cc6ed70`+) is opt-in via `backend = :exact`
+# on `bayesian_remap_*!`; `:float` remains the production default. See
+# `~/.julia/dev/HierarchicalGrids/docs/src/exact_backend.md` for the
+# documented caveats (D=2 0//0 collinear-triangle degeneracy; D=2/3 16-bit
+# lattice volume drift up to ~30 % on near-degenerate configurations).
+include("remap.jl")
+export BayesianRemapState
+export bayesian_remap_l_to_e!, bayesian_remap_e_to_l!
+export remap_round_trip!
+export liouville_monotone_increase_diagnostic
+export audit_overlap_dfmm
+export total_mass_weighted_lagrangian, total_mass_weighted_eulerian
+
+"""
+    det_run_with_remap_HG!(state_args...; remap_every, remap_state, lag_mesh,
+                            lag_fields, kwargs...)
+
+Thin orchestration wrapper: call the existing per-step Newton driver
+(`det_run_HG!` for 1D, the user's 2D run loop) and inject a Bayesian
+L→E→L round trip every `remap_every` steps. The wrapper does NOT
+modify the per-step driver source; M3-4 owns those files.
+
+This is a SCAFFOLD entry point. The 2D solver (`det_step_2d_berry_HG!`)
+does not yet have a public run-driver in dfmm; M3-5's tests build the
+remap loop directly. This stub is provided as documentation of the
+intended integration shape and as the M3-6 hand-off site.
+
+# Arguments
+
+- `remap_every::Union{Int, Nothing}` — when set to `K`, run the round
+  trip every K steps. `nothing` disables the remap; the wrapper
+  becomes a passthrough.
+- `remap_state` — a `BayesianRemapState` from M3-5.
+- `lag_mesh`, `lag_fields` — the Lagrangian state.
+
+The bit-exact 1D path is preserved when `remap_every === nothing`;
+this is the regression contract for the M1+M2+M3 test suite.
+"""
+function det_run_with_remap_HG!(remap_state::BayesianRemapState,
+                                  lag_mesh, lag_fields;
+                                  remap_every::Union{Int, Nothing} = nothing,
+                                  step::Int = 0,
+                                  backend::Symbol = :float,
+                                  fields::Union{Nothing, Tuple} = nothing)
+    if remap_every === nothing
+        return remap_state
+    end
+    if step > 0 && step % remap_every == 0
+        remap_round_trip!(remap_state, lag_mesh, lag_fields;
+                          backend = backend, fields = fields)
+    end
+    return remap_state
+end
+export det_run_with_remap_HG!
+
 end # module
