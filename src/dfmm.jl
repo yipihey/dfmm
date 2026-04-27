@@ -420,4 +420,12 @@ export tier_c_sod_full_ic, tier_c_cold_sinusoid_full_ic,
 # See `reference/notes_M3_6_phase1b_kh_ic_realizability.md`.
 export tier_d_kh_ic, tier_d_kh_ic_full
 
+# --- Phase M3-6 Phase 2 API: D.4 Zel'dovich pancake IC factory -----------
+# `tier_d_zeldovich_pancake_ic` (full Cholesky-sector field set) factory
+# for the D.4 Zel'dovich pancake collapse falsifier (M3-6 Phase 2). The
+# central novel test of methods paper §10.5 D.4: per-axis γ correctly
+# identifies the pancake-collapse direction. Cosmological reference test.
+# See `reference/notes_M3_6_phase2_D4_zeldovich.md`.
+export tier_d_zeldovich_pancake_ic
+
 end # module

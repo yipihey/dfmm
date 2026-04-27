@@ -1469,3 +1469,135 @@ function tier_d_kh_ic_full(; level::Integer = 4,
                    quad_order = quad_order, Gamma = Gamma, cv = cv),
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-6 Phase 2: D.4 Zel'dovich pancake IC factory
+# ─────────────────────────────────────────────────────────────────────
+#
+# Cosmological reference test: a 1D-symmetric sinusoidal velocity
+# perturbation along axis 1 (the collapsing axis); axis 2 is trivial.
+# In the Eulerian frame, the cell-centred initial condition is
+#
+#     u_1(x) = -A · 2π · cos(2π (x_1 - lo_1) / L_1)
+#     u_2 = 0
+#
+# In Lagrangian coordinates the trajectory is
+#
+#     x_1(m_1, t) = m_1 + A · sin(2π m_1) · (1 - t / t_cross)... + ...
+#
+# but in Eulerian-frame IC sampling we just store the cell-centred velocity.
+# The cold-limit pressure floor is small but non-zero (`P0 ≈ 1e-6`) — the
+# Cholesky-sector residual needs a positive `P` to set `s` via the EOS.
+#
+# Caustic time:  t_cross = 1 / (A · 2π) (1D Zel'dovich; pancake forms at
+# `m_1 = 0` mod `L_1`).
+#
+# The methods paper §10.5 D.4 prediction: per-axis γ correctly identifies
+# the collapsing axis. γ_1 develops spatial structure (drops sharply at
+# the compressive trough as t → t_cross) while γ_2 stays uniform.
+
+"""
+    tier_d_zeldovich_pancake_ic(; level=5, A=0.5,
+                                  ρ0=1.0, P0=1e-6,
+                                  lo=nothing, hi=nothing,
+                                  Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                                  T=Float64) -> NamedTuple
+
+D.4 Zel'dovich pancake collapse Cholesky-sector full IC.
+
+Builds a balanced HG quadtree on `[lo, hi]` (default `[0, 1]²`),
+allocates the 14-named-field 2D Cholesky-sector field set, applies
+`cholesky_sector_state_from_primitive` per leaf with the Zel'dovich
+velocity profile
+
+    u_1(x) = -A · 2π · cos(2π (x_1 - lo_1) / L_1)
+    u_2    = 0
+
+uniform `(ρ0, P0)`, cold-limit α = 1, β = 0, β_off = 0, θ_R = 0.
+
+The caustic forms at `t_cross = 1 / (A · 2π)`; with `A = 0.5` we get
+`t_cross ≈ 0.318`.
+
+Returns a NamedTuple shape matching `tier_c_*_full_ic`:
+
+  • `name = "tier_d_zeldovich_pancake"`
+  • `mesh, frame, leaves, fields` — Cholesky-sector field set ready
+    for `det_step_2d_berry_HG!`.
+  • `ρ_per_cell::Vector{Float64}` — uniform `fill(ρ0, N)`.
+  • `t_cross::Float64` — analytic caustic time.
+  • `params::NamedTuple` — IC parameters echo plus `(L1, L2, t_cross)`.
+
+# Boundary conditions
+
+The recommended BC mix is
+
+    bc_zel = FrameBoundaries{2}(((PERIODIC, PERIODIC),
+                                  (REFLECTING, REFLECTING)))
+
+(periodic along the collapsing axis, reflecting along the trivial axis).
+The factory does not attach a BC; the caller selects it.
+
+# 1D parity / dimension lift
+
+The IC is 1D-symmetric: u_2 = 0 strictly, and all axis-2 cells share the
+same axis-1-aligned velocity profile. The Phase 1a strain coupling stays
+*inert* at IC (∂_2 u_1 = 0 and ∂_1 u_2 = 0 at every face), so the
+off-diagonal β slots remain zero throughout the run. This is a clean
+cross-check that Phase 1a's H_rot^off coupling does not fire on
+axis-aligned ICs.
+"""
+function tier_d_zeldovich_pancake_ic(; level::Integer = 5,
+                                       A::Real = 0.5,
+                                       ρ0::Real = 1.0,
+                                       P0::Real = 1e-6,
+                                       lo = nothing, hi = nothing,
+                                       Gamma::Real = GAMMA_LAW_DEFAULT,
+                                       cv::Real = CV_DEFAULT,
+                                       T::Type = Float64)
+    lo_t, hi_t = _default_box(2, lo, hi, T;
+                                default_lo = (zero(T), zero(T)),
+                                default_hi = (one(T), one(T)))
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    A_t = T(A)
+
+    mesh = HierarchicalMesh{2}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_2d_fields(mesh; T = T)
+
+    ρ_per_cell = fill(Float64(ρ0), length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        # Zel'dovich velocity: -A·2π·cos(2π m_1) along axis 1.
+        m1_norm = (cx - Float64(lo_t[1])) / Float64(L1)
+        u1 = -Float64(A_t) * 2π * cos(2π * m1_norm)
+        u2 = 0.0
+        v = cholesky_sector_state_from_primitive(Float64(ρ0), u1, u2,
+                                                   Float64(P0),
+                                                   (cx, cy);
+                                                   Gamma = Gamma, cv = cv)
+        write_detfield_2d!(fields, ci, v)
+    end
+
+    t_cross = 1.0 / (Float64(A_t) * 2π)
+
+    return (
+        name = "tier_d_zeldovich_pancake",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        t_cross = t_cross,
+        params = (level = level, A = Float64(A_t),
+                   ρ0 = ρ0, P0 = P0,
+                   lo = lo_t, hi = hi_t,
+                   L1 = Float64(L1), L2 = Float64(L2),
+                   t_cross = t_cross,
+                   Gamma = Gamma, cv = cv),
+    )
+end
