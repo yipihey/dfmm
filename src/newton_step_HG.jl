@@ -910,7 +910,12 @@ function det_step_2d_berry_HG!(fields::PolynomialFieldSet,
                                  sparse_jac::Bool = true,
                                  abstol::Real = 1e-13,
                                  reltol::Real = 1e-13,
-                                 maxiters::Int = 50) where {T<:Real}
+                                 maxiters::Int = 50,
+                                 project_kind::Symbol = :none,
+                                 realizability_headroom::Real = 1.05,
+                                 Mvv_floor::Real = 1e-2,
+                                 pressure_floor::Real = 1e-8,
+                                 proj_stats = nothing) where {T<:Real}
     @assert mesh.balanced == true "det_step_2d_berry_HG! requires mesh.balanced == true"
     N = length(leaves)
     @assert N >= 1 "leaves vector must be non-empty"
@@ -971,5 +976,20 @@ function det_step_2d_berry_HG!(fields::PolynomialFieldSet,
     end
 
     unpack_state_2d_berry!(fields, leaves, sol.u)
+
+    # M3-3d post-Newton operator-split: per-axis realizability projection.
+    # With `project_kind = :none` (default) this is a no-op and the driver
+    # remains bit-for-bit identical to M3-3c. With `:reanchor`, raise `s`
+    # so `M_vv ≥ headroom · max_a β_a²` per leaf — the per-axis 2D
+    # generalisation of the M2-3 1D projection, mirroring how the 1D
+    # `det_run_stochastic!` wraps `det_step!` with pre/post projections.
+    realizability_project_2d!(fields, leaves;
+                               project_kind = project_kind,
+                               headroom = realizability_headroom,
+                               Mvv_floor = Mvv_floor,
+                               pressure_floor = pressure_floor,
+                               ρ_ref = ρ_ref,
+                               stats = proj_stats)
+
     return fields
 end

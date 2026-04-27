@@ -513,6 +513,159 @@ function realizability_project!(mesh::Mesh1D{T,DetField{T}};
     return mesh
 end
 
+# -----------------------------------------------------------------------------
+# Per-axis (2D) realizability projection (M3-3d)
+# -----------------------------------------------------------------------------
+
+"""
+    realizability_project_2d!(fields, leaves; project_kind=:reanchor,
+                              headroom=1.05, Mvv_floor=1e-2,
+                              pressure_floor=1e-8, ρ_ref=1.0,
+                              Gamma=GAMMA_LAW_DEFAULT,
+                              stats::Union{ProjectionStats,Nothing}=nothing)
+        -> fields
+
+Per-axis 2D analog of `realizability_project!`. Walks the leaves of a
+2D Cholesky-sector field set (`allocate_cholesky_2d_fields`) and pushes
+each cell's `(α_a, β_a, s)` state back inside the realizability cone
+along **both** principal axes:
+
+    M_vv,aa ≥ headroom · β_a²    for a = 1, 2.
+
+Mutates `fields` in place; returns `fields`. If `stats !== nothing`,
+projection-event statistics are accumulated.
+
+# Why per-axis?
+
+In 2D the per-axis `γ²_a = M_vv,aa − β_a²` realizability constraint is
+checked once per axis. Because the diagonal EOS gives
+`M_vv,11 = M_vv,22 = Mvv(J, s)` (an isotropic ideal gas does not
+distinguish axes), raising `s` raises both `M_vv,aa` simultaneously.
+The per-axis loop therefore reduces to a single `s`-raise driven by
+`max_a(headroom · β_a², Mvv_floor)`. The off-diagonal coupling stays
+zero per M3-3a Q3 (off-diag β omitted in M3-3); this projection
+honours that — `β_{12}, β_{21}` are not stored in the field set.
+
+# Variants
+
+  • `:reanchor` *(default)* — raise `s` so that
+    `M_vv,aa ≥ max(headroom · β_a², Mvv_floor)` for both axes
+    simultaneously. The 1D-projection's per-cell P_⊥ debit is
+    inherited (debit comes from the post-Newton `Pp` slot if
+    available; otherwise admitted as a silent floor-gain).
+  • `:none` — no-op. M2-3 1D bit-equality regression mirror.
+
+# Conservation
+
+  • Per-axis β unchanged (projection acts only on `s`).
+  • Per-axis (α, x, u) unchanged.
+  • Internal-energy increment matches 1D: `+ρ_j · (M_vv_target − M_vv_pre)`
+    per leaf (positive only when projection fires).
+
+# Sign convention with respect to the M3-3a per-axis Cholesky
+
+The 2D per-axis γ uses `γ²_a = M_vv,aa − β_a²` (the M1 1D form lifted
+per axis), the same convention `gamma_per_axis_2d` in
+`src/cholesky_DD.jl` and `gamma_per_axis_2d_field` in
+`src/diagnostics.jl` use. With the M3-3 isotropic-EOS field set
+(`M_vv,11 = M_vv,22 = Mvv(J, s)`), the per-axis realizability
+boundaries reduce to `Mvv(J, s) ≥ headroom · max(β_1², β_2²)` (the
+weaker of the two constraints determines whether projection fires).
+
+The 1D bit-equality regression: at `β_2 = 0`, the per-axis target
+collapses to `headroom · β_1²` — identical to the 1D
+`realizability_project!` form. The M3-3d test verifies this on a
+1D-symmetric 2D configuration.
+"""
+function realizability_project_2d!(fields, leaves;
+                                   project_kind::Symbol = :reanchor,
+                                   headroom::Real = 1.05,
+                                   Mvv_floor::Real = 1e-2,
+                                   pressure_floor::Real = 1e-8,
+                                   ρ_ref::Real = 1.0,
+                                   Gamma::Real = GAMMA_LAW_DEFAULT,
+                                   stats::Union{ProjectionStats,Nothing} = nothing)
+    if project_kind === :none
+        if stats !== nothing
+            stats.n_steps += 1
+        end
+        return fields
+    end
+    @assert project_kind === :reanchor "realizability_project_2d!: unsupported project_kind=$(project_kind)"
+
+    if stats !== nothing
+        stats.n_steps += 1
+    end
+
+    h = Float64(headroom)
+    Mvv_floor_f = Float64(Mvv_floor)
+    pf = Float64(pressure_floor)
+    ρ_t = Float64(ρ_ref)
+    J_t = 1.0 / ρ_t
+
+    @inbounds for ci in leaves
+        β1 = Float64(fields.β_1[ci][1])
+        β2 = Float64(fields.β_2[ci][1])
+        s_pre = Float64(fields.s[ci][1])
+        Pp_pre = Float64(fields.Pp[ci][1])
+        if !isfinite(Pp_pre)
+            Pp_pre = 0.0
+        end
+
+        Mvv_pre = Float64(Mvv(J_t, s_pre; Gamma = Gamma))
+        if stats !== nothing
+            stats.Mvv_min_pre = min(stats.Mvv_min_pre, Mvv_pre)
+        end
+
+        # Per-axis realizability target. The binding constraint is the
+        # max over axes (β² is non-negative, so max defines the tighter
+        # cone-interior requirement).
+        β2_max = max(β1 * β1, β2 * β2)
+        Mvv_target_rel = h * β2_max
+        Mvv_target = max(Mvv_target_rel, Mvv_floor_f)
+
+        if Mvv_pre >= Mvv_target
+            if stats !== nothing
+                stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_pre)
+            end
+            continue
+        end
+
+        # Projection event.
+        if stats !== nothing
+            stats.n_events += 1
+            if Mvv_target > Mvv_target_rel
+                stats.n_floor_events += 1
+            end
+        end
+
+        Pxx_pre = ρ_t * Mvv_pre
+        Pxx_new = ρ_t * Mvv_target
+        ΔPxx = Pxx_new - Pxx_pre   # > 0 by construction
+        Pp_take_target = 0.5 * ΔPxx
+        Pp_avail = max(Pp_pre - pf, 0.0)
+        Pp_take = min(Pp_take_target, Pp_avail)
+        Pp_new = Pp_pre - Pp_take
+        floor_gain = (0.5 * ΔPxx) - Pp_take
+        if stats !== nothing
+            # Tracked per cell — caller can multiply by cell volume if
+            # they want a physical-units IE. Same convention as the
+            # 1D projection where ΔIE = floor_gain · Δx_j.
+            stats.total_dE_inj += floor_gain
+        end
+
+        s_new = s_pre + log(Mvv_target / max(Mvv_pre, 1e-300))
+
+        fields.s[ci]  = (s_new,)
+        fields.Pp[ci] = (Pp_new,)
+
+        if stats !== nothing
+            stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_target)
+        end
+    end
+    return fields
+end
+
 """
     inject_vg_noise!(mesh::Mesh1D, dt; params, rng,
                      diag = InjectionDiagnostics(n_segments(mesh)))

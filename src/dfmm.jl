@@ -292,4 +292,16 @@ export refine_segment_HG!, coarsen_segment_pair_HG!,
        action_error_indicator_HG, gradient_indicator_HG,
        amr_step_HG!
 
+# --- Phase M3-3d API: per-axis γ diagnostic + AMR/realizability per-axis -----
+# Per-axis γ diagnostic on the 2D Cholesky-sector field set, per-axis AMR
+# indicator on `HierarchicalMesh{2}`, per-axis realizability projection,
+# and the HG `step_with_amr!`-driven AMR loop wired through
+# `register_refinement_listener!`. Closes M3-2b's deferred Swaps 2+3 for
+# the 2D scope. See `reference/notes_M3_3d_per_axis_gamma_amr.md`.
+export gamma_per_axis_2d_field, gamma_per_axis_2d_diag
+export realizability_project_2d!
+export action_error_indicator_2d_per_axis,
+       register_field_set_on_refine!,
+       step_with_amr_2d!
+
 end # module

@@ -285,6 +285,26 @@ using Test
         include("test_M3_3c_iso_pullback.jl")
         include("test_M3_3c_h_rot_solvability.jl")
     end
+    @testset verbose = true "Phase M3-3d: per-axis γ + AMR/realizability per-axis" begin
+        # M3-3d sub-phase of M3-3 (2D Cholesky + Berry connection).
+        # Wires the per-axis γ diagnostic (`gamma_per_axis_2d_field` /
+        # `gamma_per_axis_2d_diag`) through the diagnostics + I/O layer,
+        # adds the per-axis action-AMR indicator on `HierarchicalMesh{2}`
+        # plus the HG `register_refinement_listener!` field-set listener
+        # (closing M3-2b's deferred Swaps 2+3 for the 2D scope), and
+        # extends the M2-3 realizability projection to per-axis 2D.
+        # The headline scientific gate is §6.5 per-axis γ selectivity:
+        # cold sinusoid IC with k_y = 0 ⇒ γ_1 collapses spatially while
+        # γ_2 stays uniform (per-axis decomposition correctly identifies
+        # the collapsing axis). See
+        # `reference/notes_M3_3_2d_cholesky_berry.md` §4.3 + §6.5 and
+        # `reference/notes_M3_3d_per_axis_gamma_amr.md` (this sub-phase's
+        # status note).
+        include("test_M3_3d_gamma_per_axis_diag.jl")
+        include("test_M3_3d_realizability_per_axis.jl")
+        include("test_M3_3d_amr_per_axis.jl")
+        include("test_M3_3d_selectivity.jl")
+    end
     @testset verbose = true "Phase M3-2: Phase 7/8/11 + M2 on HG" begin
         # Phase 7 (heat-flux Q + steady shock + inflow/outflow), Phase 8
         # (variance-gamma stochastic injection), Phase 11 (passive

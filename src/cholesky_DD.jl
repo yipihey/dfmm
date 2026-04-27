@@ -203,6 +203,45 @@ matrix; only the diagonal entries are read.
     return SVector{2, T}(γ1, γ2)
 end
 
+"""
+    gamma_per_axis_2d(β::SVector{2, T}, M_vv_diag::SVector{2, T}) -> SVector{2, T}
+
+M1-style per-axis γ diagnostic in the convention `γ²_a = M_vv,aa − β_a²`
+(the per-axis lift of M1's `gamma_from_state(M_vv, β) = √max(M_vv − β², 0)`).
+Inputs are the per-axis β and the diagonal of `M_vv` in the principal-axis
+frame (i.e. `M_vv,aa` for `a = 1, 2`). The realizability floor `γ² ≥ 0` is
+enforced.
+
+This is the form consumed by the M3-3d AMR + realizability-projection per-
+axis wiring. The principal-axis Mvv per axis equals `Mvv(J, s)` for an
+isotropic EOS — the EOS does not "see" the rotation, so `M_vv,aa = M_vv(J,s)`
+on both axes — but the per-axis form keeps the API ready for direction-
+dependent extensions (off-diagonal β, anisotropic EOS, …).
+
+# Example
+```julia
+β = SVector(0.10, 0.05)
+Mvv_diag = SVector(0.40, 0.30)
+γ = gamma_per_axis_2d(β, Mvv_diag)
+# γ_1 = √(0.40 - 0.01) = √0.39
+# γ_2 = √(0.30 - 0.0025) = √0.2975
+```
+"""
+@inline function gamma_per_axis_2d(β::SVector{2, T},
+                                    M_vv_diag::SVector{2, T}) where {T<:Real}
+    g1² = M_vv_diag[1] - β[1] * β[1]
+    g2² = M_vv_diag[2] - β[2] * β[2]
+    γ1 = sqrt(max(g1², zero(T)))
+    γ2 = sqrt(max(g2², zero(T)))
+    return SVector{2, T}(γ1, γ2)
+end
+
+
+# Per-axis field-walking helper `gamma_per_axis_2d_field` lives in
+# `src/diagnostics.jl` (M3-3d). It depends on `Mvv(J, s)` from `eos.jl`
+# and the 2D Cholesky-sector field set allocated by
+# `allocate_cholesky_2d_fields` in `src/setups_2d.jl`.
+
 # ──────────────────────────────────────────────────────────────────────
 # H_rot solvability constraint (M3-3c §6.4)
 # ──────────────────────────────────────────────────────────────────────
