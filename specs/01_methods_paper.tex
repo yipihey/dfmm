@@ -1385,9 +1385,42 @@ maximum cell-average vs.\ point-sample residual
 $|\delta\rho_{\rm cell} - \delta\rho_{\rm pt}|$ is $6.29\times
 10^{-6}$, $1.60\times 10^{-6}$, $4.01\times 10^{-7}$ at the
 three resolutions, with successive ratios $3.93$ and $3.98$
-($\Delta x^2$ midpoint-rule rate, target $\ge 3.5$). See
-\verb|reference/notes_M3_prep_tierC_ic_factories.md| and
-\verb|reference/notes_M3_2b_swap5_init_field.md|.
+($\Delta x^2$ midpoint-rule rate, target $\ge 3.5$).
+Fig.~\ref{fig:M3-9-C3-convergence} extends the sweep to level
+$3$ ($64$ leaves) and to a rotated wave-vector $\theta = \pi/4$,
+confirming the Δx² rate over the full level $3$--$6$ range and
+across orientations (least-squares slopes
+$-1.96$ and $-1.99$ for L${}^\infty$ and L${}^2$, respectively,
+at $\theta = 0$). See
+\verb|reference/notes_M3_prep_tierC_ic_factories.md|,
+\verb|reference/notes_M3_2b_swap5_init_field.md|, and
+\verb|reference/notes_M3_9_prep_c3_convergence_plot.md|.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.85\textwidth]{../reference/figs/M3_3_C3_plane_wave_convergence.png}
+\caption{C.3 plane-wave projection convergence (M3-9 prep). Log-log
+plot of the cell-average vs.\ point-sample density-perturbation
+residual $|\delta\rho_{\rm cell} - \delta\rho_{\rm pt}|$ on the
+acoustic plane-wave IC (amplitude $A = 10^{-3}$, $k_{\rm mag} = 1$),
+swept over HG refinement levels $3$--$6$ ($N = 2^{\rm level} =
+8, 16, 32, 64$ cells per axis) and angles $\theta \in
+\{0, \pi/4\}$. Solid markers: L${}^\infty$ norm; dashed markers:
+L${}^2$ norm. The dotted gray line is the analytic $\Delta x^2$
+midpoint-rule slope, anchored at the coarsest L${}^\infty$ point.
+Successive-resolution L${}^\infty$ ratios are $3.75, 3.94, 3.98$
+($\theta = 0$) and $3.92, 3.98, 4.00$ ($\theta = \pi/4$), with
+least-squares log-log slopes $-1.96$ and $-1.99$, respectively,
+matching the analytic prediction
+$|\delta\rho_{\rm cell} - \delta\rho_{\rm pt}|_\infty
+\sim (2\pi)^2 A / 24 \cdot \Delta x^2$. The $\theta = \pi/4$
+curve sits within sub-percent of the $\theta = 0$ curve at every
+level, confirming rotational invariance of the L²-projection IC
+machinery. Drives:
+\texttt{experiments/C3\_2d\_plane\_wave\_convergence.jl}; data:
+\texttt{reference/figs/M3\_3\_C3\_plane\_wave\_convergence.h5}.}
+\label{fig:M3-9-C3-convergence}
+\end{figure}
 
 \paragraph{Bit-exact 0.0 parity protocol (M1+M2 carry-forward).}
 The M3 substrate ports of the M1 (Phase 1--7 deterministic, Phase
