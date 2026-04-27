@@ -244,14 +244,26 @@ export pack_state_2d, unpack_state_2d!,
        build_face_neighbor_tables, build_residual_aux_2D
 export det_step_2d_HG!
 
-# --- Phase M3-3c API: 2D EL residual + Newton WITH Berry coupling ---------
-# Promotes θ_R from a fixed IC value to a Newton unknown. Adds the closed-
-# form Berry partials (`src/berry.jl::berry_partials_2d`) into the
+# --- Phase M3-3c → M3-6 Phase 0 API: 2D EL residual + Newton WITH Berry ---
+# coupling AND off-diagonal `β_12, β_21` re-activated.
+#
+# M3-3c: promotes θ_R from a fixed IC value to a Newton unknown. Adds the
+# closed-form Berry partials (`src/berry.jl::berry_partials_2d`) into the
 # per-axis residual rows; adds a 9th `F^θ_R` row encoding the kinematic-
 # equation evolution (trivial drive in M3-3c — off-diagonal velocity
-# gradients enter at M3-3d/M3-6). The Newton system grows from 8N to 9N.
-# See `reference/notes_M3_3_2d_cholesky_berry.md` §4 + §6 and
-# `reference/notes_M3_3c_berry_integration.md`.
+# gradients enter at M3-3d/M3-6).
+#
+# M3-6 Phase 0: re-activates the off-diagonal Cholesky pair `β_12, β_21`
+# in the 11-dof Newton residual (was 9 in M3-3c). The two new rows
+# F^β_12, F^β_21 are trivial-drive (free-flight cut); per-axis F^β_a rows
+# pick up off-diagonal Berry coupling terms per the corrected
+# antisymmetric extension of §7 of the 2D Berry note (verified against
+# `scripts/verify_berry_connection_offdiag.py`). The Newton system grows
+# from 9N to 11N. M3-6 Phase 1 (D.1 KH falsifier) will plumb the off-
+# diagonal strain-coupling drive that breaks the trivial-drive pattern.
+# See `reference/notes_M3_3_2d_cholesky_berry.md` §4 + §6,
+# `reference/notes_M3_3c_berry_integration.md`, and
+# `reference/notes_M3_6_phase0_offdiag_beta.md`.
 export cholesky_el_residual_2D_berry!, cholesky_el_residual_2D_berry
 export pack_state_2d_berry, unpack_state_2d_berry!
 export det_step_2d_berry_HG!

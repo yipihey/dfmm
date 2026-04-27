@@ -145,9 +145,10 @@ using dfmm: DetField2D, allocate_cholesky_2d_fields,
         β2 = β_0
         θR = 0.0
 
-        # 9-dof field set for Berry residual; 8-dof state vector for
-        # no-Berry residual is the same per-cell content modulo the
-        # extra θ_R field.
+        # M3-6 Phase 0: 11-dof field set for Berry residual (was 9 in
+        # M3-3c — the addition is `β_12, β_21`, both zero at the iso
+        # IC); 8-dof state vector for no-Berry residual is the same
+        # per-cell content modulo the extra θ_R field.
         fields = allocate_cholesky_2d_fields(mesh)
         for ci in leaves
             lo, hi = cell_physical_box(frame, ci)
@@ -173,10 +174,11 @@ using dfmm: DetField2D, allocate_cholesky_2d_fields,
                                      M_vv_override = M_vv, ρ_ref = 1.0)
         y_n_9 = pack_state_2d_berry(fields, leaves)
 
-        # Advance θ_R by Δθ_R per cell.
+        # Advance θ_R by Δθ_R per cell. M3-6 Phase 0: θ_R is at index
+        # 11 in the 11-dof packing.
         y_np1_9 = copy(y_n_9)
         for (i_leaf, _) in enumerate(leaves)
-            y_np1_9[9 * (i_leaf - 1) + 9] += Δθ_R
+            y_np1_9[11 * (i_leaf - 1) + 11] += Δθ_R
         end
 
         F_berry = cholesky_el_residual_2D_berry(y_np1_9, y_n_9, aux, dt)

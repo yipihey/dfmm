@@ -838,22 +838,26 @@ end
 """
     cholesky_el_residual_2D_berry!(F, y_np1, y_n, aux, dt)
 
-Native HG-side 2D Cholesky-sector EL residual **with Berry coupling
-and θ_R as a Newton unknown** (M3-3c). Writes the residual `F` for the
-9-dof-per-cell flat unknown vector `y_np1` against the reference state
-`y_n`. Both vectors are packed leaf-cell-major as
+Native HG-side 2D Cholesky-sector EL residual **with Berry coupling,
+θ_R as a Newton unknown, and (M3-6 Phase 0) the off-diagonal Cholesky
+pair `β_12, β_21` re-activated**. Writes the residual `F` for the
+11-dof-per-cell flat unknown vector `y_np1` against the reference
+state `y_n`. Both vectors are packed leaf-cell-major as
 
-    y[9(i-1) + 1] = x_1
-    y[9(i-1) + 2] = x_2
-    y[9(i-1) + 3] = u_1
-    y[9(i-1) + 4] = u_2
-    y[9(i-1) + 5] = α_1
-    y[9(i-1) + 6] = α_2
-    y[9(i-1) + 7] = β_1
-    y[9(i-1) + 8] = β_2
-    y[9(i-1) + 9] = θ_R
+    y[11(i-1) + 1 ] = x_1
+    y[11(i-1) + 2 ] = x_2
+    y[11(i-1) + 3 ] = u_1
+    y[11(i-1) + 4 ] = u_2
+    y[11(i-1) + 5 ] = α_1
+    y[11(i-1) + 6 ] = α_2
+    y[11(i-1) + 7 ] = β_1
+    y[11(i-1) + 8 ] = β_2
+    y[11(i-1) + 9 ] = β_12   (M3-6 Phase 0)
+    y[11(i-1) + 10] = β_21   (M3-6 Phase 0)
+    y[11(i-1) + 11] = θ_R
 
-for `i ∈ 1:N` (N = number of leaf cells in mesh order).
+for `i ∈ 1:N` (N = number of leaf cells in mesh order). M3-3c had 9
+dof per cell; M3-6 Phase 0 adds two new rows for `β_12, β_21`.
 
 Auxiliary data carried in `aux::NamedTuple` (same layout as the M3-3b
 `build_residual_aux_2D`; `θR_vec` is now read at `n` only — `θ_R_np1`
@@ -868,21 +872,31 @@ The residual rows are:
     F^u_a    = (u_a_np1 − u_a_n)/dt + (P̄_a^hi − P̄_a^lo) / m̄_a
     F^α_a    = (α_a_np1 − α_a_n)/dt − β̄_a + (Berry α-modification)
     F^β_a    = (β_a_np1 − β_a_n)/dt + (∂_a u_a) β̄_a − γ̄_a²/ᾱ_a
-                + (Berry β-modification)
+                + (Berry β-modification, M3-3c + M3-6 Phase 0 off-diag couplings)
+    F^β_12   = (β_12_np1 − β_12_n)/dt    (trivial drive: M3-6 Phase 0)
+    F^β_21   = (β_21_np1 − β_21_n)/dt    (trivial drive: M3-6 Phase 0)
     F^θ_R    = (θ_R_np1 − θ_R_n)/dt
 
 with the per-axis Berry α/β-modifications detailed in the file-level
-comment block above and consistent with `src/berry.jl::berry_partials_2d`.
+comment block above and consistent with `src/berry.jl::berry_partials_2d`
+(diagonal block) and `kinetic_offdiag_coeffs_2d` (M3-6 Phase 0
+off-diagonal block; sign convention from
+`scripts/verify_berry_connection_offdiag.py`).
 
 # Verification
 
-  • The dimension-lift gate (§6.1 of the design note) holds at 0.0
-    absolute when `α_2 = const, β_2 = 0, θ_R_n = 0` (the Berry
-    α/β-modification terms vanish; F^θ_R = 0 keeps θ_R = 0 across
-    the step).
+  • The §Dimension-lift gate (M3-3c §6.1; M3-6 Phase 0 reverification)
+    holds at 0.0 absolute when `α_2 = const, β_2 = 0, β_12 = β_21 = 0,
+    θ_R_n = 0` (the Berry α/β-modification terms vanish; F^θ_R, F^β_12,
+    F^β_21 = 0 keep their unknowns at 0 across the step).
   • The Berry partials (∂F^α_a/∂θ_R_np1, ∂F^β_a/∂θ_R_np1) match
     `berry_partials_2d` up to the (1/dt) factor and the midpoint
     averaging — verified in `test_M3_3c_berry_residual.jl`.
+  • The §Berry-offdiag CHECKs 1-9 are reproduced in
+    `test_M3_6_phase0_offdiag_residual.jl` at the residual-Jacobian
+    level (FD probes of ∂F^β_a / ∂β_12_np1, ∂F^β_a / ∂β_21_np1, plus
+    iso-pullback ε-expansion and the diagonal-reduction byte-equal
+    gate).
 """
 function cholesky_el_residual_2D_berry!(F::AbstractVector,
                                           y_np1::AbstractVector,
@@ -900,20 +914,34 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
     wrap_hi     = haskey(aux, :wrap_hi_idx) ? aux.wrap_hi_idx : nothing
 
     N = length(s_vec)
-    @assert length(y_np1) == 9 * N "y_np1 length $(length(y_np1)) does not match 9 * N = $(9 * N)"
-    @assert length(y_n)   == 9 * N
-    @assert length(F)     == 9 * N
+    # M3-6 Phase 0: 11 dof per cell.
+    #   y[11(i-1) + 1 ] = x_1
+    #   y[11(i-1) + 2 ] = x_2
+    #   y[11(i-1) + 3 ] = u_1
+    #   y[11(i-1) + 4 ] = u_2
+    #   y[11(i-1) + 5 ] = α_1
+    #   y[11(i-1) + 6 ] = α_2
+    #   y[11(i-1) + 7 ] = β_1
+    #   y[11(i-1) + 8 ] = β_2
+    #   y[11(i-1) + 9 ] = β_12   (M3-6 Phase 0)
+    #   y[11(i-1) + 10] = β_21   (M3-6 Phase 0)
+    #   y[11(i-1) + 11] = θ_R
+    @assert length(y_np1) == 11 * N "y_np1 length $(length(y_np1)) does not match 11 * N = $(11 * N)"
+    @assert length(y_n)   == 11 * N
+    @assert length(F)     == 11 * N
     @assert length(Δm_per_axis[1]) == N
     @assert length(Δm_per_axis[2]) == N
 
     Tres = promote_type(eltype(y_np1), eltype(y_n), eltype(s_vec), typeof(dt))
 
-    # 9-dof per-cell index helpers.
-    @inline get_x(y, a, i) = y[9 * (i - 1) + a]              # a ∈ {1, 2}
-    @inline get_u(y, a, i) = y[9 * (i - 1) + 2 + a]
-    @inline get_α(y, a, i) = y[9 * (i - 1) + 4 + a]
-    @inline get_β(y, a, i) = y[9 * (i - 1) + 6 + a]
-    @inline get_θR(y, i)   = y[9 * (i - 1) + 9]
+    # 11-dof per-cell index helpers (M3-6 Phase 0).
+    @inline get_x(y, a, i) = y[11 * (i - 1) + a]              # a ∈ {1, 2}
+    @inline get_u(y, a, i) = y[11 * (i - 1) + 2 + a]
+    @inline get_α(y, a, i) = y[11 * (i - 1) + 4 + a]
+    @inline get_β(y, a, i) = y[11 * (i - 1) + 6 + a]
+    @inline get_β12(y, i)  = y[11 * (i - 1) + 9]
+    @inline get_β21(y, i)  = y[11 * (i - 1) + 10]
+    @inline get_θR(y, i)   = y[11 * (i - 1) + 11]
 
     @inbounds for i in 1:N
         s_i = s_vec[i]
@@ -922,6 +950,31 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
         θR_n   = get_θR(y_n,   i)
         θR_np1 = get_θR(y_np1, i)
         dθR_dt = (θR_np1 - θR_n) / Tres(dt)
+
+        # M3-6 Phase 0: off-diagonal Cholesky entries `β_12, β_21` and
+        # their time derivatives. The corrected sign convention from
+        # `scripts/verify_berry_connection_offdiag.py` puts them in the
+        # symplectic form Ω with the entries
+        #     Ω[α_1, β_12] = -α_2² / 2,   Ω[α_1, β_21] = -α_1·α_2,
+        #     Ω[α_2, β_12] = -α_1·α_2,   Ω[α_2, β_21] = -α_1² / 2,
+        # and the Berry coefficient acquires
+        #     ΔΩ[α_1, θ_R] = +α_1·α_2·β_12 - (α_2²/2)·β_21,
+        #     ΔΩ[α_2, θ_R] = +(α_1²/2)·β_12 - α_1·α_2·β_21.
+        # Inverting the per-axis Hamilton equations from rows α_a of
+        # Ω·X + dH = 0 yields the F^β_a couplings below; the
+        # constraint rows for β_12, β_21 themselves are kinematic-
+        # drive equations identical in shape to F^θ_R (free-flight
+        # / no-off-diag-strain limit ⇒ trivial drive ⇒ they are
+        # conserved per cell, the M3-3c regression configurations
+        # IC them at zero so they stay at zero).
+        β12_n   = get_β12(y_n,   i)
+        β12_np1 = get_β12(y_np1, i)
+        β21_n   = get_β21(y_n,   i)
+        β21_np1 = get_β21(y_np1, i)
+        dβ12_dt = (β12_np1 - β12_n) / Tres(dt)
+        dβ21_dt = (β21_np1 - β21_n) / Tres(dt)
+        β̄12     = (β12_n + β12_np1) / 2
+        β̄21     = (β21_n + β21_np1) / 2
 
         # Cache per-axis self midpoints (needed for Berry cross-axis terms).
         ᾱ_self_1 = (get_α(y_n, 1, i) + get_α(y_np1, 1, i)) / 2
@@ -1042,26 +1095,65 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
             m̄_a = Δm_i
             γ²_a = M̄vv_a - β̄^2
 
-            # Berry-modification coefficients for this axis. Sign comes
-            # from rows of Ω · X = -dH (see file-level comment block).
+            # Berry-modification coefficients for this axis (M3-3c +
+            # M3-6 Phase 0 off-diag β extension). Signs come from rows
+            # of Ω · X = -dH (see file-level comment block above).
             #
-            # axis 1: α̇_1 = β_1 - (α_2³/(3α_1²)) θ̇_R     ⇒ +(ᾱ_2³/(3ᾱ_1²)) θ̇_R
-            #         β̇_1 = γ_1²/α_1 - β_2 θ̇_R           ⇒ +β̄_2 θ̇_R
-            # axis 2: α̇_2 = β_2 + (α_1³/(3α_2²)) θ̇_R     ⇒ -(ᾱ_1³/(3ᾱ_2²)) θ̇_R
-            #         β̇_2 = γ_2²/α_2 + β_1 θ̇_R           ⇒ -β̄_1 θ̇_R
+            # axis 1: α̇_1 = β_1 - (α_2³/(3α_1²)) θ̇_R           ⇒ +(ᾱ_2³/(3ᾱ_1²)) θ̇_R
+            #         β̇_1 = γ_1²/α_1 - β_2 θ̇_R + ...           ⇒ +β̄_2 θ̇_R + (M3-6) off-diag β coupling
+            # axis 2: α̇_2 = β_2 + (α_1³/(3α_2²)) θ̇_R           ⇒ -(ᾱ_1³/(3ᾱ_2²)) θ̇_R
+            #         β̇_2 = γ_2²/α_2 + β_1 θ̇_R + ...           ⇒ -β̄_1 θ̇_R + (M3-6) off-diag β coupling
             #
-            # The (α_other³ / (3·α_self²)) coefficients use the cached
-            # `ᾱ_self_*` to avoid recomputing across the per-axis loop.
+            # M3-6 Phase 0 additions to F^β_a (from rows α_a of Ω·X+dH=0
+            # with the new Ω entries). With H = H_Ch only (no off-diag
+            # strain in M3-6 Phase 0 free-flight cut), ∂H/∂α_a is the
+            # same as M3-3c, but the row α_a now contains β̇_12, β̇_21
+            # terms via Ω[α_a, β_12], Ω[α_a, β_21]; and Ω[α_a, θ_R]
+            # acquires β_12, β_21 contributions from F_off:
+            #
+            #   axis 1 (row α_1):
+            #     α_1²·β̇_1 - (α_2²/2)·β̇_12 - α_1·α_2·β̇_21
+            #       + (α_1²β_2 + α_1·α_2·β_12 - (α_2²/2)·β_21)·θ̇_R
+            #       - α_1·γ_1² = 0
+            #     ⇒ β̇_1 = γ_1²/α_1
+            #              - (β_2 + (α_2/α_1)·β_12 - (α_2²/(2α_1²))·β_21)·θ̇_R
+            #              + (α_2²/(2α_1²))·β̇_12 + (α_2/α_1)·β̇_21
+            #
+            #   axis 2 (row α_2):
+            #     α_2²·β̇_2 - α_1·α_2·β̇_12 - (α_1²/2)·β̇_21
+            #       + (-α_2²β_1 + (α_1²/2)·β_12 - α_1·α_2·β_21)·θ̇_R
+            #       - α_2·γ_2² = 0
+            #     ⇒ β̇_2 = γ_2²/α_2
+            #              - (-β_1 + (α_1²/(2α_2²))·β_12 - (α_1/α_2)·β_21)·θ̇_R
+            #              + (α_1/α_2)·β̇_12 + (α_1²/(2α_2²))·β̇_21
+            #
+            # All M3-6 additions are multiplied by β_12, β_21, β̇_12, or
+            # β̇_21. At β_12=β_21=0 (M3-3c regression IC + trivial-drive
+            # F^β_12, F^β_21 rows below), every M3-6 term vanishes
+            # identically and the residual reduces byte-equally to the
+            # M3-3c form. This is the §Dimension-lift gate.
             berry_α_term, berry_β_term = if a == 1
                 ( (ᾱ_self_2^3) / (3 * ᾱ_self_1^2) * dθR_dt,
-                   β̄_self_2 * dθR_dt )
+                   β̄_self_2 * dθR_dt
+                   # M3-6 Phase 0 off-diag β coupling on F^β_1.
+                   + (ᾱ_self_2 / ᾱ_self_1) * β̄12 * dθR_dt
+                   - (ᾱ_self_2^2 / (2 * ᾱ_self_1^2)) * β̄21 * dθR_dt
+                   - (ᾱ_self_2^2 / (2 * ᾱ_self_1^2)) * dβ12_dt
+                   - (ᾱ_self_2 / ᾱ_self_1) * dβ21_dt
+                )
             else
                 ( -(ᾱ_self_1^3) / (3 * ᾱ_self_2^2) * dθR_dt,
-                  -β̄_self_1 * dθR_dt )
+                  -β̄_self_1 * dθR_dt
+                   # M3-6 Phase 0 off-diag β coupling on F^β_2.
+                   - (ᾱ_self_1^2 / (2 * ᾱ_self_2^2)) * β̄12 * dθR_dt
+                   + (ᾱ_self_1 / ᾱ_self_2) * β̄21 * dθR_dt
+                   - (ᾱ_self_1 / ᾱ_self_2) * dβ12_dt
+                   - (ᾱ_self_1^2 / (2 * ᾱ_self_2^2)) * dβ21_dt
+                )
             end
 
             # Residual rows.
-            base = 9 * (i - 1)
+            base = 11 * (i - 1)
             F[base + a]     = (x_np1 - x_n) / dt - ū                                         # F^x_a
             F[base + 2 + a] = (u_np1 - u_n) / dt + (P̄_hi - P̄_lo) / m̄_a                       # F^u_a
             F[base + 4 + a] = (α_np1 - α_n) / dt - β̄ + berry_α_term                          # F^α_a
@@ -1069,10 +1161,24 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
                               (ᾱ != 0 ? γ²_a / ᾱ : zero(Tres)) + berry_β_term                # F^β_a
         end
 
+        # M3-6 Phase 0 off-diag β rows. Free-flight / no-off-diag-strain
+        # cut: the kinematic drives for β̇_12, β̇_21 vanish (they are
+        # sourced by the off-diagonal strain coupling H_rot^off ∝ G̃_12·
+        # (α_1·β_21 + α_2·β_12)/2 per §7.5 of the 2D Berry note, which
+        # M3-6 Phase 1 / D.1 KH activates). With trivial drive,
+        #   F^β_12 = (β_12_np1 − β_12_n)/dt
+        #   F^β_21 = (β_21_np1 − β_21_n)/dt
+        # so β_12, β_21 are conserved per cell across the step. The
+        # M3-3c regression IC pins them at zero, and the trivial-drive
+        # rows preserve them at zero ⇒ §Dimension-lift gate is byte-
+        # equal to M3-3c.
+        F[11 * (i - 1) + 9]  = (β12_np1 - β12_n) / dt
+        F[11 * (i - 1) + 10] = (β21_np1 - β21_n) / dt
+
         # F^θ_R: kinematic-equation-driven evolution. M3-3c first cut has
-        # zero off-diagonal strain rate (M3-3d/M3-6 activate this), so
-        # θ_R is conserved per cell across the step.
-        F[9 * (i - 1) + 9] = (θR_np1 - θR_n) / dt
+        # zero off-diagonal strain rate (M3-6 Phase 1 / D.1 KH activates
+        # this), so θ_R is conserved per cell across the step.
+        F[11 * (i - 1) + 11] = (θR_np1 - θR_n) / dt
     end
     return F
 end
@@ -1099,25 +1205,29 @@ end
                          leaves::AbstractVector{<:Integer})
         -> Vector{Float64}
 
-9-dof variant of `pack_state_2d`: packs `(x_1, x_2, u_1, u_2, α_1, α_2,
-β_1, β_2, θ_R)` per leaf into a flat length-`9 N` vector.
+11-dof variant of `pack_state_2d` (M3-6 Phase 0): packs
+`(x_1, x_2, u_1, u_2, α_1, α_2, β_1, β_2, β_12, β_21, θ_R)` per
+leaf into a flat length-`11 N` vector. The off-diag pair `β_12, β_21`
+was added in M3-6 Phase 0; pre-M3-6 IC factories set them to zero.
 """
 function pack_state_2d_berry(fields::PolynomialFieldSet,
                               leaves::AbstractVector{<:Integer})
     N = length(leaves)
     T = typeof(fields.x_1[leaves[1]][1])
-    y = Vector{T}(undef, 9 * N)
+    y = Vector{T}(undef, 11 * N)
     @inbounds for (i, ci) in enumerate(leaves)
-        base = 9 * (i - 1)
-        y[base + 1] = fields.x_1[ci][1]
-        y[base + 2] = fields.x_2[ci][1]
-        y[base + 3] = fields.u_1[ci][1]
-        y[base + 4] = fields.u_2[ci][1]
-        y[base + 5] = fields.α_1[ci][1]
-        y[base + 6] = fields.α_2[ci][1]
-        y[base + 7] = fields.β_1[ci][1]
-        y[base + 8] = fields.β_2[ci][1]
-        y[base + 9] = fields.θ_R[ci][1]
+        base = 11 * (i - 1)
+        y[base + 1]  = fields.x_1[ci][1]
+        y[base + 2]  = fields.x_2[ci][1]
+        y[base + 3]  = fields.u_1[ci][1]
+        y[base + 4]  = fields.u_2[ci][1]
+        y[base + 5]  = fields.α_1[ci][1]
+        y[base + 6]  = fields.α_2[ci][1]
+        y[base + 7]  = fields.β_1[ci][1]
+        y[base + 8]  = fields.β_2[ci][1]
+        y[base + 9]  = fields.β_12[ci][1]   # M3-6 Phase 0
+        y[base + 10] = fields.β_21[ci][1]   # M3-6 Phase 0
+        y[base + 11] = fields.θ_R[ci][1]
     end
     return y
 end
@@ -1127,25 +1237,28 @@ end
                             leaves::AbstractVector{<:Integer},
                             y::AbstractVector)
 
-Inverse of `pack_state_2d_berry`: write the flat 9-dof per-leaf state
-back into the 2D field set. Leaves the `:s, :Pp, :Q` slots untouched.
+Inverse of `pack_state_2d_berry`: write the flat 11-dof per-leaf state
+back into the 2D field set (M3-6 Phase 0; off-diag β included).
+Leaves the `:s, :Pp, :Q` slots untouched.
 """
 function unpack_state_2d_berry!(fields::PolynomialFieldSet,
                                  leaves::AbstractVector{<:Integer},
                                  y::AbstractVector)
     N = length(leaves)
-    @assert length(y) == 9 * N "y length $(length(y)) does not match 9 * N = $(9 * N)"
+    @assert length(y) == 11 * N "y length $(length(y)) does not match 11 * N = $(11 * N)"
     @inbounds for (i, ci) in enumerate(leaves)
-        base = 9 * (i - 1)
-        fields.x_1[ci] = (y[base + 1],)
-        fields.x_2[ci] = (y[base + 2],)
-        fields.u_1[ci] = (y[base + 3],)
-        fields.u_2[ci] = (y[base + 4],)
-        fields.α_1[ci] = (y[base + 5],)
-        fields.α_2[ci] = (y[base + 6],)
-        fields.β_1[ci] = (y[base + 7],)
-        fields.β_2[ci] = (y[base + 8],)
-        fields.θ_R[ci] = (y[base + 9],)
+        base = 11 * (i - 1)
+        fields.x_1[ci]  = (y[base + 1],)
+        fields.x_2[ci]  = (y[base + 2],)
+        fields.u_1[ci]  = (y[base + 3],)
+        fields.u_2[ci]  = (y[base + 4],)
+        fields.α_1[ci]  = (y[base + 5],)
+        fields.α_2[ci]  = (y[base + 6],)
+        fields.β_1[ci]  = (y[base + 7],)
+        fields.β_2[ci]  = (y[base + 8],)
+        fields.β_12[ci] = (y[base + 9],)    # M3-6 Phase 0
+        fields.β_21[ci] = (y[base + 10],)   # M3-6 Phase 0
+        fields.θ_R[ci]  = (y[base + 11],)
     end
     return fields
 end

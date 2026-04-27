@@ -1282,17 +1282,18 @@ function det_step_2d_HG!(fields::PolynomialFieldSet,
 end
 
 # ─────────────────────────────────────────────────────────────────────
-# Phase M3-3c: native HG-side 2D Newton step driver WITH Berry coupling
-# and θ_R as a Newton unknown
+# Phase M3-3c → M3-6 Phase 0: native HG-side 2D Newton step driver
+# WITH Berry coupling, θ_R as a Newton unknown, AND (M3-6 Phase 0)
+# the off-diagonal Cholesky pair `β_12, β_21` re-activated.
 # ─────────────────────────────────────────────────────────────────────
 #
 # Counterpart of M3-3b's `det_step_2d_HG!`. The residual is now
-# `cholesky_el_residual_2D_berry!` (in `src/eom.jl`) with 9 dof per
-# cell `(x_a, u_a, α_a, β_a, θ_R)`. The Newton sparsity grows from
-# `cell_adjacency ⊗ 8×8` to `cell_adjacency ⊗ 9×9` (one row+column
-# more per cell; ~17 nonzeros added per cell). The Berry coupling
-# introduces θ_R-α / θ_R-β off-diagonals that the dense per-cell
-# 9×9 sparsity covers.
+# `cholesky_el_residual_2D_berry!` (in `src/eom.jl`) with 11 dof per
+# cell `(x_a, u_a, α_a, β_a, β_12, β_21, θ_R)` (M3-6 Phase 0; was 9
+# in M3-3c). The Newton sparsity grows from `cell_adjacency ⊗ 9×9`
+# (M3-3c) to `cell_adjacency ⊗ 11×11` (M3-6 Phase 0; ~40 additional
+# nonzeros per cell from the new β_12, β_21 rows / columns and their
+# Berry couplings to F^β_a).
 
 """
     det_step_2d_berry_HG!(fields::PolynomialFieldSet,
@@ -1310,29 +1311,31 @@ end
 
 Advance the 2D Cholesky-sector field set by one timestep `dt` via an
 implicit-midpoint Newton solve of `cholesky_el_residual_2D_berry!`
-(M3-3c: Berry coupling + θ_R as Newton unknown). Mutates the 9 Newton-
-unknown slots `(x_a, u_a, α_a, β_a, θ_R)` of `fields` in-place; the
+(M3-3c Berry coupling + θ_R as Newton unknown; M3-6 Phase 0 off-diag
+β_12, β_21 re-activated). Mutates the 11 Newton-unknown slots
+`(x_a, u_a, α_a, β_a, β_12, β_21, θ_R)` of `fields` in-place; the
 `(s, Pp, Q)` slots are left untouched.
 
-Arguments mirror `det_step_2d_HG!` (M3-3b). The only structural
-differences are:
+Arguments mirror `det_step_2d_HG!` (M3-3b). The structural progression:
 
-  • The Newton system is `9 N × 9 N` rather than `8 N × 8 N`.
-  • The Jacobian sparsity prototype is `cell_adjacency_sparsity` ⊗
-    a dense 9×9 block (vs M3-3b's 8×8).
-  • The residual contains Berry α/β-modification terms and an explicit
-    θ_R kinematic equation row.
+  • M3-3b: Newton system `8 N × 8 N`, no Berry coupling.
+  • M3-3c: Newton system `9 N × 9 N`, Berry α/β-modification + θ_R row.
+  • **M3-6 Phase 0**: Newton system `11 N × 11 N`, off-diag β_12, β_21
+    re-activated with trivial-drive rows. The Jacobian sparsity
+    prototype is `cell_adjacency_sparsity` ⊗ a dense 11×11 block.
 
 Returns `fields` for convenience.
 
 # Constraints
 
   • `mesh.balanced == true` (asserted).
-  • The off-diagonal `β_{12}, β_{21}` are pinned to zero (omitted from
-    the field set per Q3 of the design note).
-  • The kinematic drive of `θ̇_R` is zero in M3-3c; off-diagonal
-    velocity gradients (KH instability, D.1 falsifier) are M3-3d /
-    M3-6 work.
+  • The off-diagonal β IC defaults to zero; the trivial-drive rows
+    `F^β_12 = (β_12_np1 − β_12_n)/dt`, `F^β_21 = (β_21_np1 − β_21_n)/dt`
+    preserve them at zero across each step. M3-6 Phase 1 (D.1 KH)
+    will plumb the off-diagonal strain coupling that breaks the
+    triviality.
+  • The kinematic drive of `θ̇_R` is still zero (free-flight cut);
+    off-diagonal velocity gradients enter at M3-6 Phase 1.
 """
 function det_step_2d_berry_HG!(fields::PolynomialFieldSet,
                                  mesh::HierarchicalMesh{2},
@@ -1373,19 +1376,21 @@ function det_step_2d_berry_HG!(fields::PolynomialFieldSet,
         rows = Int[]
         cols = Int[]
         cs_rows, cs_cols, _ = SparseArrays.findnz(cell_sparsity)
-        # Cap at 9×9 = 81 nonzeros per cell-cell adjacency entry.
-        sizehint!(rows, length(cs_rows) * 81)
-        sizehint!(cols, length(cs_rows) * 81)
+        # M3-6 Phase 0: 11×11 = 121 nonzeros per cell-cell adjacency entry
+        # (was 9×9 = 81 in M3-3c). Two extra rows / columns for the new
+        # β_12, β_21 unknowns.
+        sizehint!(rows, length(cs_rows) * 121)
+        sizehint!(cols, length(cs_rows) * 121)
         @inbounds for k in eachindex(cs_rows)
             i = Int(cs_rows[k])
             j = Int(cs_cols[k])
-            for r in 1:9, c in 1:9
-                push!(rows, 9 * (i - 1) + r)
-                push!(cols, 9 * (j - 1) + c)
+            for r in 1:11, c in 1:11
+                push!(rows, 11 * (i - 1) + r)
+                push!(cols, 11 * (j - 1) + c)
             end
         end
         jac_proto = _SA.sparse(rows, cols, ones(Float64, length(rows)),
-                                9 * N, 9 * N, max)
+                                11 * N, 11 * N, max)
         nf = NonlinearFunction(f_in_place; jac_prototype = jac_proto)
         prob = NonlinearProblem(nf, y0, p)
         sol = solve(

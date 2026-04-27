@@ -303,8 +303,9 @@ end
         N = length(leaves)
         y_A   = pack_state_2d_berry(fields_A, leaves)
         y_B   = pack_state_2d_berry(fields_B, leaves)
-        F_A = zeros(Float64, 9 * N)
-        F_B = zeros(Float64, 9 * N)
+        # M3-6 Phase 0: residual is 11-dof per cell (was 9 in M3-3c).
+        F_A = zeros(Float64, 11 * N)
+        F_B = zeros(Float64, 11 * N)
         dt = 1e-3
         cholesky_el_residual_2D_berry!(F_A, y_A, y_A, aux_A, dt)
         cholesky_el_residual_2D_berry!(F_B, y_B, y_B, aux_B, dt)
@@ -312,8 +313,8 @@ end
         # Both ICs are at-fixed-point in u (homogeneous β=0 + smooth
         # u). With the wrap, the F^β_1 = -1/α₀ contribution is
         # uniform; both A and B should produce the same vector.
-        Fβ1_A = [F_A[9 * (i - 1) + 7] for i in 1:N]
-        Fβ1_B = [F_B[9 * (i - 1) + 7] for i in 1:N]
+        Fβ1_A = [F_A[11 * (i - 1) + 7] for i in 1:N]
+        Fβ1_B = [F_B[11 * (i - 1) + 7] for i in 1:N]
         # Sign flip in u_1 doesn't change β = 0 IC: same strain
         # reduces to same residual.
         @test maximum(abs, Fβ1_A .- Fβ1_B) ≤ 1e-12

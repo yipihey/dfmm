@@ -221,7 +221,9 @@ end
 @testset "M3-4 Phase 2: pack_state_2d_berry round-trip preserves bridge state" begin
     ic = tier_c_cold_sinusoid_full_ic(; level = 3, A = 0.5, k = (1, 0))
     y = pack_state_2d_berry(ic.fields, ic.leaves)
-    @test length(y) == 9 * length(ic.leaves)
+    # M3-6 Phase 0: 11-dof per cell (was 9 in M3-3c); two new fields
+    # `β_12, β_21` joined the residual.
+    @test length(y) == 11 * length(ic.leaves)
 
     # Mutate a copy and unpack — cell content should round-trip.
     fields2 = allocate_cholesky_2d_fields(ic.mesh)
@@ -234,6 +236,7 @@ end
         @test v2.u == v1.u
         @test v2.alphas == v1.alphas
         @test v2.betas == v1.betas
+        @test v2.betas_off == v1.betas_off    # M3-6 Phase 0
         @test v2.θ_R == v1.θ_R
     end
 end

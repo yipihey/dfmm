@@ -29,26 +29,42 @@ using dfmm: DetField2D, n_dof_newton, spatial_dimension,
     # ─────────────────────────────────────────────────────────────
     # Block 1: DetField2D structural contract
     # ─────────────────────────────────────────────────────────────
-    @testset "DetField2D: 10 Newton unknowns + Pp/Q post-Newton" begin
+    @testset "DetField2D: 12 Newton fields + Pp/Q post-Newton (M3-6 Phase 0)" begin
+        # M3-6 Phase 0: Newton-named fields grew from 10 to 12 with
+        # the addition of `betas_off = (β_12, β_21)`. The 8-arg
+        # compatibility constructor defaults `betas_off` to (0, 0).
         v = DetField2D((1.0, 2.0), (0.5, -0.3),
                         (1.2, 0.8), (0.0, 0.1),
                         0.314, 0.95, 1.0, 0.0)
         @test v isa DetField2D{Float64}
         @test spatial_dimension(v) == 2
-        @test n_dof_newton(v) == 10
-        @test n_dof_newton(DetField2D) == 10
+        @test n_dof_newton(v) == 12
+        @test n_dof_newton(DetField2D) == 12
 
         # Newton-unknown entries.
         @test v.x      == (1.0, 2.0)
         @test v.u      == (0.5, -0.3)
         @test v.alphas == (1.2, 0.8)
         @test v.betas  == (0.0, 0.1)
+        # M3-6 Phase 0: backward-compat constructor defaults off-diag β to zero.
+        @test v.betas_off == (0.0, 0.0)
         @test v.θ_R    == 0.314
         @test v.s      == 0.95
 
         # Post-Newton entries.
         @test v.Pp == 1.0
         @test v.Q  == 0.0
+    end
+
+    @testset "DetField2D: 9-arg constructor carries betas_off (M3-6 Phase 0)" begin
+        v = DetField2D((1.0, 2.0), (0.5, -0.3),
+                        (1.2, 0.8), (0.0, 0.1),
+                        (0.07, -0.03),
+                        0.314, 0.95, 1.0, 0.0)
+        @test v isa DetField2D{Float64}
+        @test v.betas_off == (0.07, -0.03)
+        @test v.θ_R    == 0.314
+        @test v.Pp == 1.0
     end
 
     @testset "DetField2D: 6-arg constructor defaults Pp=Q=0" begin
@@ -86,10 +102,12 @@ using dfmm: DetField2D, n_dof_newton, spatial_dimension,
 
     fields = allocate_cholesky_2d_fields(mesh)
 
-    @testset "field set has all 12 named scalar fields" begin
-        # The 10 Newton unknowns plus Pp + Q (post-Newton) = 12.
+    @testset "field set has all 14 named scalar fields (M3-6 Phase 0)" begin
+        # The 12 Newton-named fields plus Pp + Q (post-Newton) = 14.
+        # M3-6 Phase 0 added :β_12, :β_21 to the 10 prior Newton fields.
         for name in (:x_1, :x_2, :u_1, :u_2,
                      :α_1, :α_2, :β_1, :β_2,
+                     :β_12, :β_21,
                      :θ_R, :s, :Pp, :Q)
             view = getproperty(fields, name)
             @test length(view) == n_cells(mesh)

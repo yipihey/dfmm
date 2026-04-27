@@ -341,36 +341,53 @@ Spatial dimension `D` of the deterministic field. Mirrors the HG-side
 # ──────────────────────────────────────────────────────────────────────
 #
 # `DetFieldND{2, T}` above is a documentation / dispatch tag. M3-3a
-# promotes the 2D variant to a *working* struct carrying the full
-# 10-dof Cholesky-sector unknown set used by the M3-3b discrete
-# Euler–Lagrange residual:
+# promotes the 2D variant to a *working* struct carrying the
+# Cholesky-sector unknown set used by the discrete Euler–Lagrange
+# residual.
+#
+# # M3-3a / M3-3c (10 Newton fields by name; 9 in residual)
+#
+# Original M3-3a form:
 #
 #     (x_1, x_2, u_1, u_2, α_1, α_2, β_1, β_2, θ_R, s)
 #                                                    ╰── 10 dof per leaf cell
 #
-# The off-diagonal Cholesky entries `β_{12}`, `β_{21}` are intentionally
-# **omitted** per Q3 of `reference/notes_M3_3_2d_cholesky_berry.md`
-# §10: they are pinned to zero in M3-3 and re-added by M3-6 when the
-# D.1 KH falsifier activates. With `β_{12} = β_{21} = 0` the
-# diagonal-sector Berry kinetic 1-form
+# with `β_{12}, β_{21}` pinned to zero (Q3 of
+# `reference/notes_M3_3_2d_cholesky_berry.md` §10).
 #
-#     Θ_rot^(2D) = (1/3)(α_1³ β_2 − α_2³ β_1) · dθ_R
+# # M3-6 Phase 0: re-activates off-diag `β_{12}, β_{21}` (12 Newton names)
 #
-# is the only off-axis coupling the Newton solver sees, exactly matching
-# `src/berry.jl::berry_partials_2d`.
+# As of M3-6 Phase 0 the field carries the 12 Newton names
+#
+#     (x_1, x_2, u_1, u_2, α_1, α_2, β_1, β_2, β_12, β_21, θ_R, s)
+#
+# of which 11 enter the discrete EL residual (s is still operator-split,
+# advanced post-Newton). The off-diag pair lives in
+# `betas_off = (β_12, β_21)`. The field is carried at zero in IC for all
+# pre-M3-6 setups (cold limit, no off-diag strain) so the dimension-lift
+# gate to M3-3c is byte-equal: at `β_12 = β_21 = 0` the new residual
+# rows trivialise (`F^β_12 = (β_12_np1 − β_12_n)/dt`,
+# `F^β_21 = (β_21_np1 − β_21_n)/dt`) and the 11-dof Newton system
+# factorises to the 9-dof M3-3c sub-system + two trivial rows. M3-6
+# Phase 1 (Tier D.1 KH) wires the off-diagonal strain drives that
+# break this triviality.
+#
+# Math source: `reference/notes_M3_phase0_berry_connection.md` §7
+# (axis-swap-antisymmetric extension of the Berry connection) and
+# `scripts/verify_berry_connection_offdiag.py` (9 SymPy CHECKs).
 #
 # The post-Newton sectors `Pp` (deviatoric / Phase 5) and `Q` (heat
 # flux / Phase 7) are operator-split, NOT Newton unknowns; they ride
 # along on the field-set storage but are advanced by the M1 + M2
 # closed-form BGK steps applied per axis. We carry them on
 # `DetField2D` so the 2D field-set allocation (`src/setups_2d.jl`)
-# matches the 12-named-field layout of the M3-3b residual.
+# matches the 14-named-field layout of the M3-6 Phase 0 residual.
 
 """
     DetField2D{T<:Real}
 
-Per-cell M3-3 deterministic state for the 2D Cholesky-sector
-variational scheme. Carries the 10 Newton unknowns
+Per-cell deterministic state for the 2D Cholesky-sector variational
+scheme. Carries (as of M3-6 Phase 0) the 12 Newton unknown names
 
     `x = (x_1, x_2)` — Lagrangian position (2 components, charge 0).
     `u = (u_1, u_2)` — Lagrangian velocity (2 components, charge 0).
@@ -378,9 +395,17 @@ variational scheme. Carries the 10 Newton unknowns
                               (`α_a > 0`, charge 0).
     `betas  = (β_1, β_2)` — per-axis conjugate momenta (charge 1
                               under the per-axis strain group).
+    `betas_off = (β_12, β_21)` — off-diagonal Cholesky factors
+                              (M3-6 Phase 0; antisymmetric Berry
+                              coupling per §7 of the 2D Berry note).
+                              IC default: zero (cold limit, no off-
+                              diagonal strain). M3-6 Phase 1 will
+                              activate non-zero IC for the D.1 KH
+                              falsifier.
     `θ_R::T` — principal-axis rotation angle (Newton unknown; gates
                the Berry kinetic coupling).
-    `s::T`   — specific entropy (charge 0).
+    `s::T`   — specific entropy (charge 0; operator-split, frozen
+               across the Newton step).
 
 plus two post-Newton sectors that ride along on the storage:
 
@@ -388,35 +413,44 @@ plus two post-Newton sectors that ride along on the storage:
               for now — D.1 KH will lift this to per-axis).
     `Q::T`  — heat flux scalar (Phase 7).
 
-The off-diagonal Cholesky factors `β_{12}, β_{21}` are **omitted**
-(pinned to zero in M3-3); M3-6 will re-add them under the D.1 KH
-falsifier (see `reference/notes_M3_3_2d_cholesky_berry.md` §4.4).
-
 # Storage layout
 
 The per-cell tuple has total scalar count
 
-    2 + 2 + 2 + 2 + 1 + 1 + 1 + 1 = 12 scalars,
+    2 + 2 + 2 + 2 + 2 + 1 + 1 + 1 + 1 = 14 scalars,
 
-of which the **first 10 are Newton unknowns** and the last 2 (`Pp`,
+of which the **first 11** enter the discrete EL residual
+(x_1, x_2, u_1, u_2, α_1, α_2, β_1, β_2, β_12, β_21, θ_R), `s` is
+the 12th Newton-named field (operator-split), and the last 2 (`Pp`,
 `Q`) are post-Newton operator-split state. The HG-substrate
 `PolynomialFieldSet` layout in `src/setups_2d.jl` reflects this with
-12 named scalar fields (each at `MonomialBasis{2, 0}` for now;
-M3-4 / M3-5 will move to higher-order Bernstein per methods paper
-§9.2).
+14 named scalar fields (each at `MonomialBasis{2, 0}` for now).
+
+# M3-3c → M3-6 Phase 0 transition
+
+The field grew from 12 named scalars (with `β_12 = β_21 = 0`
+implicit) to 14 named scalars (`β_12, β_21` explicit). Backwards-
+compatibility constructors default the off-diag pair to zero so all
+pre-M3-6 IC factories keep working byte-equally. The M3-3c residual
+is recovered exactly when `β_12 = β_21 = 0` everywhere and the
+Newton step preserves them at zero (the new F^β_12, F^β_21 rows are
+trivial-drive `(β_*_np1 − β_*_n)/dt` for the M3-6 Phase 0 free-
+flight cut).
 
 # Naming
 
 `DetField2D` (rather than refactoring `DetFieldND` to carry `θ_R`)
 keeps the 1D `DetFieldND{1, T}` doc-tag intact and avoids breaking
 the M3-0/1/2 1D path. The two coexist; M3-7 will promote the 3D
-variant similarly to `DetField3D` carrying three rotation angles.
+variant similarly to `DetField3D` carrying three rotation angles
+plus the three off-diag pairs.
 """
 struct DetField2D{T<:Real}
     x::NTuple{2, T}
     u::NTuple{2, T}
     alphas::NTuple{2, T}
     betas::NTuple{2, T}
+    betas_off::NTuple{2, T}   # (β_12, β_21) — M3-6 Phase 0
     θ_R::T
     s::T
     Pp::T
@@ -424,9 +458,33 @@ struct DetField2D{T<:Real}
 end
 
 """
+    DetField2D(x, u, alphas, betas, betas_off, θ_R, s, Pp, Q)
+
+M3-6 Phase 0 9-arg constructor with element-type promotion. Carries
+the off-diagonal Cholesky pair `betas_off = (β_12, β_21)` explicitly.
+"""
+function DetField2D(x::NTuple{2}, u::NTuple{2},
+                    alphas::NTuple{2}, betas::NTuple{2},
+                    betas_off::NTuple{2},
+                    θ_R, s, Pp, Q)
+    T = promote_type(eltype(x), eltype(u), eltype(alphas), eltype(betas),
+                     eltype(betas_off),
+                     typeof(θ_R), typeof(s), typeof(Pp), typeof(Q))
+    return DetField2D{T}(
+        NTuple{2, T}(x), NTuple{2, T}(u),
+        NTuple{2, T}(alphas), NTuple{2, T}(betas),
+        NTuple{2, T}(betas_off),
+        T(θ_R), T(s), T(Pp), T(Q),
+    )
+end
+
+"""
     DetField2D(x, u, alphas, betas, θ_R, s, Pp, Q)
 
-Convenience constructor with element-type promotion.
+M3-3a/M3-3c compatibility 8-arg constructor with element-type
+promotion. Defaults `betas_off = (0, 0)` (cold-limit IC: no off-
+diagonal Cholesky factor). All M3-3a/b/c/d/e and M3-4/M3-5 callers
+that worked against this signature continue to work byte-equally.
 """
 function DetField2D(x::NTuple{2}, u::NTuple{2},
                     alphas::NTuple{2}, betas::NTuple{2},
@@ -436,6 +494,7 @@ function DetField2D(x::NTuple{2}, u::NTuple{2},
     return DetField2D{T}(
         NTuple{2, T}(x), NTuple{2, T}(u),
         NTuple{2, T}(alphas), NTuple{2, T}(betas),
+        (zero(T), zero(T)),
         T(θ_R), T(s), T(Pp), T(Q),
     )
 end
@@ -443,9 +502,9 @@ end
 """
     DetField2D(x, u, alphas, betas, θ_R, s)
 
-Phase M3-3a compatibility constructor: defaults `Pp = 0`, `Q = 0`
-(Maxwellian post-Newton sectors). M3-3b's pure-Newton tests use this
-form.
+Phase M3-3a compatibility constructor: defaults `betas_off = (0, 0)`
+(M3-6 Phase 0), `Pp = 0`, `Q = 0` (Maxwellian post-Newton sectors).
+M3-3b's pure-Newton tests use this form.
 """
 function DetField2D(x::NTuple{2}, u::NTuple{2},
                     alphas::NTuple{2}, betas::NTuple{2},
@@ -455,6 +514,7 @@ function DetField2D(x::NTuple{2}, u::NTuple{2},
     return DetField2D{T}(
         NTuple{2, T}(x), NTuple{2, T}(u),
         NTuple{2, T}(alphas), NTuple{2, T}(betas),
+        (zero(T), zero(T)),
         T(θ_R), T(s), zero(T), zero(T),
     )
 end
@@ -467,12 +527,17 @@ Spatial dimension of the 2D Cholesky-sector deterministic field.
 @inline spatial_dimension(::DetField2D{T}) where {T} = 2
 
 """
-    n_dof_newton(::DetField2D) -> 10
+    n_dof_newton(::DetField2D) -> 12
 
-Number of per-cell Newton unknowns in the M3-3 2D Cholesky-sector
-EL system: `(x_1, x_2, u_1, u_2, α_1, α_2, β_1, β_2, θ_R, s)`. The
-post-Newton sectors `Pp`, `Q` are NOT counted.
+Number of per-cell Newton-named fields in the M3-6 Phase 0 2D
+Cholesky-sector EL system: `(x_1, x_2, u_1, u_2, α_1, α_2, β_1, β_2,
+β_12, β_21, θ_R, s)`. Of these, **11 enter the discrete residual**
+(s is operator-split, frozen across the Newton step). The post-
+Newton sectors `Pp`, `Q` are NOT counted.
+
+(Was 10 in M3-3a/M3-3c with off-diag β omitted; M3-6 Phase 0 added
+β_12, β_21.)
 """
-@inline n_dof_newton(::DetField2D) = 10
-@inline n_dof_newton(::Type{<:DetField2D}) = 10
+@inline n_dof_newton(::DetField2D) = 12
+@inline n_dof_newton(::Type{<:DetField2D}) = 12
 

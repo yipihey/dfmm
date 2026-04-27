@@ -102,8 +102,9 @@ const M3_3C_BERRY_TOL = 1.0e-9   # finite-difference probe tolerance
         F_base = cholesky_el_residual_2D_berry(y_n, y_n, aux, dt)
 
         y_np1_perturbed = copy(y_n)
+        # M3-6 Phase 0: 11-dof packing, θ_R is at index 11 (was 9 in M3-3c).
         for (i_leaf, _) in enumerate(leaves)
-            y_np1_perturbed[9 * (i_leaf - 1) + 9] += Δθ_R
+            y_np1_perturbed[11 * (i_leaf - 1) + 11] += Δθ_R
         end
         F_perturb = cholesky_el_residual_2D_berry(y_np1_perturbed, y_n, aux, dt)
 
@@ -131,13 +132,15 @@ const M3_3C_BERRY_TOL = 1.0e-9   # finite-difference probe tolerance
         expected_dθR = 1 / dt   # F^θ_R = (θR_np1 − θR_n)/dt → ∂/∂θR_np1 = 1/dt
 
         for (i_leaf, _) in enumerate(leaves)
-            base = 9 * (i_leaf - 1)
-            # row 5 = F^α_1, 6 = F^α_2, 7 = F^β_1, 8 = F^β_2, 9 = F^θ_R.
-            num_dα1 = (F_perturb[base + 5] - F_base[base + 5]) / Δθ_R
-            num_dα2 = (F_perturb[base + 6] - F_base[base + 6]) / Δθ_R
-            num_dβ1 = (F_perturb[base + 7] - F_base[base + 7]) / Δθ_R
-            num_dβ2 = (F_perturb[base + 8] - F_base[base + 8]) / Δθ_R
-            num_dθR = (F_perturb[base + 9] - F_base[base + 9]) / Δθ_R
+            # M3-6 Phase 0: 11-dof packing.
+            #   row 5 = F^α_1, 6 = F^α_2, 7 = F^β_1, 8 = F^β_2,
+            #   row 9 = F^β_12, 10 = F^β_21, 11 = F^θ_R.
+            base = 11 * (i_leaf - 1)
+            num_dα1 = (F_perturb[base + 5]  - F_base[base + 5])  / Δθ_R
+            num_dα2 = (F_perturb[base + 6]  - F_base[base + 6])  / Δθ_R
+            num_dβ1 = (F_perturb[base + 7]  - F_base[base + 7])  / Δθ_R
+            num_dβ2 = (F_perturb[base + 8]  - F_base[base + 8])  / Δθ_R
+            num_dθR = (F_perturb[base + 11] - F_base[base + 11]) / Δθ_R
 
             max_dα1_err = max(max_dα1_err, abs(num_dα1 - expected_dα1))
             max_dα2_err = max(max_dα2_err, abs(num_dα2 - expected_dα2))

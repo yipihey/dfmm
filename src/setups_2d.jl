@@ -653,14 +653,21 @@ that HG's `halo_view`-based neighbor access (`hv[i, off]`) maps
 will iterate via `enumerate_leaves(mesh)` and use those mesh-cell
 indices directly into the field set.
 
-# Off-diagonal β fields are omitted
+# Off-diagonal β fields (M3-6 Phase 0)
 
-Per Q3 of `reference/notes_M3_3_2d_cholesky_berry.md` §10, the
-off-diagonal Cholesky factors `β_{12}, β_{21}` are NOT allocated.
-M3-6 (D.1 KH falsifier) will re-add them via a parallel
-`allocate_cholesky_2d_offdiag_fields` constructor that augments the
-12-field layout with `:β_12, :β_21` (and re-routes through
-`src/berry.jl::kinetic_offdiag_2d`).
+The off-diagonal Cholesky factors `β_{12}, β_{21}` were omitted in
+M3-3a (Q3 of `reference/notes_M3_3_2d_cholesky_berry.md` §10) and
+**re-added in M3-6 Phase 0** as the prerequisite for the D.1 KH
+falsifier (Phase 1). The allocator now produces 14 named scalar
+fields: the 10 prior Newton fields, the new `:β_12, :β_21` pair,
+plus the 2 post-Newton sectors `Pp, Q`. Off-diagonal β IC defaults
+to zero in every IC factory so all pre-M3-6 regression configurations
+remain byte-equal (the new residual rows trivialise at β_12=β_21=0).
+
+The math source for the off-diag pair is §7 of
+`reference/notes_M3_phase0_berry_connection.md` (axis-swap-
+antisymmetric Berry extension) and `scripts/verify_berry_connection_offdiag.py`
+(9 SymPy CHECKs reproduced numerically by `test_M3_6_phase0_offdiag_residual.jl`).
 """
 function allocate_cholesky_2d_fields(mesh::HierarchicalMesh{2};
                                       T::Type = Float64)
@@ -671,6 +678,7 @@ function allocate_cholesky_2d_fields(mesh::HierarchicalMesh{2};
                                        u_1 = T, u_2 = T,
                                        α_1 = T, α_2 = T,
                                        β_1 = T, β_2 = T,
+                                       β_12 = T, β_21 = T,   # M3-6 Phase 0
                                        θ_R = T,
                                        s   = T,
                                        Pp  = T,
@@ -681,9 +689,10 @@ end
     write_detfield_2d!(fields::PolynomialFieldSet, leaf_cell_idx::Integer,
                         v::DetField2D)
 
-Write a `DetField2D` value into the 12-named-field 2D field set at
+Write a `DetField2D` value into the 14-named-field 2D field set at
 mesh-cell index `leaf_cell_idx`. The field set must be allocated by
-`allocate_cholesky_2d_fields`. Writes 12 scalars total.
+`allocate_cholesky_2d_fields`. Writes 14 scalars total (M3-6 Phase 0:
+the off-diag pair `β_12, β_21` is included).
 """
 function write_detfield_2d!(fields::PolynomialFieldSet, leaf_cell_idx::Integer,
                              v::DetField2D)
@@ -695,6 +704,8 @@ function write_detfield_2d!(fields::PolynomialFieldSet, leaf_cell_idx::Integer,
     fields.α_2[leaf_cell_idx] = (v.alphas[2],)
     fields.β_1[leaf_cell_idx] = (v.betas[1],)
     fields.β_2[leaf_cell_idx] = (v.betas[2],)
+    fields.β_12[leaf_cell_idx] = (v.betas_off[1],)   # M3-6 Phase 0
+    fields.β_21[leaf_cell_idx] = (v.betas_off[2],)   # M3-6 Phase 0
     fields.θ_R[leaf_cell_idx] = (v.θ_R,)
     fields.s[leaf_cell_idx]   = (v.s,)
     fields.Pp[leaf_cell_idx]  = (v.Pp,)
@@ -706,20 +717,21 @@ end
     read_detfield_2d(fields::PolynomialFieldSet, leaf_cell_idx::Integer)
         -> DetField2D
 
-Read a `DetField2D` value from the 12-named-field 2D field set at
+Read a `DetField2D` value from the 14-named-field 2D field set at
 mesh-cell index `leaf_cell_idx`. Inverse of `write_detfield_2d!`;
-round-trip is bit-exact.
+round-trip is bit-exact (M3-6 Phase 0: includes the off-diag pair).
 """
 function read_detfield_2d(fields::PolynomialFieldSet, leaf_cell_idx::Integer)
     x  = (fields.x_1[leaf_cell_idx][1], fields.x_2[leaf_cell_idx][1])
     u  = (fields.u_1[leaf_cell_idx][1], fields.u_2[leaf_cell_idx][1])
     α  = (fields.α_1[leaf_cell_idx][1], fields.α_2[leaf_cell_idx][1])
     β  = (fields.β_1[leaf_cell_idx][1], fields.β_2[leaf_cell_idx][1])
+    βoff = (fields.β_12[leaf_cell_idx][1], fields.β_21[leaf_cell_idx][1])  # M3-6 Phase 0
     θR = fields.θ_R[leaf_cell_idx][1]
     s  = fields.s[leaf_cell_idx][1]
     Pp = fields.Pp[leaf_cell_idx][1]
     Q  = fields.Q[leaf_cell_idx][1]
-    return DetField2D(x, u, α, β, θR, s, Pp, Q)
+    return DetField2D(x, u, α, β, βoff, θR, s, Pp, Q)
 end
 
 # ─────────────────────────────────────────────────────────────────────
@@ -799,11 +811,15 @@ function cholesky_sector_state_from_primitive(ρ::Real, u_x::Real, u_y::Real,
                                                 Gamma::Real = GAMMA_LAW_DEFAULT,
                                                 cv::Real = CV_DEFAULT)
     s = s_from_pressure_density(ρ, P; Gamma = Gamma, cv = cv)
+    # M3-6 Phase 0: explicit `betas_off = (0, 0)` (off-diag β default
+    # at IC for all pre-M3-6 setups; M3-6 Phase 1 / D.1 KH will activate
+    # non-zero IC for the falsifier driver).
     return DetField2D{Float64}(
         (Float64(x_center[1]), Float64(x_center[2])),
         (Float64(u_x), Float64(u_y)),
         (1.0, 1.0),
         (0.0, 0.0),
+        (0.0, 0.0),     # betas_off — M3-6 Phase 0
         0.0,
         Float64(s),
         0.0, 0.0,
