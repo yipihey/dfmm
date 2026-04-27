@@ -229,6 +229,29 @@ using Test
         # and `src/berry.jl` for the implementation.
         include("test_M3_prep_berry_stencil.jl")
     end
+    @testset verbose = true "Phase M3-prep: 3D Berry verification (M3-7 pre-flight)" begin
+        # Pre-flight gate for Milestone M3-7 (3D extension): the 3D
+        # SO(3) Berry-connection stencils in `src/berry.jl`
+        # (`berry_F_3d`, `berry_term_3d`, `berry_partials_3d`,
+        # `BerryStencil3D`) are pinned numerically against the SymPy
+        # authority `scripts/verify_berry_connection_3D.py` at random
+        # sample points to round-off precision (most asserts at 0.0
+        # absolute since only polynomial arithmetic is involved).
+        # Reproduces all 8 SymPy CHECKs:
+        #   CHECK 1: closedness dΩ = 0 (84 cyclic triples in 9D);
+        #   CHECK 2: per-axis Hamilton eqs on slice θ̇_ab = 0;
+        #   CHECK 3a: full iso pullback (Berry blocks vanish);
+        #   CHECK 3b: 5×5 sub-block matches 2D Ω;
+        #   CHECK 4: rank-8 + closed-form 1D kernel direction;
+        #   CHECK 5: F_ab antisymmetry under axis swap;
+        #   CHECK 6: degeneracy boundary α_a = α_b;
+        #   CHECK 7: Ω = dΘ exactness (no monopole/Chern class);
+        #   CHECK 8: cyclic-Bianchi-like polynomial relation.
+        # Plus a stencil-internal-consistency smoke test for M3-7's
+        # eventual 3D EL residual integration. See
+        # `reference/notes_M3_prep_3D_berry_verification.md`.
+        include("test_M3_prep_3D_berry_verification.jl")
+    end
     @testset verbose = true "Phase M3-3a: HaloView smoke + 2D field set + Cholesky DD" begin
         # M3-3a sub-phase of M3-3 (2D Cholesky + Berry connection).
         # Three tests:
