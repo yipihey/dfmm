@@ -661,4 +661,21 @@ using Test
         # See `reference/notes_M3_6_phase5_D10_ism_tracers.md`.
         include("test_M3_6_phase5_D10_ism_tracers.jl")
     end
+    @testset verbose = true "Phase M3-7a: 3D HaloView smoke" begin
+        # M3-7a (3D extension, sub-phase a) part (a):
+        #   • 3D HaloView smoke test on a 4×4×4 balanced
+        #     `HierarchicalMesh{3}` (`test_M3_7a_halo_smoke.jl`).
+        #     Verifies the depth=1 contract for D=3 (interior 6-face
+        #     access; corner-leaf out-of-domain returns nothing; BC-
+        #     aware wrap via `face_neighbors_with_bcs`; allocation-free
+        #     fast path); characterises depth=2 (smoke-only — Q1/Q4
+        #     of the M3-7 design note's §11 open questions; depth=2
+        #     accepts 2-hop offsets, throws on 3-hop).
+        # M3-7a part (b) will add the 3D field-set allocator + read/
+        # write helpers; M3-7b will land the 3D EL residual; M3-7c the
+        # SO(3) Berry coupling; M3-7d per-axis γ AMR; M3-7e Tier-C/D
+        # 3D drivers.
+        # See `reference/notes_M3_7_3d_extension.md` §3 + §11 Q1/Q4.
+        include("test_M3_7a_halo_smoke.jl")
+    end
 end
