@@ -458,7 +458,12 @@ Write the mesh-sweep result to HDF5. The file layout is:
   /level_<L>/wall_time_per_step    Float64
 """
 function save_D1_KH_to_h5(sweep, save_path::AbstractString)
-    HDF5 = Base.require(Main, :HDF5)
+    HDF5 = if isdefined(Main, :HDF5)
+        getfield(Main, :HDF5)
+    else
+        Base.require(Main, :HDF5)
+        getfield(Main, :HDF5)
+    end
     mkpath(dirname(save_path))
     HDF5.h5open(save_path, "w") do f
         f["levels"] = collect(sweep.levels)
@@ -504,8 +509,15 @@ Falls back to CSV if CairoMakie load fails.
 """
 function plot_D1_KH_growth_rate(sweep; save_path::AbstractString)
     try
-        Base.require(Main, :CairoMakie)
-        CM = getfield(Main, :CairoMakie)
+        # Prefer the already-loaded CairoMakie if available; else try
+        # `Base.require` to load it. The double-handshake mirrors the
+        # M3-3d driver's pattern: callers `using CairoMakie` first.
+        CM = if isdefined(Main, :CairoMakie)
+            getfield(Main, :CairoMakie)
+        else
+            Base.require(Main, :CairoMakie)
+            getfield(Main, :CairoMakie)
+        end
         fig = CM.Figure(size = (1100, 850))
         γ_DR = sweep.γ_DR
 
