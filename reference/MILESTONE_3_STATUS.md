@@ -1,17 +1,17 @@
-# Milestone 3 — Status synthesis (CLOSED)
+# Milestone 3 — Status synthesis
 
-**Date:** 2026-04-27.
+**Date:** 2026-04-26 (M3-5 close).
 
-**Repo state:** main HEAD at `de8986d` (M3-3e-4); M3-3e-5 branch
-`m3-3e-5-drop-cache-mesh` lands the cache_mesh field drop, **closing
-M3-3.** **13375 + 1 deferred tests pass byte-equal across all 13
-phase blocks.** The 2D scientific phase (M3-3a/b/c/d) is complete;
-the 1D `cache_mesh::Mesh1D` shim has been retired in full (M3-3e-1
-through M3-3e-5).
+**Repo state:** main at `077d6e4` (M3-3 close); M3-4 in flight on
+the scientific-validation track (separate worktree); **M3-5 closed
+on branch `m3-5-bayesian-remap`** (this milestone-status update).
+**13461 + 1 deferred tests** pass byte-equal across the now-14 phase
+blocks (was 13375 + 1 at M3-3 close).
 
 **Per methods paper §10.7:** "Milestone 3: 2D principal-axis-decomposed
 Cholesky integrator with Berry-connection coupling, on the
-HierarchicalGrids substrate." All numbers hold.
+HierarchicalGrids substrate." Numbers hold; M3-5 adds the Bayesian
+L↔E remap substrate per §6 / §6.6.
 
 ## Phase-by-phase completion table
 
@@ -31,6 +31,7 @@ HierarchicalGrids substrate." All numbers hold.
 | **M3-3e-3** | Native AMR refine/coarsen + standalone `TracerMeshHG` storage | done | 5784 | Bit-exact 0.0 across 31 AMR events with 3 tracers |
 | **M3-3e-4** | Native `realizability_project_HG!` | done | 708 | Bit-exact 0.0 + ProjectionStats parity |
 | **M3-3e-5** | Drop `cache_mesh::Mesh1D` field; close M3-3 | done | 0 (no new) | Field dropped; 13375+1 byte-equal regression |
+| **M3-5** | Bayesian L↔E remap (`compute_overlap` + `polynomial_remap_l_to_e!`/`_e_to_l!` wired via `BayesianRemapState`); IntExact audit; Liouville monotone-necessary diagnostic | done | +86 | 9/9 IntExact battery passes; mass conserved 0..6.7e-16 over 5 cycles; partition-of-unity to 1e-12 |
 
 ## Test summary
 
@@ -46,7 +47,8 @@ HierarchicalGrids substrate." All numbers hold.
 | M3-2b (HG swaps 1/5/6/8) | ~120 |
 | M3-3a/b/c/d (2D native) | ~330 |
 | M3-3e-1/2/3/4 (native-vs-cache cross-check tests) | 8624 |
-| **Total** | **13375 + 1 deferred** |
+| M3-5 (Bayesian L↔E remap + Liouville + IntExact audit) | 86 |
+| **Total** | **13461 + 1 deferred** |
 
 ## M3-3 headline scientific findings
 
@@ -176,13 +178,17 @@ status notes (each with its own bit-exact gate breakdown).
    methods paper §10 / §10.7. **Status (2026-04-26):** prerequisite
    periodic-x coordinate wrap landed (the M3-3c handoff item — closes
    architectural Q#6). +46 asserts (13375 + 1 → 13421 + 1, byte-equal
-   regression). C.1 / C.2 / C.3 solver-coupled drivers + acceptance
-   gates remain to land in follow-up commits. See
+   regression). M3-4 Phase 2 (IC bridge + C.1/C.2/C.3 drivers) in
+   flight in a sibling worktree. See
    `reference/notes_M3_4_tier_c_consistency.md`.
-2. **M3-5** — higher-order Bernstein per-cell reconstruction on the
-   2D field set; per the methods paper §9.2.
+2. **M3-5** — Bayesian L↔E remap via `BayesianRemapState` +
+   `bayesian_remap_l_to_e!` / `bayesian_remap_e_to_l!` /
+   `remap_round_trip!`; IntExact audit gate; Liouville
+   monotone-necessary diagnostic. **CLOSED 2026-04-26.** See
+   `reference/notes_M3_5_bayesian_remap.md`.
 3. **M3-6 / D.1 KH falsifier** — activate off-diagonal β_{12}, β_{21}
-   sector and run KH instability benchmarks.
+   sector and run KH instability benchmarks; M3-5's
+   `det_run_with_remap_HG!` stub provides the integration site.
 4. **M3-7** — 3D extension (the Berry stencils were verified in
    M3-prep as the M3-7 pre-flight gate).
 
