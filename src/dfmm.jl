@@ -211,6 +211,25 @@ export refine_segment!, coarsen_segment_pair!,
        action_error_indicator, gradient_indicator,
        amr_step!, refresh_p_half!
 
+# --- Phase M3-3a API: per-axis Cholesky decomposition driver ---------------
+# Per-axis (principal-axis) Cholesky decomposition for the dimension-lifted
+# 2D Cholesky-sector EL residual (consumed by M3-3b). Provides
+# `cholesky_decompose_2d`, `cholesky_recompose_2d`, and the per-axis γ
+# diagnostic `gamma_per_axis_2d`. See `src/cholesky_DD.jl` and
+# `reference/notes_M3_3_2d_cholesky_berry.md` §4.1 / §4.3.
+include("cholesky_DD.jl")
+export cholesky_decompose_2d, cholesky_recompose_2d, gamma_per_axis_2d
+
+# --- Phase M3-3a API: 2D Cholesky-sector field types -----------------------
+# `DetField2D{T}` is the working struct for the M3-3 2D 10-dof Newton
+# unknown set `(x_a, u_a, α_a, β_a, θ_R, s)`; the 12-named-field
+# PolynomialFieldSet allocator `allocate_cholesky_2d_fields` plus the
+# read/write helpers `read_detfield_2d` / `write_detfield_2d!` ride on
+# top. See `src/types.jl` (DetField2D) and `src/setups_2d.jl`
+# (allocator + accessors).
+export DetField2D, n_dof_newton
+export allocate_cholesky_2d_fields, read_detfield_2d, write_detfield_2d!
+
 # --- Phase M3-prep API: Berry-connection 2D/3D stencils -------------------
 # Pure-functional building blocks for the M3-3 (2D Cholesky + Berry
 # connection) phase. Implements the verified symbolic forms

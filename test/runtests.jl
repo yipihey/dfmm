@@ -241,6 +241,8 @@ using Test
         # split) and `reference/notes_M3_3a_field_set_cholesky.md`
         # (this sub-phase's status note).
         include("test_M3_3a_halo_smoke.jl")
+        include("test_M3_3a_cholesky_DD.jl")
+        include("test_M3_3a_field_set_2d.jl")
     end
     @testset verbose = true "Phase M3-2: Phase 7/8/11 + M2 on HG" begin
         # Phase 7 (heat-flux Q + steady shock + inflow/outflow), Phase 8

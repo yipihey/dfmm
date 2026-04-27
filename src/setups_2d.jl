@@ -615,3 +615,109 @@ function tier_c_cell_centers(ic::NamedTuple)
     end
     return centers
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-3a: 2D Cholesky-sector field-set allocation
+# ─────────────────────────────────────────────────────────────────────
+
+"""
+    allocate_cholesky_2d_fields(mesh::HierarchicalMesh{2}; T::Type = Float64)
+        -> PolynomialFieldSet
+
+Allocate the per-cell `PolynomialFieldSet` for the M3-3 2D
+Cholesky-sector EL system. The field set has 12 named scalar fields
+laid out as
+
+    Newton unknowns (10):
+        :x_1, :x_2     — Lagrangian position components (charge 0)
+        :u_1, :u_2     — Lagrangian velocity components (charge 0)
+        :α_1, :α_2     — principal-axis Cholesky factors (charge 0)
+        :β_1, :β_2     — per-axis conjugate momenta (charge 1)
+        :θ_R           — principal-axis rotation angle (Berry coupling)
+        :s             — specific entropy (charge 0)
+
+    Post-Newton sectors (2):
+        :Pp            — deviatoric pressure (Phase 5; per-cell scalar
+                          for now, M3-6 will lift this to per-axis
+                          under D.1 KH activation)
+        :Q             — heat-flux scalar (Phase 7)
+
+each at `MonomialBasis{2, 0}` (one coefficient per cell — the
+order-0 cell-average storage that mirrors M3-2's 1D substrate).
+
+# Sizing
+
+The field set is sized to `n_cells(mesh)`, NOT `n_leaves(mesh)`, so
+that HG's `halo_view`-based neighbor access (`hv[i, off]`) maps
+1-to-1 against `mesh.cells[i]`. The leaf-only public API of M3-3b
+will iterate via `enumerate_leaves(mesh)` and use those mesh-cell
+indices directly into the field set.
+
+# Off-diagonal β fields are omitted
+
+Per Q3 of `reference/notes_M3_3_2d_cholesky_berry.md` §10, the
+off-diagonal Cholesky factors `β_{12}, β_{21}` are NOT allocated.
+M3-6 (D.1 KH falsifier) will re-add them via a parallel
+`allocate_cholesky_2d_offdiag_fields` constructor that augments the
+12-field layout with `:β_12, :β_21` (and re-routes through
+`src/berry.jl::kinetic_offdiag_2d`).
+"""
+function allocate_cholesky_2d_fields(mesh::HierarchicalMesh{2};
+                                      T::Type = Float64)
+    basis = MonomialBasis{2, 0}()
+    nc = HierarchicalGrids.n_cells(mesh)
+    return allocate_polynomial_fields(SoA(), basis, Int(nc);
+                                       x_1 = T, x_2 = T,
+                                       u_1 = T, u_2 = T,
+                                       α_1 = T, α_2 = T,
+                                       β_1 = T, β_2 = T,
+                                       θ_R = T,
+                                       s   = T,
+                                       Pp  = T,
+                                       Q   = T)
+end
+
+"""
+    write_detfield_2d!(fields::PolynomialFieldSet, leaf_cell_idx::Integer,
+                        v::DetField2D)
+
+Write a `DetField2D` value into the 12-named-field 2D field set at
+mesh-cell index `leaf_cell_idx`. The field set must be allocated by
+`allocate_cholesky_2d_fields`. Writes 12 scalars total.
+"""
+function write_detfield_2d!(fields::PolynomialFieldSet, leaf_cell_idx::Integer,
+                             v::DetField2D)
+    fields.x_1[leaf_cell_idx] = (v.x[1],)
+    fields.x_2[leaf_cell_idx] = (v.x[2],)
+    fields.u_1[leaf_cell_idx] = (v.u[1],)
+    fields.u_2[leaf_cell_idx] = (v.u[2],)
+    fields.α_1[leaf_cell_idx] = (v.alphas[1],)
+    fields.α_2[leaf_cell_idx] = (v.alphas[2],)
+    fields.β_1[leaf_cell_idx] = (v.betas[1],)
+    fields.β_2[leaf_cell_idx] = (v.betas[2],)
+    fields.θ_R[leaf_cell_idx] = (v.θ_R,)
+    fields.s[leaf_cell_idx]   = (v.s,)
+    fields.Pp[leaf_cell_idx]  = (v.Pp,)
+    fields.Q[leaf_cell_idx]   = (v.Q,)
+    return nothing
+end
+
+"""
+    read_detfield_2d(fields::PolynomialFieldSet, leaf_cell_idx::Integer)
+        -> DetField2D
+
+Read a `DetField2D` value from the 12-named-field 2D field set at
+mesh-cell index `leaf_cell_idx`. Inverse of `write_detfield_2d!`;
+round-trip is bit-exact.
+"""
+function read_detfield_2d(fields::PolynomialFieldSet, leaf_cell_idx::Integer)
+    x  = (fields.x_1[leaf_cell_idx][1], fields.x_2[leaf_cell_idx][1])
+    u  = (fields.u_1[leaf_cell_idx][1], fields.u_2[leaf_cell_idx][1])
+    α  = (fields.α_1[leaf_cell_idx][1], fields.α_2[leaf_cell_idx][1])
+    β  = (fields.β_1[leaf_cell_idx][1], fields.β_2[leaf_cell_idx][1])
+    θR = fields.θ_R[leaf_cell_idx][1]
+    s  = fields.s[leaf_cell_idx][1]
+    Pp = fields.Pp[leaf_cell_idx][1]
+    Q  = fields.Q[leaf_cell_idx][1]
+    return DetField2D(x, u, α, β, θR, s, Pp, Q)
+end
