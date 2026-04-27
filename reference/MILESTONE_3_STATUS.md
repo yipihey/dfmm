@@ -1,10 +1,13 @@
-# Milestone 3 — Status synthesis (CLOSED — through M3-6 Phase 2)
+# Milestone 3 — Status synthesis (CLOSED — through M3-6 Phase 3)
 
 **Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26;
 M3-6 Phase 1a/1b/1c closed 2026-04-26 (the D.1 KH falsifier — methods
 paper §10.5 D.1 — the headline scientific test of M3-6 Phase 1).
 M3-6 Phase 2 closed 2026-04-26 (the D.4 Zel'dovich pancake — methods
 paper §10.5 D.4 — central novel cosmological reference test).
+M3-6 Phase 3 closed 2026-04-26 (2D substrate: tracers + stochastic
+injection + per-species γ — Phase 4 / 5 prerequisites, no new
+falsifier driver).
 
 **Repo state:** M3-3 closed at `077d6e4` (M3-3e-5 drop cache_mesh).
 M3-4 lands in two phases: Phase 1 at `f364b4a` (periodic-x coordinate
@@ -55,6 +58,7 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-6 Phase 1b** | `tier_d_kh_ic_full` factory (sheared base flow + antisymmetric tilt-mode perturbation) + 4-component realizability cone `Q = β_1² + β_2² + 2(β_12² + β_21²) ≤ M_vv · headroom_offdiag` | done | +574 | KH IC ready for D.1 falsifier; β_off = 0 ⇒ byte-equal to M3-3d 2-comp projection |
 | **M3-6 Phase 1c** | D.1 KH falsifier driver `experiments/D1_KH_growth_rate.jl` + acceptance gates; Drazin-Reid γ_DR = U/(2w) calibration; mesh refinement convergence; 4-component cone diagnostics | done | +1565 | γ_measured/γ_DR = 1.34 (level 5); c_off² = 1.78; mesh-converged at 1.2% (L4→L5); n_neg_jac = 0; **falsifier PASSED** |
 | **M3-6 Phase 2** | D.4 Zel'dovich pancake collapse: `tier_d_zeldovich_pancake_ic` factory + driver + per-axis γ tracking; methods paper §10.5 D.4 central novel cosmological reference test | done | +2718 | std(γ_1)/std(γ_2) ≈ 2.6e14 at near-caustic (L4 T=0.16); γ_1 dyn-range 4.18×; γ_2 uniform to round-off; Phase 1a inertness max|β_off|=0; **per-axis γ selectivity PASSED** |
+| **M3-6 Phase 3** | 2D substrate (D.7 / D.10 prerequisites): `TracerMeshHG2D` per-species + refine listener; `inject_vg_noise_HG_2d!` per-axis selectivity (`axes::Tuple` arg); `gamma_per_axis_2d_per_species_field` + math primitive | done | +329 | 2D Phase 11 + M2-2 invariants byte-equal; per-axis selectivity verified (axis-1 inject leaves axis-2 byte-equal); 4-comp cone n_neg_jac=0; multi-species independence verified |
 
 ## Test summary
 
@@ -81,7 +85,8 @@ L↔E remap substrate per §6 / §6.6.
 | M3-6 Phase 1b (KH IC factory + 4-comp realizability) | 574 |
 | M3-6 Phase 1c (D.1 KH falsifier driver + acceptance gates) | 1565 |
 | M3-6 Phase 2 (D.4 Zel'dovich pancake driver + acceptance gates) | 2718 |
-| **Total** | **~24669 + 1 deferred** |
+| M3-6 Phase 3 (2D substrate: tracers + stochastic + per-species γ) | 329 |
+| **Total** | **~24998 + 1 deferred** |
 
 ## M3-3 headline scientific findings
 
@@ -245,12 +250,22 @@ status notes (each with its own bit-exact gate breakdown).
    Phase 1a strain coupling inertness verified (`max |β_off| = 0`
    throughout — clean axis-aligned-IC cross-check). +2718 asserts. See
    `reference/notes_M3_6_phase2_D4_zeldovich.md`.
-6. **M3-6 Phase 3 / D.7 dust-trapping in vortices** — next Tier-D test.
+6. **M3-6 Phase 3 / 2D substrate — CLOSED 2026-04-26**:
+   substrate-only (no falsifier driver). Adds `TracerMeshHG2D` with
+   per-species per-cell storage on `HierarchicalMesh{2}` plus the
+   refinement listener `register_tracers_on_refine_2d!`; adds
+   per-axis stochastic injection `inject_vg_noise_HG_2d!` with
+   explicit `axes::Tuple` selectivity preserving the M3-6 Phase 2
+   D.4 inertness contract; adds `gamma_per_axis_2d_per_species_field`
+   for per-species per-axis γ diagnostics. +329 asserts. See
+   `reference/notes_M3_6_phase3_2d_substrate.md`.
+7. **M3-6 Phase 4 / D.7 dust-trapping in vortices** — next Tier-D test.
    KH instability with passive dust species; vortex-center accumulation
    diagnostics. Builds on Phase 1b `tier_d_kh_ic_full` + Phase 2's
-   per-axis cone projection. Requires extending `TracerMeshHG` (1D-only
-   today) to 2D and adding per-species per-axis γ diagnostics.
-7. **M3-7** — 3D extension (the Berry stencils were verified in
+   per-axis cone projection + Phase 3's `TracerMeshHG2D` substrate.
+8. **M3-6 Phase 5 / D.10 ISM tracers** — multi-phase ISM mixing
+   signature. Builds on Phase 3's per-species substrate.
+9. **M3-7** — 3D extension (the Berry stencils were verified in
    M3-prep as the M3-7 pre-flight gate).
 
 ## M3-4 close (2026-04-26)
@@ -404,6 +419,62 @@ the pancake-collapse direction. See
 + §"Honest scientific finding".
 
 **M3-6 Phase 2 close: +2718 asserts (21951 + 1 → 24669 + 1).**
+
+## M3-6 Phase 3 close (2026-04-26)
+
+**Phase 3** (`m3-6-phase-3-2d-tracer-stoch`): adds the 2D substrate
+required by both M3-6 Phase 4 (D.7 dust traps) and M3-6 Phase 5
+(D.10 ISM tracers). Three deliverables, each well-scoped:
+
+  • **2D `TracerMeshHG2D`**: per-species per-cell passive scalars
+    on `HierarchicalMesh{2}` + 14-named-field 2D Cholesky-sector
+    field set. Sized to `n_cells(mesh)` (NOT `n_leaves`) to track
+    HG's storage contract. Pure-Lagrangian byte-exact preservation
+    (Phase 11 + M2-2 invariants on the 2D path) verified through
+    100 `advect_tracers_HG_2d!` calls + 5 `det_step_2d_berry_HG!`
+    steps. New refinement listener `register_tracers_on_refine_2d!`
+    mirrors `register_field_set_on_refine!`'s shape: parent →
+    `2^D = 4` children piecewise-constant prolongation (mass-
+    conservative under equal-volume refinement) + children →
+    parent volume-weighted mean on coarsen.
+  • **2D `inject_vg_noise_HG_2d!`**: per-axis variance-gamma
+    stochastic injection with explicit `axes::Tuple` selectivity.
+    `axes = (1,)` perturbs only axis-1 fields `(β_1, u_1, s, Pp)`
+    while axis-2 fields `(β_2, u_2, x_2)` and the off-diag pair
+    `(β_12, β_21)` stay byte-equal. Verified by snapshot-pre/post
+    asserts on the Zel'dovich-pancake-aligned IC. 4-component cone
+    `Q ≤ M_vv · headroom_offdiag` enforced post-injection via
+    `realizability_project_2d!` (M3-6 Phase 1b inheritance);
+    `n_negative_jacobian == 0` at every leaf.
+  • **2D `gamma_per_axis_2d_per_species_field`**: per-species
+    wrapper over `gamma_per_axis_2d_field`. Returns a
+    `(N_species, 2, N_leaves)` Float64 3-tensor. Plus a math-
+    primitive sibling `gamma_per_axis_2d_per_species(β,
+    M_vv_diag_per_species)` in `cholesky_DD.jl`. Single-species
+    paths reduce byte-equally to the existing 1-species
+    diagnostic; multi-species independence verified (dust species
+    `M_vv = 0` ⇒ γ = 0 everywhere; gas species use EOS Mvv(J, s)).
+
+  • Wall-time impact at 16×16 mesh: `inject_vg_noise_HG_2d!` ~415
+    ms/call (dominated by `build_face_neighbor_tables` per-call
+    overhead, the same envelope as `det_step_2d_berry_HG!`);
+    `advect_tracers_HG_2d!` < 1 ns (no-op);
+    `gamma_per_axis_2d_per_species_field` ~0.002 ms (n_species=3).
+
+  • Honest finding: the 2D injection's Pp-floor handling diverges
+    from the 1D `inject_vg_noise_HG_native!` recipe in one place:
+    the floor is applied ONLY when `ΔKE_vol != 0` (an injection
+    actually fired). The 2D IC bridge sets `Pp = 0` (cold limit)
+    while M1's 1D IC sets `Pp = ρ M_vv` (Maxwellian); naive 1D-
+    style flooring would silently raise `Pp` from 0 to the floor
+    on every step. The 1D byte-exact contract is unaffected (we
+    did not touch `inject_vg_noise_HG_native!`).
+
+**Falsifier verdict: N/A.** Phase 3 is *substrate work*, not a
+falsifier driver. The Phase 4 (D.7 dust traps) and Phase 5 (D.10
+ISM tracers) drivers will exercise these paths in production.
+
+**M3-6 Phase 3 close: +329 asserts (24669 + 1 → 24998 + 1).**
 
 ## Repo housekeeping
 
