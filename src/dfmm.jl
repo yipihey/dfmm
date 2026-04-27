@@ -476,4 +476,12 @@ export TracerMeshHG2D, advect_tracers_HG_2d!,
 export inject_vg_noise_HG_2d!, InjectionDiagnostics2D
 export gamma_per_axis_2d_per_species, gamma_per_axis_2d_per_species_field
 
+# --- Phase M3-6 Phase 4 API: D.7 dust-traps IC factory -------------------
+# `tier_d_dust_trap_ic_full` (Taylor-Green vortex + 2-species gas/dust
+# tracer mesh) factory for the D.7 dust-trapping in vortices falsifier
+# (M3-6 Phase 4). Methods paper §10.5 D.7. Builds on Phase 1b 4-comp
+# realizability + Phase 3 2D substrate.
+# See `reference/notes_M3_6_phase4_D7_dust_traps.md`.
+export tier_d_dust_trap_ic_full
+
 end # module

@@ -1601,3 +1601,201 @@ function tier_d_zeldovich_pancake_ic(; level::Integer = 5,
                    Gamma = Gamma, cv = cv),
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-6 Phase 4: D.7 dust-traps IC factory (Taylor-Green vortex + dust)
+# ─────────────────────────────────────────────────────────────────────
+#
+# §10.5 D.7 dust-trapping in vortices. The methods-paper test calls
+# for "KH instability with passive dust; vortex-center accumulation
+# matches reference codes". We use the simpler, more robust
+# Taylor-Green vortex IC (single periodic vortex array on `[0, 1]²`)
+# rather than a sheared KH base flow:
+#
+#     u_1(x, y) = U0 · sin(2π m_1) · cos(2π m_2)
+#     u_2(x, y) = -U0 · cos(2π m_1) · sin(2π m_2)
+#
+# which is divergence-free (∇·u = 0 at IC) and creates a 2×2 array of
+# counter-rotating vortices on the unit square. Vortex centres sit at
+# `(m_1, m_2) ∈ {(0.25, 0.25), (0.25, 0.75), (0.75, 0.25), (0.75, 0.75)}`
+# (4 cell-centre positions on the unit cube where `|u| = U0`); hyperbolic
+# stagnation points sit at the midpoints of the cell edges
+# `(m_1, m_2) ∈ {(0, 0), (0.5, 0.5), …}` (where `u = 0` and the strain
+# is hyperbolic).
+#
+# The two-species substrate (Phase 3 `TracerMeshHG2D`) carries:
+#  • Gas species (`:gas`, k = 1): uniform concentration `c_gas = 1.0`.
+#    Tracks the gas phase. Ignored for the variational fluid state
+#    (the fluid evolves via `det_step_2d_berry_HG!` independently of the
+#    tracer matrix).
+#  • Dust species (`:dust`, k = 2): IC seeded with a small spatially-
+#    varying perturbation `c_dust(x, y) = 1 + ε · sin(2π m_1) sin(2π m_2)`.
+#    Centred at `c_dust ≈ 1`, with peaks/troughs of amplitude `ε`
+#    aligned with the vortex centres. Under pure-Lagrangian advection
+#    in the dfmm 2D variational scheme, the dust concentration matrix
+#    is byte-stable per `det_step_2d_berry_HG!` call (Phase 3 contract)
+#    — total integrated dust mass conserved bit-exactly through any
+#    number of steps.
+#
+# Per-species `M_vv` for the diagnostic γ:
+#  • Gas: EOS-derived `Mvv(J, s)` — finite, isotropic, β-cone full-rank
+#    in the limit β → 0.
+#  • Dust: `M_vv = 0` for both axes (pressureless cold dust). γ_a = 0
+#    everywhere (β > 0 ⇒ γ²_a < 0 ⇒ floored). Distinguishes the two
+#    phases at the diagnostic level.
+#
+# The IC factory returns an `ic` NamedTuple compatible with the other
+# factories (`fields`, `mesh`, `frame`, `leaves`, `ρ_per_cell`,
+# `params`) plus a `tm::TracerMeshHG2D` field holding the per-species
+# tracer matrix populated with the gas + dust IC concentrations.
+
+"""
+    tier_d_dust_trap_ic_full(; level=4, U0=1.0, ρ0=1.0, P0=1.0,
+                              ε_dust=0.05,
+                              lo=nothing, hi=nothing,
+                              Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                              T=Float64) -> NamedTuple
+
+D.7 dust-traps Cholesky-sector full IC (Taylor-Green vortex + 2-species
+dust + gas tracer mesh).
+
+Builds a balanced HG quadtree on `[lo, hi]` (default `[0, 1]²`),
+allocates the 14-named-field 2D Cholesky-sector field set, applies
+`cholesky_sector_state_from_primitive` per leaf with the Taylor-Green
+velocity profile
+
+    u_1(x, y) = U0 · sin(2π m_1) · cos(2π m_2)
+    u_2(x, y) = -U0 · cos(2π m_1) · sin(2π m_2)
+
+uniform `(ρ0, P0)`, cold-limit α = 1, β = 0, β_off = 0, θ_R = 0.
+
+Also allocates a 2-species `TracerMeshHG2D` with:
+  • Species 1 `:gas` — uniform `c_gas = 1.0` per leaf.
+  • Species 2 `:dust` — `c_dust(x, y) = 1 + ε_dust · sin(2π m_1) ·
+    sin(2π m_2)`. The amplitude `ε_dust` is small (default 5%) so
+    vortex-center accumulation produces a measurable but non-trivial
+    response under any sub-cell drift.
+
+Returns a NamedTuple shape matching `tier_c_*_full_ic` plus the new
+`tm::TracerMeshHG2D` field:
+
+  • `name = "tier_d_dust_trap"`
+  • `mesh, frame, leaves, fields` — Cholesky-sector field set ready
+    for `det_step_2d_berry_HG!`.
+  • `tm::TracerMeshHG2D{Float64}` — 2-species tracer mesh with
+    `(:gas, :dust)` initialised at the cell-centred concentrations.
+  • `ρ_per_cell::Vector{Float64}` — uniform `fill(ρ0, N)`.
+  • `params::NamedTuple` — IC parameters echo plus `(L1, L2, t_eddy)`
+    where `t_eddy = L1 / U0` is the vortex eddy turnover time.
+
+# Boundary conditions
+
+The recommended BC mix is
+
+    bc_dust = FrameBoundaries{2}(((PERIODIC, PERIODIC),
+                                   (PERIODIC, PERIODIC)))
+
+(periodic on both axes — the Taylor-Green vortex is doubly periodic).
+
+# Per-species M_vv for γ diagnostic
+
+Use:
+
+    M_vv_per_species = ((1.0, 1.0),    # gas: EOS reference (or :nothing)
+                         (0.0, 0.0))    # dust: pressureless cold
+
+Then `gamma_per_axis_2d_per_species_field(fields, leaves;
+M_vv_override_per_species=M_vv_per_species, n_species=2)` distinguishes
+the two phases (γ_dust → 0 everywhere; γ_gas finite).
+
+# Honest scientific note
+
+The dfmm 2D variational scheme under `det_step_2d_berry_HG!` evolves
+the fluid state but `advect_tracers_HG_2d!` is a no-op (pure-Lagrangian
+frame; the tracer matrix is byte-stable per step — Phase 3 contract).
+This means the per-cell dust concentration *cannot* drift toward
+vortex centres in the current substrate — sub-cell centrifugal-drift
+physics is not captured. The Phase 4 acceptance gate is
+correspondingly modest: we verify (i) total dust mass is conserved
+bit-exactly, (ii) per-species γ correctly distinguishes phases, and
+(iii) the 4-component cone is respected throughout. Dust accumulation
+toward vortex centres is reported as a *diagnostic* — if measured
+non-zero, that's the variational scheme's substrate response under
+finite-volume effects; if measured zero, that's the structural
+contract of the Phase 3 substrate.
+"""
+function tier_d_dust_trap_ic_full(; level::Integer = 4,
+                                    U0::Real = 1.0,
+                                    ρ0::Real = 1.0,
+                                    P0::Real = 1.0,
+                                    ε_dust::Real = 0.05,
+                                    lo = nothing, hi = nothing,
+                                    Gamma::Real = GAMMA_LAW_DEFAULT,
+                                    cv::Real = CV_DEFAULT,
+                                    T::Type = Float64)
+    lo_t, hi_t = _default_box(2, lo, hi, T;
+                                default_lo = (zero(T), zero(T)),
+                                default_hi = (one(T), one(T)))
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    U_t = T(U0)
+    ε_t = T(ε_dust)
+
+    mesh = HierarchicalMesh{2}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_2d_fields(mesh; T = T)
+
+    ρ_per_cell = fill(Float64(ρ0), length(leaves))
+    # Pre-compute per-leaf cell centres + the IC concentration.
+    c_gas_vec = fill(1.0, length(leaves))
+    c_dust_vec = Vector{Float64}(undef, length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        m1 = (cx - Float64(lo_t[1])) / Float64(L1)
+        m2 = (cy - Float64(lo_t[2])) / Float64(L2)
+        # Taylor-Green vortex velocity.
+        u1 = Float64(U_t) * sin(2π * m1) * cos(2π * m2)
+        u2 = -Float64(U_t) * cos(2π * m1) * sin(2π * m2)
+        v = cholesky_sector_state_from_primitive(Float64(ρ0), u1, u2,
+                                                   Float64(P0),
+                                                   (cx, cy);
+                                                   Gamma = Gamma, cv = cv)
+        write_detfield_2d!(fields, ci, v)
+        # Dust concentration: 1 + ε · sin(2π m_1) · sin(2π m_2).
+        # Peaks at vortex centres (1+ε at (0.25, 0.25), (0.75, 0.75));
+        # troughs at the other vortex pair (1−ε at (0.25, 0.75),
+        # (0.75, 0.25)). Hyperbolic stagnation points have c ≈ 1.
+        c_dust_vec[j] = 1.0 + Float64(ε_t) * sin(2π * m1) * sin(2π * m2)
+    end
+
+    # Eddy turnover time t_eddy = L / U0. (For unit box, equals 1/U0.)
+    t_eddy = Float64(L1) / max(Float64(U_t), 1e-300)
+
+    # Allocate the 2-species TracerMeshHG2D and populate.
+    tm = TracerMeshHG2D(fields, mesh; n_species = 2,
+                         names = [:gas, :dust], T = Float64)
+    set_species!(tm, :gas, c_gas_vec, leaves)
+    set_species!(tm, :dust, c_dust_vec, leaves)
+
+    return (
+        name = "tier_d_dust_trap",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        tm = tm,
+        ρ_per_cell = ρ_per_cell,
+        t_eddy = t_eddy,
+        params = (level = level, U0 = Float64(U_t),
+                   ρ0 = ρ0, P0 = P0,
+                   ε_dust = Float64(ε_t),
+                   lo = lo_t, hi = hi_t,
+                   L1 = Float64(L1), L2 = Float64(L2),
+                   t_eddy = t_eddy,
+                   Gamma = Gamma, cv = cv),
+    )
+end
