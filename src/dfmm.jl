@@ -230,6 +230,18 @@ export cholesky_decompose_2d, cholesky_recompose_2d, gamma_per_axis_2d
 export DetField2D, n_dof_newton
 export allocate_cholesky_2d_fields, read_detfield_2d, write_detfield_2d!
 
+# --- Phase M3-3b API: native HG-side 2D EL residual + Newton driver --------
+# `cholesky_el_residual_2D!` evaluates the per-axis Cholesky-sector EL
+# residual (no Berry; θ_R fixed) on the 2D Eulerian quadtree mesh,
+# consuming `HaloView`-style face-neighbor lookups via a pre-computed
+# `face_lo_idx / face_hi_idx` table. `det_step_2d_HG!` is the Newton
+# driver that wraps it. See `src/eom.jl` and
+# `reference/notes_M3_3_2d_cholesky_berry.md` §3 (Berry deferred to M3-3c).
+export cholesky_el_residual_2D!, cholesky_el_residual_2D
+export pack_state_2d, unpack_state_2d!,
+       build_face_neighbor_tables, build_residual_aux_2D
+export det_step_2d_HG!
+
 # --- Phase M3-prep API: Berry-connection 2D/3D stencils -------------------
 # Pure-functional building blocks for the M3-3 (2D Cholesky + Berry
 # connection) phase. Implements the verified symbolic forms

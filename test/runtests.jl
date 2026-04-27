@@ -244,6 +244,23 @@ using Test
         include("test_M3_3a_cholesky_DD.jl")
         include("test_M3_3a_field_set_2d.jl")
     end
+    @testset verbose = true "Phase M3-3b: native 2D EL residual (no Berry; θ_R fixed)" begin
+        # M3-3b sub-phase of M3-3 (2D Cholesky + Berry connection).
+        # First native HG-side EL residual on the 2D substrate. The
+        # residual is the per-axis lift of M1's 1D `det_el_residual`
+        # WITHOUT Berry coupling and WITHOUT θ_R as a Newton unknown
+        # (M3-3c lands those). Two test files:
+        #   • Zero-strain regression: cold-limit fixed-point IC,
+        #     residual = 0 to machine precision; one Newton step
+        #     preserves the state byte-equally; pack/unpack round-trip.
+        #   • Dimension-lift parity gate (§6.1 — the critical M3-3b
+        #     acceptance criterion): 2D 1D-symmetric configuration
+        #     reproduces M1's Phase-1 zero-strain trajectory to ≤ 1e-12.
+        # See `reference/notes_M3_3_2d_cholesky_berry.md` §3 + §6.1
+        # and `reference/notes_M3_3b_native_residual.md`.
+        include("test_M3_3b_2d_zero_strain.jl")
+        include("test_M3_3b_dimension_lift_zero_strain.jl")
+    end
     @testset verbose = true "Phase M3-2: Phase 7/8/11 + M2 on HG" begin
         # Phase 7 (heat-flux Q + steady shock + inflow/outflow), Phase 8
         # (variance-gamma stochastic injection), Phase 11 (passive

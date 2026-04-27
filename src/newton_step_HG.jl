@@ -25,10 +25,12 @@ using StaticArrays: SVector
 using HierarchicalGrids: SimplicialMesh, PolynomialFieldSet,
     n_simplices, n_elements, parallel_for_cells,
     FrameBoundaries, BCKind, PERIODIC, INFLOW, OUTFLOW, REFLECTING, DIRICHLET,
-    simplex_neighbor
+    simplex_neighbor, HierarchicalMesh, EulerianFrame
 using HierarchicalGrids.BoundaryConditions: is_periodic_axis
 import SparseArrays as _SA
 using SparseArrays: SparseMatrixCSC
+using NonlinearSolve: NonlinearProblem, NonlinearFunction, solve,
+                      NewtonRaphson, AutoForwardDiff, ReturnCode
 
 """
     cholesky_step_HG!(mesh::SimplicialMesh{1, T},
@@ -674,3 +676,172 @@ det_jac_sparsity_HG(mesh::DetMeshHG{T}; depth::Int = 1) where {T<:Real} =
 # `src/newton_step_HG_M3_2.jl`, included from `dfmm.jl` after the
 # corresponding M1/M2 files (`tracers.jl`, `stochastic_injection.jl`,
 # `amr_1d.jl`) so the wrappers can reference their M1 counterparts.
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M3-3b: native HG-side 2D Newton step driver (no Berry; θ_R fixed)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Counterpart of M3-1's `det_step_HG!` for the 2D Cholesky-sector EL
+# residual `cholesky_el_residual_2D!` (defined in `src/eom.jl`).
+# Differences vs the 1D path:
+#
+#   • The 2D residual operates directly on a `HierarchicalMesh{2}` +
+#     `PolynomialFieldSet` allocated by
+#     `allocate_cholesky_2d_fields(mesh)` from `src/setups_2d.jl`.
+#     There is NO `cache_mesh::Mesh1D` shim — this is the first native
+#     HG-side EL residual in dfmm.
+#   • Newton sparsity comes from `cell_adjacency_sparsity(mesh; depth=1)`
+#     Kron-producted with a dense `8×8` block (per-cell coupling).
+#   • Boundary handling is via M3-2b Swap 8's `FrameBoundaries{2}` +
+#     `BCKind` framework. Periodic wrap is resolved upstream by
+#     `face_neighbors_with_bcs`; closed boundaries (REFLECTING /
+#     DIRICHLET) fall through to the residual's own ghost-cell synth
+#     (mirror-self for REFLECTING in M3-3b).
+#
+# What M3-3b's driver does NOT do (per the M3-3 design note §9):
+#
+#   • Berry coupling — `θ_R` is read from the IC and held fixed across
+#     the step; the Berry kinetic 1-form contribution to the residual
+#     rows is omitted. M3-3c will plug it in.
+#   • Off-diagonal `β_{12}, β_{21}` — pinned to zero (omitted from the
+#     field set per Q3 of the design note's §10).
+#   • Per-axis γ AMR / realizability — M3-3d / M3-3e scope.
+
+using HierarchicalGrids: cell_adjacency_sparsity
+
+"""
+    det_step_2d_HG!(fields::PolynomialFieldSet,
+                     mesh::HierarchicalMesh{2},
+                     frame::EulerianFrame{2, T},
+                     leaves::AbstractVector{<:Integer},
+                     bc_spec::FrameBoundaries{2},
+                     dt::Real;
+                     M_vv_override = nothing,
+                     ρ_ref::Real = 1.0,
+                     sparse_jac::Bool = true,
+                     abstol::Real = 1e-13, reltol::Real = 1e-13,
+                     maxiters::Int = 50) where {T<:Real}
+
+Advance the 2D Cholesky-sector field set by one timestep `dt` via an
+implicit-midpoint Newton solve of `cholesky_el_residual_2D!`. Mutates
+the 8 Newton-unknown slots `(x_a, u_a, α_a, β_a)` of `fields`
+in-place; the `(θ_R, s, Pp, Q)` slots are left untouched (M3-3b holds
+them fixed).
+
+Arguments mirror the M3-3a allocation contract:
+
+  • `fields` — built by `allocate_cholesky_2d_fields(mesh)`.
+  • `mesh::HierarchicalMesh{2}` — must be balanced (Q4 of the design
+    note's §10).
+  • `frame::EulerianFrame{2, T}` — supplies per-cell physical extents
+    via `cell_physical_box`.
+  • `leaves` — leaf-iteration order (typically `enumerate_leaves(mesh)`).
+  • `bc_spec` — 2D `FrameBoundaries{2}` (e.g. periodic-x, reflecting-y).
+
+Keyword arguments:
+
+  • `M_vv_override::Union{Nothing, NTuple{2, Real}}` — when not
+    `nothing`, override the EOS `M_vv(J, s)` per axis with the
+    supplied constants. M3-3b's zero-strain regression and
+    dimension-lift gate use this to decouple from EOS specifics.
+  • `ρ_ref::Real` — reference density for the per-axis Lagrangian
+    mass step `Δm_a = ρ_ref · cell_extent_a`. Default 1.0.
+  • `sparse_jac::Bool` — use HG's `cell_adjacency_sparsity` (Kron with
+    8×8 dense block) as the Jacobian sparsity prototype.
+  • `abstol`, `reltol`, `maxiters` — forwarded to NonlinearSolve.
+
+Returns `fields` for convenience.
+
+# Constraints
+
+  • `mesh.balanced == true` (asserted).
+  • The 2D residual is for the dimension-lifted Cholesky sector; per
+    M3-3b's scope it is **not** physics-complete — Berry, off-diag β,
+    per-axis γ AMR all land in M3-3c–M3-3e.
+"""
+function det_step_2d_HG!(fields::PolynomialFieldSet,
+                          mesh::HierarchicalMesh{2},
+                          frame::EulerianFrame{2, T},
+                          leaves::AbstractVector{<:Integer},
+                          bc_spec::FrameBoundaries{2},
+                          dt::Real;
+                          M_vv_override = nothing,
+                          ρ_ref::Real = 1.0,
+                          sparse_jac::Bool = true,
+                          abstol::Real = 1e-13,
+                          reltol::Real = 1e-13,
+                          maxiters::Int = 50) where {T<:Real}
+    @assert mesh.balanced == true "det_step_2d_HG! requires mesh.balanced == true"
+    N = length(leaves)
+    @assert N >= 1 "leaves vector must be non-empty"
+
+    aux = build_residual_aux_2D(fields, mesh, frame, leaves, bc_spec;
+                                 M_vv_override = M_vv_override,
+                                 ρ_ref = ρ_ref)
+    y_n = pack_state_2d(fields, leaves)
+
+    # Initial guess: explicit Euler from the boxed equations evaluated
+    # at q_n. For zero-strain configurations this is already a tight
+    # initial guess; richer configurations (active strain) are M3-3c+.
+    y0 = copy(y_n)
+
+    # NonlinearProblem closure.
+    f_in_place = (F, u, p_in) -> begin
+        cholesky_el_residual_2D!(F, u, p_in.y_n, p_in.aux, p_in.dt)
+        return nothing
+    end
+    p = (y_n = y_n, aux = aux, dt = T(dt))
+
+    # Sparse-Jacobian prototype: cell_adjacency Kron with an 8×8 dense
+    # block. M3-3b uses depth = 1 (per-axis pressure stencil reaches one
+    # face-hop along each axis).
+    if sparse_jac && N >= 4
+        cell_sparsity = cell_adjacency_sparsity(mesh; depth = 1,
+                                                  leaves_only = true)
+        # Kron with a dense 8×8 Bool block. Materialize as
+        # SparseMatrixCSC{Float64, Int} for NonlinearSolve coloring.
+        rows = Int[]
+        cols = Int[]
+        cs_rows, cs_cols, _ = SparseArrays.findnz(cell_sparsity)
+        sizehint!(rows, length(cs_rows) * 64)
+        sizehint!(cols, length(cs_rows) * 64)
+        @inbounds for k in eachindex(cs_rows)
+            i = Int(cs_rows[k])
+            j = Int(cs_cols[k])
+            for r in 1:8, c in 1:8
+                push!(rows, 8 * (i - 1) + r)
+                push!(cols, 8 * (j - 1) + c)
+            end
+        end
+        jac_proto = _SA.sparse(rows, cols, ones(Float64, length(rows)),
+                                8 * N, 8 * N, max)
+        nf = NonlinearFunction(f_in_place; jac_prototype = jac_proto)
+        prob = NonlinearProblem(nf, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    else
+        prob = NonlinearProblem(f_in_place, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    end
+
+    # Verify residual norm (mirror the 1D `det_step!` pattern). Newton
+    # may report `Stalled` / `MaxIters` even when the residual is at
+    # round-off on smooth nearly-converged problems.
+    F_check = similar(sol.u)
+    cholesky_el_residual_2D!(F_check, sol.u, y_n, aux, T(dt))
+    res_norm = maximum(abs, F_check)
+    if res_norm > 10 * abstol && sol.retcode != ReturnCode.Success
+        error("det_step_2d_HG! Newton solve failed: retcode = $(sol.retcode), " *
+              "‖residual‖∞ = $res_norm")
+    end
+
+    unpack_state_2d!(fields, leaves, sol.u)
+    return fields
+end
