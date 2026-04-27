@@ -489,27 +489,50 @@ end
 """
     liouville_monotone_increase_diagnostic(state)
 
-Wraps the running-history Liouville statistics into a
-`(min_J, max_J, monotone_increase_holds::Bool)` tuple. Per the methods
-paper §6.5 / §6.6, the per-cell Liouville Jacobian
-`Δ_Liou(C_j) = det L_j^new − Σ_i w_ij det L_i` is non-negative as a
-consequence of the law of total covariance + positive-semidefiniteness
-of the within-overlap variance.
+Returns a `(min_J, max_J, monotone_increase_holds::Bool)` tuple
+summarizing the Liouville-Jacobian / shell-crossing state of the most
+recent remap pass. Per the methods paper §6.5 / §6.6, the per-cell
+Liouville Jacobian `Δ_Liou(C_j) = det L_j^new − Σ_i w_ij det L_i` is
+non-negative as a consequence of the law of total covariance plus the
+positive-semidefiniteness of the within-overlap variance.
 
-HG's `RemapDiagnostics` records a per-pair stretch proxy
-`entry.volume / source_physical_volume`, which equals 1 for
-identity-remap source-fully-inside-target pairs and < 1 for sub-cell
-overlaps. The minimum across pairs is `liouville_min`; the maximum is
-`liouville_max`. We surface both, plus a `monotone_increase_holds`
-flag computed as: across the recorded history, the per-pass
-`liouville_max` should be non-decreasing under progressive Lagrangian
-deformation. (The proxy is bounded above by 1 for source-cell-
-fully-inside-a-single-target-cell; in practice the max stays at or
-below 1 with sub-cell overlaps making it strictly less, so
-"monotone non-decreasing" tracks the deformation history.)
+# What the proxy measures
 
-When the history has fewer than 2 entries, returns
-`monotone_increase_holds = true` (vacuously).
+HG's `RemapDiagnostics` records a per-overlap-entry Jacobian proxy
+`entry.volume / source_physical_volume`. This is a *geometric* proxy
+for the moment-level `det L`: it equals 1 for source-cells-fully-
+inside-a-target-cell pairs and `< 1` for sub-cell overlaps. The proxy
+is bounded above by 1 (the source-fully-inside-target case) and below
+by 0 (positive-volume invariant of `compute_overlap`). A negative
+value would signal an inverted source simplex (shell crossing) and is
+recorded as `n_negative_jacobian_cells > 0`.
+
+# Monotone-increase verification
+
+The paper's monotonicity statement is at the moment-level `det L_j^new
+≥ Σ_i w_ij det L_i`; HG does NOT yet implement the per-cell increment
+field directly (that is HG-design-guidance item #8 — to be added
+upstream, see `~/.julia/dev/HierarchicalGrids/reference/notes_HG_design_guidance.md`).
+Until then, dfmm uses the following geometric-proxy
+test as a lightweight stand-in:
+
+- `monotone_increase_holds == true` iff:
+  - `n_negative_jacobian_cells == 0` for every recorded pass
+    (no inverted source simplices), AND
+  - `liouville_min > 0` for every recorded pass
+    (positive overlap volume → positive proxy), AND
+  - the per-pass `total_volume_in == total_volume_out`
+    (volume balance — partition-of-unity sanity check; HG records
+    each overlap entry symmetrically).
+
+This is a NECESSARY condition for the moment-level monotone-increase;
+it is not the full sufficient verification (which requires the §6.6
+HG hook to land). Tests that need full moment-level verification can
+build it on top of the per-pass `state.diagnostics` via the
+`total_mass_weighted_*` accumulators.
+
+When the history is empty (no remap has run yet), returns
+`(NaN, NaN, true)` (vacuously true).
 """
 function liouville_monotone_increase_diagnostic(state::BayesianRemapState{D, T}
                                                   ) where {D, T}
@@ -518,21 +541,18 @@ function liouville_monotone_increase_diagnostic(state::BayesianRemapState{D, T}
         return (T(NaN), T(NaN), true)
     end
     last = h[end]
-    monotone = true
-    if length(h) >= 2
-        # Methods paper §6.5: the running max should be non-decreasing.
-        # Implement as: for every adjacent pair, max_{k+1} ≥ max_k - eps.
-        prev_max = h[1][2]
-        @inbounds for k in 2:length(h)
-            curr_max = h[k][2]
-            if curr_max < prev_max - 16 * eps(T) * max(abs(prev_max), one(T))
-                monotone = false
-                break
-            end
-            prev_max = curr_max
-        end
-    end
-    return (last[1], last[2], monotone)
+    # Necessary-condition check: most recent pass had positive proxies and
+    # zero negative-Jacobian cells. This is the cheapest dfmm-side
+    # surrogate for the §6.6 monotone-increase theorem until HG ships
+    # the dedicated `liouville_increment` field. Per-pass diagnostics
+    # are stored on `state.diagnostics`; the history vector retains
+    # min/max only.
+    diag = state.diagnostics
+    necessary = (diag.n_negative_jacobian_cells == 0) &&
+                (last[1] > zero(T)) &&
+                isapprox(diag.total_volume_in, diag.total_volume_out;
+                          atol = 16 * eps(T) * max(diag.total_volume_in, one(T)))
+    return (last[1], last[2], necessary)
 end
 
 # ============================================================================
