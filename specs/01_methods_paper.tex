@@ -1109,7 +1109,7 @@ the scheme reports its own failure cleanly.
 The Tier A and Tier B 1D regression suites are not only verified
 against \texttt{dfmm} reference output: they are additionally
 held \emph{bit-exact} ($\Delta = 0.0$ absolute, every cell, every
-step) across the M3 substrate port from the standalone Rust/Julia
+step) across the M3 substrate port from the standalone Julia
 1D code onto \texttt{HierarchicalGrids.jl}. M3-0/1/2 used a
 transitional \texttt{cache\_mesh::Mesh1D} shim to expose the HG
 mesh under the legacy 1D interface, and the entire M1 (305 +
@@ -1496,24 +1496,150 @@ walls, inflow/outflow) are standard but not specified here.
 \end{enumerate}
 
 \subsection{Implementation milestones}
+\label{sec:milestones}
 
-The framework is designed for staged implementation:
+\paragraph{Language and substrate.} The reference implementation is
+written in Julia and lives at
+\texttt{https://github.com/yipihey/dfmm-2d}. The original design
+document called for a Rust port of the dfmm-1D Python+Numba code
+(\texttt{py-1d}); the Julia choice was made before M1 to obtain a
+better numerical-computing ecosystem (notably the established
+sparse-AD path through
+\texttt{SparseConnectivityTracer.jl}~\cite{sct-paper} and
+\texttt{ForwardDiff.jl}), faster iteration on the variational
+discrete-EL machinery, and direct re-use of
+\texttt{HierarchicalGrids.jl}~\cite{hg-paper} (HG) as the
+dimension-generic mesh, polynomial-fields, AMR, and remap substrate.
+The geometric clipper is the \texttt{r3djl}~\cite{r3djl-paper} Julia
+port of r3d, distributed as an HG dependency. HG ships an
+integer-exact polytope-clipping backend
+(\texttt{IntegerLattice} + \texttt{compute\_overlap(\dots;
+backend=:exact)}) which serves as the conservation-regression
+reference for the Bayesian remap of \S\ref{sec:remap} (see
+\S\ref{sec:tier-C} and \S\ref{sec:tier-M3-gates}). Because HG is
+dimension-generic from day 1, the same source compiles for 1D, 2D,
+and 3D meshes; the \texttt{cache\_mesh::Mesh1D} shim used during
+M3-0/1/2 to expose HG under the legacy 1D interface was retired in
+M3-3e (\S\ref{sec:tier-M3-gates}).
+
+\paragraph{Schedule against this design document.} The five-milestone
+schedule of the original design has been adapted to the HG-based
+codebase: the Tier-A/B 1D content (originally Milestones 1--2)
+landed against the standalone 1D Julia code, the substrate port onto
+HG happened in M3-0 through M3-3e, and the 2D Tier-C/D content
+runs natively on HG from M3-4 onward. Status as of this revision
+is summarized below; design notes under
+\verb|reference/notes_M3_*.md| and
+\verb|reference/MILESTONE_*_STATUS.md| carry the per-phase numerics
+and gate breakdowns.
+
 \begin{description}
-\item[Milestone 1.] 1D Rust implementation of the unified scheme
-matching dfmm interface. Tier A regression complete. Estimated 2--3
-months from this design document.
-\item[Milestone 2.] 1D Tier B validation including variance-gamma
-verification and tracer-exactness. Estimated 1--2 months after
-Milestone 1.
-\item[Milestone 3.] 2D Rust implementation. Tier C consistency tests
-complete. Estimated 3--4 months after Milestone 2.
-\item[Milestone 4.] 2D Tier D novelty tests. Methods-paper-ready
-demonstrations. Estimated 3--4 months after Milestone 3.
-\item[Milestone 5.] 2D Tier E stress tests, two-fluid extensions,
-tracer applications. Estimated 2--3 months after Milestone 4.
+\item[Milestone 1 --- 1D variational dfmm (DONE).] Standalone 1D
+Julia port of the dfmm Python+Numba reference (\texttt{py-1d}),
+held bit-exact against the \texttt{py-1d} regression suite. Tier
+A.1--A.3 + B.1, B.2, B.4, B.5 closed; Tier-B central unification
+test (B.2) verified against the Zel'dovich analytic to
+$2.57\times 10^{-8}$. 1504 + 1 deferred tests on the M1 close
+commit. See \verb|reference/MILESTONE_1_STATUS.md|.
+\item[Milestone 2 --- 1D Tier B closure (DONE).] Action-based AMR
+(B.3, $37.8\%$ cell savings vs gradient AMR), multi-tracer
+wave-pool (B.6, $25\text{--}114\times$ over Eulerian upwind under
+stochastic injection), and a realizability projection that lifts
+the wave-pool stable horizon from $1{,}222$ to $12{,}000$ steps.
+2044 + 1 deferred tests at M2 close. Tier B is complete in 1D.
+See \verb|reference/MILESTONE_2_STATUS.md|.
+\item[Milestone 3-0/1/2 --- HG substrate port via cache\_mesh shim
+(DONE).] M1 Phases 1--7 + 5b, M1 Phase 8 (stochastic), M1 Phase
+11 (tracer), M2-1 (AMR), and M2-3 (realizability) ported onto
+\texttt{HierarchicalGrids.jl} through a transitional
+\texttt{cache\_mesh::Mesh1D} shim. The full M1 + M2 test set
+($466 + 243 = 709$ asserts) plus $1335$ cross-phase / regression
+tests reproduce bit-exactly through the shim ($\Delta = 0.0$
+absolute, every cell, every step).
+\item[Milestone 3-2b --- HG-feature swap-in (DONE).] HG-native
+periodic boundary conditions, IC factories, sparsity primitives,
+and the \texttt{BCKind} framework swap in for the 1D path. Two
+swaps (per-axis AMR / per-axis realizability) were deferred to
+M3-3d for the 2D context.
+\item[Milestone 3-3 --- 2D Cholesky + Berry coupling on native HG
+(DONE).] First native HG-side EL residual in dfmm:
+\texttt{HierarchicalMesh\{2\}} + \texttt{PolynomialFieldSet} via
+\texttt{HaloView} + \texttt{face\_neighbors\_with\_bcs}. Per-axis
+$\gamma$ + per-axis AMR + per-axis realizability all wired through
+in 2D (M3-3a/b/c/d). The dimension-lift gate
+(\S\ref{sec:tier-M3-gates}) holds at $\Delta = 0.0$ absolute on
+1D-symmetric configurations. The five-sub-phase M3-3e effort
+(\verb|notes_M3_3e_1/2/3/4/5_*.md|) retired the
+\texttt{cache\_mesh::Mesh1D} shim while preserving bit-exact 0.0
+parity per sub-phase; the 1D path now runs entirely on HG-native
+storage. See \verb|reference/notes_M3_3_2d_cholesky_berry.md| and
+the M3-3 sub-phase notes.
+\item[Milestone 3-4 --- 2D Tier-C consistency on native HG (DONE).]
+Periodic-x coordinate wrap on the 2D EL residual; primitive-to-
+Cholesky IC bridge; C.1 (1D-symmetric 2D Sod, $y$-independence
+$\le 10^{-12}$ per step), C.2 (2D cold sinusoid, $\mathrm{std}
+(\gamma_1)/\mathrm{std}(\gamma_2) > 10^{10}$ for
+$k = (1, 0)$), and C.3 (2D plane wave, rotational invariance to
+mesh-discretization tolerance) all closed. See
+\verb|reference/notes_M3_4_tier_c_consistency.md|.
+\item[Milestone 3-5 --- Bayesian L$\leftrightarrow$E remap with
+IntExact backend (DONE).] HG \texttt{compute\_overlap} +
+\texttt{polynomial\_remap\_l\_to\_e!} / \texttt{\_e\_to\_l!}
+wired through a \texttt{BayesianRemapState}; \texttt{IntExact}
+audit harness and Liouville monotone-necessary diagnostic
+(\S\ref{sec:remap-liouville-diag}) live; mass conserved to
+$0\text{--}6.7\times 10^{-16}$ over $5$ remap cycles;
+partition-of-unity to $10^{-12}$. $9/9$ IntExact battery passes.
+See \verb|reference/notes_M3_5_bayesian_remap.md|.
+\item[Milestone 3-6 --- Tier-D headlines (Phases 0/1/2 DONE; 3+
+ahead).] Phase 0 reactivates the off-diagonal Cholesky pair
+$\beta_{12}, \beta_{21}$ in the 2D residual ($11$-dof Newton
+system; $9$ off-diagonal SymPy CHECKs reproduced numerically).
+Phase 1a wires the off-diagonal strain coupling
+$\mathcal H_{\rm rot}^{\rm off} = \widetilde G_{12}\cdot
+(\alpha_1\beta_{21} + \alpha_2\beta_{12})/2$. Phase 1b adds the
+KH IC factory and a $4$-component realizability cone.
+\textbf{Phase 1c closes the D.1 Kelvin--Helmholtz falsifier:}
+$\gamma_{\rm measured}/\gamma_{\rm DR} = 1.34$ at level $5$,
+mesh-converged to $1.2\%$ between L$4$ and L$5$, $n_{\rm neg\,Jac}
+= 0$ --- the per-principal-axis-noise prediction is held against
+the broadband sheared base flow. \textbf{Phase 2 closes the D.4
+Zel'dovich pancake test} (the central novel cosmological reference
+of \S\ref{sec:tier-D}): per-axis $\gamma$ selectivity verified at
+$\mathrm{std}(\gamma_1)/\mathrm{std}(\gamma_2) \approx 2.6\times
+10^{14}$ at near-caustic time, $\gamma_1$ developing spatial
+structure (dynamic range $4.18\times$) while $\gamma_2$ stays
+uniform to round-off, and the Phase 1a strain coupling verified
+inert ($\max|\beta_{\rm off}| = 0$) on this axis-aligned IC. See
+\verb|reference/notes_M3_6_phase1c_D1_kh_falsifier.md| and
+\verb|reference/notes_M3_6_phase2_D4_zeldovich.md|. M3-6 Phases
+3 (D.7 dust trapping in vortices, requires extending
+\texttt{TracerMeshHG} to 2D), 4 (D.7 close), and 5 (D.10 ISM-like
+2D tracer) remain ahead.
+\item[Milestone 3-7 --- 3D extension (design note in place; code
+ahead).] $SO(3)$ Cholesky + Berry coupling on a 3D HG mesh; the
+3D Berry stencils were verified in M3-prep
+(\verb|notes_M3_prep_3D_berry_verification.md|) as the M3-7
+pre-flight gate. Sub-phases M3-7a--e cover the 3D residual,
+Tier-C consistency in 3D, and the 3D Zel'dovich pancake. See
+\verb|reference/notes_M3_7_3d_extension.md|.
+\item[Milestone 3-8 --- Tier E + GPU/MPI (ahead).] Tier-E stress
+tests (\S\ref{sec:tier-E}); GPU offload of the per-cell Newton
+residual and the polynomial-remap kernels; MPI distribution
+across HG's hierarchical decomposition.
+\item[Milestone 3-9 --- Wrap-up (ahead).] Methods-paper close-out:
+final figures, two-fluid 2D content (D.6, D.8), and the paper
+submission package.
 \end{description}
-Total: 12--18 months from this design document to methods-paper
-submission.
+
+The design-document Milestones 1--5 map cleanly onto this
+HG-adapted plan: design-M1 = code-M1; design-M2 = code-M2; design-M3
+$\subset$ code-M3-0 through M3-4; design-M4 $\subset$ code-M3-6;
+design-M5 $\subset$ code-M3-8. The total scope is unchanged from the
+original design; the engineering unit has shrunk to a single
+dimension-generic codebase, which is why the 3D extension
+(originally an outlook item) sits in code-M3 rather than as a
+separate downstream milestone.
 
 \subsection{Outlook}
 
@@ -1596,6 +1722,12 @@ T.~Abel, ``HierarchicalGrids.jl design guidance for dfmm-2d,''
 working note, April 2026; reproduced as
 \texttt{reference/notes\_HG\_design\_guidance.md} in the dfmm
 repository.
+
+\bibitem{sct-paper}
+A.~Hill and G.~Dalle, ``\texttt{SparseConnectivityTracer.jl}:
+sparse Jacobian and Hessian connectivity detection in Julia,''
+\emph{J.~Open Source Softw.}, code repository
+\texttt{https://github.com/adrhill/SparseConnectivityTracer.jl}.
 \end{thebibliography}
 
 \end{document}
