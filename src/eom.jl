@@ -311,6 +311,11 @@ function cholesky_el_residual_2D!(F::AbstractVector,
     face_hi     = aux.face_hi_idx
     M_vv_over   = aux.M_vv_override
     ρ_ref       = aux.ρ_ref
+    # M3-4: optional per-axis-per-cell coordinate-wrap offsets for
+    # periodic axes. When absent (e.g., legacy callers built before
+    # M3-4), default to zero so the residual stays bit-exact.
+    wrap_lo     = haskey(aux, :wrap_lo_idx) ? aux.wrap_lo_idx : nothing
+    wrap_hi     = haskey(aux, :wrap_hi_idx) ? aux.wrap_hi_idx : nothing
 
     N = length(s_vec)
     @assert length(y_np1) == 8 * N "y_np1 length $(length(y_np1)) does not match 8 * N = $(8 * N)"
@@ -349,6 +354,14 @@ function cholesky_el_residual_2D!(F::AbstractVector,
             ilo = face_lo[a][i]
             ihi = face_hi[a][i]
 
+            # M3-4 periodic wrap: when this lo/hi-face neighbor is the
+            # periodic wrap from the opposite wall, its stored x_a is on
+            # the opposite side of the box; shift by ±L_a so the discrete
+            # gradient stencil sees a consistent monotonic coordinate
+            # (mirror of the 1D `+L_box` wrap at j == N).
+            wrap_lo_off = wrap_lo === nothing ? zero(Tres) : Tres(wrap_lo[a][i])
+            wrap_hi_off = wrap_hi === nothing ? zero(Tres) : Tres(wrap_hi[a][i])
+
             # Lo-face neighbor data; mirror-self when out-of-domain.
             if ilo == 0
                 x_lo_n   = x_n
@@ -361,8 +374,8 @@ function cholesky_el_residual_2D!(F::AbstractVector,
                 β_lo_np1 = β_np1
                 s_lo     = s_i
             else
-                x_lo_n   = get_x(y_n,   a, ilo)
-                x_lo_np1 = get_x(y_np1, a, ilo)
+                x_lo_n   = get_x(y_n,   a, ilo) + wrap_lo_off
+                x_lo_np1 = get_x(y_np1, a, ilo) + wrap_lo_off
                 u_lo_n   = get_u(y_n,   a, ilo)
                 u_lo_np1 = get_u(y_np1, a, ilo)
                 α_lo_n   = get_α(y_n,   a, ilo)
@@ -386,8 +399,8 @@ function cholesky_el_residual_2D!(F::AbstractVector,
                 β_hi_np1 = β_np1
                 s_hi     = s_i
             else
-                x_hi_n   = get_x(y_n,   a, ihi)
-                x_hi_np1 = get_x(y_np1, a, ihi)
+                x_hi_n   = get_x(y_n,   a, ihi) + wrap_hi_off
+                x_hi_np1 = get_x(y_np1, a, ihi) + wrap_hi_off
                 u_hi_n   = get_u(y_n,   a, ihi)
                 u_hi_np1 = get_u(y_np1, a, ihi)
                 α_hi_n   = get_α(y_n,   a, ihi)
@@ -618,6 +631,92 @@ function build_face_neighbor_tables(mesh::HierarchicalMesh{2},
 end
 
 """
+    build_periodic_wrap_tables(mesh::HierarchicalMesh{2},
+                                frame::EulerianFrame{2, T},
+                                leaves::AbstractVector{<:Integer},
+                                face_lo_idx::NTuple{2, Vector{Int}},
+                                face_hi_idx::NTuple{2, Vector{Int}})
+        -> (wrap_lo::NTuple{2, Vector{T}}, wrap_hi::NTuple{2, Vector{T}})
+
+Pre-compute per-leaf-per-axis additive coordinate-wrap offsets for the
+2D EL residual. For each leaf `i ∈ 1:N` and each axis `a ∈ {1, 2}`,
+returns `wrap_lo[a][i]` and `wrap_hi[a][i]` such that the periodic
+neighbor's `x_a` should be read as
+
+    x_a_lo_neighbor + wrap_lo[a][i],   x_a_hi_neighbor + wrap_hi[a][i]
+
+so the lo→hi extent across a periodic seam is positive and equal to
+the geometric cell spacing — mirroring the 1D path's `+L_box` wrap on
+`x_right` at `j == N` (see `src/cholesky_sector.jl::det_el_residual`,
+M3-3c handoff item).
+
+Detection rule: if the neighbor's physical box on axis `a` lies on the
+opposite wall (i.e., `box_neighbor.hi[a] ≤ box_self.lo[a] + ε` for the
+lo-face, or `box_neighbor.lo[a] ≥ box_self.hi[a] − ε` for the hi-face)
+then the neighbor is the periodic wrap; the offset is `-L_a` for the
+lo-face and `+L_a` for the hi-face, where `L_a = frame.hi[a] − frame.lo[a]`.
+For interior cells (real adjacency, not a wrap), the offset is zero.
+For boundary cells with `face_*_idx == 0` (out-of-domain;
+non-periodic BC), the offset is also zero — the residual treats those
+as mirror-self.
+
+The output is a pair of `(NTuple{2, Vector{T}}, NTuple{2, Vector{T}})`,
+where `wrap_lo[a]` and `wrap_hi[a]` are length-`N` `T`-vectors.
+"""
+function build_periodic_wrap_tables(mesh::HierarchicalMesh{2},
+                                     frame::EulerianFrame{2, T},
+                                     leaves::AbstractVector{<:Integer},
+                                     face_lo_idx::NTuple{2, Vector{Int}},
+                                     face_hi_idx::NTuple{2, Vector{Int}}
+                                     ) where {T}
+    N = length(leaves)
+    L = ntuple(a -> T(frame.hi[a] - frame.lo[a]), 2)
+    wrap_lo_1 = zeros(T, N)
+    wrap_hi_1 = zeros(T, N)
+    wrap_lo_2 = zeros(T, N)
+    wrap_hi_2 = zeros(T, N)
+    eps_a = ntuple(a -> T(1e-12) * L[a], 2)
+
+    @inbounds for (i, ci) in enumerate(leaves)
+        lo_self, hi_self = cell_physical_box(frame, ci)
+        for a in 1:2
+            wrap_arrs_lo = a == 1 ? wrap_lo_1 : wrap_lo_2
+            wrap_arrs_hi = a == 1 ? wrap_hi_1 : wrap_hi_2
+            face_lo = face_lo_idx[a]
+            face_hi = face_hi_idx[a]
+
+            # Lo-face wrap detection.
+            ilo = face_lo[i]
+            if ilo != 0
+                ci_lo = leaves[ilo]
+                lo_n, hi_n = cell_physical_box(frame, ci_lo)
+                # If neighbor's box sits on the hi-wall side (i.e.,
+                # `lo_n[a] >= hi_self[a]`), the neighbor is the
+                # periodic wrap from the lo-face, so its physical x_a
+                # is L_a too high and should be shifted by -L_a.
+                if lo_n[a] >= hi_self[a] - eps_a[a]
+                    wrap_arrs_lo[i] = -L[a]
+                end
+            end
+
+            # Hi-face wrap detection.
+            ihi = face_hi[i]
+            if ihi != 0
+                ci_hi = leaves[ihi]
+                lo_n, hi_n = cell_physical_box(frame, ci_hi)
+                # If neighbor's box sits on the lo-wall side (i.e.,
+                # `hi_n[a] <= lo_self[a]`), the neighbor is the
+                # periodic wrap from the hi-face; shift by +L_a.
+                if hi_n[a] <= lo_self[a] + eps_a[a]
+                    wrap_arrs_hi[i] = L[a]
+                end
+            end
+        end
+    end
+    return ((wrap_lo_1, wrap_lo_2), (wrap_hi_1, wrap_hi_2))
+end
+
+"""
     build_residual_aux_2D(fields::PolynomialFieldSet,
                           mesh::HierarchicalMesh{2},
                           frame::EulerianFrame{2, T},
@@ -652,12 +751,20 @@ function build_residual_aux_2D(fields::PolynomialFieldSet,
         Δm_2[i] = ρ_t * (hi[2] - lo[2])
     end
     face_lo_idx, face_hi_idx = build_face_neighbor_tables(mesh, leaves, bc_spec)
+    # M3-4: per-axis-per-cell coordinate-wrap offsets for periodic axes.
+    # For non-periodic axes the offsets are zero, so the residual stays
+    # bit-exact to M3-3c on REFLECTING/INFLOW/OUTFLOW configurations.
+    wrap_lo_idx, wrap_hi_idx = build_periodic_wrap_tables(mesh, frame, leaves,
+                                                            face_lo_idx,
+                                                            face_hi_idx)
     return (
         s_vec       = s_vec,
         θR_vec      = θR_vec,
         Δm_per_axis = (Δm_1, Δm_2),
         face_lo_idx = face_lo_idx,
         face_hi_idx = face_hi_idx,
+        wrap_lo_idx = wrap_lo_idx,
+        wrap_hi_idx = wrap_hi_idx,
         M_vv_override = M_vv_override,
         ρ_ref       = ρ_t,
     )
@@ -788,6 +895,9 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
     face_hi     = aux.face_hi_idx
     M_vv_over   = aux.M_vv_override
     ρ_ref       = aux.ρ_ref
+    # M3-4: optional per-axis-per-cell coordinate-wrap offsets.
+    wrap_lo     = haskey(aux, :wrap_lo_idx) ? aux.wrap_lo_idx : nothing
+    wrap_hi     = haskey(aux, :wrap_hi_idx) ? aux.wrap_hi_idx : nothing
 
     N = length(s_vec)
     @assert length(y_np1) == 9 * N "y_np1 length $(length(y_np1)) does not match 9 * N = $(9 * N)"
@@ -839,6 +949,10 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
             ilo = face_lo[a][i]
             ihi = face_hi[a][i]
 
+            # M3-4 periodic wrap (see `cholesky_el_residual_2D!`).
+            wrap_lo_off = wrap_lo === nothing ? zero(Tres) : Tres(wrap_lo[a][i])
+            wrap_hi_off = wrap_hi === nothing ? zero(Tres) : Tres(wrap_hi[a][i])
+
             # Lo-face neighbor data; mirror-self when out-of-domain.
             if ilo == 0
                 x_lo_n   = x_n
@@ -847,8 +961,8 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
                 u_lo_np1 = u_np1
                 s_lo     = s_i
             else
-                x_lo_n   = get_x(y_n,   a, ilo)
-                x_lo_np1 = get_x(y_np1, a, ilo)
+                x_lo_n   = get_x(y_n,   a, ilo) + wrap_lo_off
+                x_lo_np1 = get_x(y_np1, a, ilo) + wrap_lo_off
                 u_lo_n   = get_u(y_n,   a, ilo)
                 u_lo_np1 = get_u(y_np1, a, ilo)
                 s_lo     = s_vec[ilo]
@@ -864,8 +978,8 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
                 u_hi_np1 = u_np1
                 s_hi     = s_i
             else
-                x_hi_n   = get_x(y_n,   a, ihi)
-                x_hi_np1 = get_x(y_np1, a, ihi)
+                x_hi_n   = get_x(y_n,   a, ihi) + wrap_hi_off
+                x_hi_np1 = get_x(y_np1, a, ihi) + wrap_hi_off
                 u_hi_n   = get_u(y_n,   a, ihi)
                 u_hi_np1 = get_u(y_np1, a, ihi)
                 s_hi     = s_vec[ihi]

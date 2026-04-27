@@ -305,4 +305,20 @@ export action_error_indicator_2d_per_axis,
        register_field_set_on_refine!,
        step_with_amr_2d!
 
+# --- Phase M3-4 API: periodic-x coordinate wrap on the 2D EL residual ------
+# Per-axis-per-cell coordinate-wrap offsets for the 2D Cholesky-sector
+# residual. Closes the M3-3c handoff item flagged as "the periodic-x
+# coordinate wrap for active strain is a noted M3-3c handoff item": the
+# 2D residual now correctly handles periodic boundaries on active /
+# advecting flows, mirroring the 1D path's `+L_box` wrap in
+# `cholesky_sector.jl::det_el_residual` at `j == N`.
+#
+# `build_residual_aux_2D` now populates `wrap_lo_idx, wrap_hi_idx` in the
+# returned NamedTuple. Both 2D residuals (`cholesky_el_residual_2D!` and
+# `cholesky_el_residual_2D_berry!`) consume them when present and fall
+# back to zero offsets when absent (legacy callers continue to work
+# byte-equally on REFLECTING configurations). See
+# `reference/notes_M3_4_tier_c_consistency.md`.
+export build_periodic_wrap_tables
+
 end # module

@@ -406,4 +406,18 @@ using Test
         # `reference/notes_M3_3e_4_realizability_native.md`.
         include("test_M3_3e_4_realizability_native_vs_cache.jl")
     end
+    @testset verbose = true "Phase M3-4: periodic-x wrap on 2D EL residual" begin
+        # M3-4 prerequisite: closes the M3-3c handoff item "the periodic-x
+        # coordinate wrap for active strain is a noted M3-3c handoff
+        # item". Adds `build_periodic_wrap_tables` and threads per-axis-
+        # per-cell wrap offsets into both `cholesky_el_residual_2D!` and
+        # `cholesky_el_residual_2D_berry!`. The 2D residual now correctly
+        # handles periodic boundaries on active / advecting flows,
+        # mirroring the 1D `+L_box` wrap in
+        # `cholesky_sector.jl::det_el_residual`. Tests verify cell-extent
+        # positivity at the seam, REFLECTING/PERIODIC mix correctness,
+        # and translation equivariance. See
+        # `reference/notes_M3_4_tier_c_consistency.md`.
+        include("test_M3_4_periodic_wrap.jl")
+    end
 end

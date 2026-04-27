@@ -173,7 +173,12 @@ status notes (each with its own bit-exact gate breakdown).
 1. **M3-4** — Tier C consistency tests: 1D ⊂ 2D parity on the full
    physics suite (Sod, cold-sinusoid, wave-pool) on the native
    `HierarchicalMesh{2}` + `PolynomialFieldSet` substrate. Per
-   methods paper §10 / §10.7. Now unblocked.
+   methods paper §10 / §10.7. **Status (2026-04-26):** prerequisite
+   periodic-x coordinate wrap landed (the M3-3c handoff item — closes
+   architectural Q#6). +46 asserts (13375 + 1 → 13421 + 1, byte-equal
+   regression). C.1 / C.2 / C.3 solver-coupled drivers + acceptance
+   gates remain to land in follow-up commits. See
+   `reference/notes_M3_4_tier_c_consistency.md`.
 2. **M3-5** — higher-order Bernstein per-cell reconstruction on the
    2D field set; per the methods paper §9.2.
 3. **M3-6 / D.1 KH falsifier** — activate off-diagonal β_{12}, β_{21}
