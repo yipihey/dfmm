@@ -375,4 +375,13 @@ using Test
         # `reference/notes_M3_3e_1_det_step_native.md`.
         include("test_M3_3e_1_native_vs_cache.jl")
     end
+    @testset verbose = true "Phase M3-3e-2: native stochastic injection vs cache_mesh" begin
+        # M3-3e-2 defensive cross-check: native `inject_vg_noise_HG!`
+        # and `det_run_stochastic_HG!` must produce byte-equal state to
+        # M1's `inject_vg_noise!` / `det_run_stochastic!` on a parallel
+        # `Mesh1D`. RNG sequencing gate at K = 10 steps. After M3-3e-5
+        # drops the cache_mesh field this test will be retired. See
+        # `reference/notes_M3_3e_2_stochastic_native.md`.
+        include("test_M3_3e_2_stochastic_native_vs_cache.jl")
+    end
 end
