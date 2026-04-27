@@ -470,4 +470,10 @@ using Test
         # k = (1, 1); conservation gates.
         include("test_M3_4_C2_cold_sinusoid.jl")
     end
+    @testset verbose = true "Phase M3-4 Phase 2 (d): C.3 2D plane wave" begin
+        # M3-4 Phase 2 (d): C.3 2D plane-wave acceptance driver.
+        # u parallel to k̂ at IC; rotational invariance under π/2; bounded
+        # mode amplitude under linear-acoustic evolution; conservation.
+        include("test_M3_4_C3_plane_wave.jl")
+    end
 end
