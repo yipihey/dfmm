@@ -523,4 +523,28 @@ using Test
         include("test_M3_6_phase1b_kh_ic.jl")
         include("test_M3_6_phase1b_realizability_4comp.jl")
     end
+
+    @testset verbose = true "Phase M3-6 Phase 1c: D.1 KH falsifier" begin
+        # M3-6 Phase 1c closes M3-6 Phase 1 (D.1 Kelvin-Helmholtz
+        # falsifier — methods paper §10.5 D.1). The
+        # `experiments/D1_KH_growth_rate.jl` driver runs the Phase 1b
+        # KH IC through `det_step_2d_berry_HG!` (Phase 1a strain
+        # coupling + Phase 1b 4-component realizability cone) at
+        # multiple refinement levels, fits the linear growth rate
+        # γ_measured to the antisymmetric tilt-mode amplitude, and
+        # compares to the classical Drazin-Reid prediction
+        # γ_DR = U / (2 w). The c_off² calibration value is the
+        # methods paper's prediction. Acceptance gates:
+        #   • γ_measured / γ_DR ∈ [0.5, 2.0] at level 4 (16×16 mesh).
+        #   • Mesh refinement convergence: |γ(L=5) − γ(L=4)| / |γ(L=4)|
+        #     ≤ 0.2 across the level 4 → 5 → 6 sweep.
+        #   • 4-component realizability: total n_negative_jacobian == 0
+        #     across all leaves throughout the run.
+        #   • Long-horizon stability: 3·T_KH NaN-free at level 3.
+        # The level-5 mesh-sweep run is in this test file (it adds
+        # ~5 minutes; the full level-6 sweep is left to the driver
+        # for the headline figure). See
+        # `reference/notes_M3_6_phase1c_D1_kh_falsifier.md`.
+        include("test_M3_6_phase1c_D1_kh_growth_rate.jl")
+    end
 end
