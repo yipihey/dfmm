@@ -406,4 +406,44 @@ using Test
         # `reference/notes_M3_3e_4_realizability_native.md`.
         include("test_M3_3e_4_realizability_native_vs_cache.jl")
     end
+    @testset verbose = true "Foundation unit tests (defence in depth)" begin
+        # Unit-level defence-in-depth tests added to back the
+        # integrator-level regression gates with closed-form pins on
+        # the underlying primitives. Each file targets one or two
+        # files in `src/` and verifies analytic invariants
+        # (covariant derivative, action quadrature, AMR conservation,
+        # mesh helpers, BGK relaxation, stochastic injection sub-steps,
+        # I/O error paths, RNG-determinism, realizability clamps, and
+        # plotting helpers' API contract).
+        @testset "discrete_transport: D_t_q closed forms" begin
+            include("test_discrete_transport_unit.jl")
+        end
+        @testset "discrete_action: midpoint quadrature primitives" begin
+            include("test_discrete_action_unit.jl")
+        end
+        @testset "amr_1d: refine/coarsen conservation (extended)" begin
+            include("test_amr_conservation_unit.jl")
+        end
+        @testset "segment: mesh helpers and constructors" begin
+            include("test_segment_unit.jl")
+        end
+        @testset "deviatoric: BGK relaxation primitives" begin
+            include("test_deviatoric_unit.jl")
+        end
+        @testset "stochastic_injection: per-step internals" begin
+            include("test_stochastic_injection_unit.jl")
+        end
+        @testset "io: error paths and edge cases" begin
+            include("test_io_errors.jl")
+        end
+        @testset "stochastic: RNG-determinism reproducibility" begin
+            include("test_stochastic_reproducibility.jl")
+        end
+        @testset "realizability: gamma + projection clamps" begin
+            include("test_realizability_clamps.jl")
+        end
+        @testset "plotting: API contract beyond crash" begin
+            include("test_plotting_unit.jl")
+        end
+    end
 end
