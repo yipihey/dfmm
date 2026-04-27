@@ -449,4 +449,12 @@ using Test
         include("test_M3_5_liouville_monotone.jl")
         include("test_M3_5_intexact_audit.jl")
     end
+    @testset verbose = true "Phase M3-4 Phase 2: Tier-C IC bridge" begin
+        # M3-4 Phase 2 (a): IC bridge from primitive (ρ, u_x, u_y, P) onto
+        # the M3-3 12-field Cholesky-sector state, plus the inverse
+        # primitive-recovery diagnostic. See
+        # `reference/notes_M3_4_tier_c_consistency.md`
+        # §"Pre-Tier-C handoff items" deliverables 1+2.
+        include("test_M3_4_ic_bridge.jl")
+    end
 end

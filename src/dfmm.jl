@@ -385,4 +385,18 @@ function det_run_with_remap_HG!(remap_state::BayesianRemapState,
 end
 export det_run_with_remap_HG!
 
+# --- Phase M3-4 Phase 2 API: Tier-C IC bridge + primitive recovery -------
+# Bridges primitive `(ρ, u_x, u_y, P)` cell-averages onto the M3-3 12-field
+# Cholesky-sector state `(x_a, u_a, α_a, β_a, θ_R, s, Pp, Q)` consumed by
+# `det_step_2d_berry_HG!`, plus the inverse `primitive_recovery_2d` used
+# for the C.1 / C.2 / C.3 acceptance gates. Cold-limit, isotropic IC
+# convention: α = 1, β = 0, θ_R = 0, Pp = Q = 0; s solved from the EOS
+# `Mvv(1/ρ, s) = P/ρ` via `s_from_pressure_density`. See
+# `reference/notes_M3_4_tier_c_consistency.md` §"Pre-Tier-C handoff items".
+export s_from_pressure_density,
+       cholesky_sector_state_from_primitive,
+       primitive_recovery_2d, primitive_recovery_2d_per_cell
+export tier_c_sod_full_ic, tier_c_cold_sinusoid_full_ic,
+       tier_c_plane_wave_full_ic
+
 end # module

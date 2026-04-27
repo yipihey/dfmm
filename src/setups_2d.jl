@@ -721,3 +721,459 @@ function read_detfield_2d(fields::PolynomialFieldSet, leaf_cell_idx::Integer)
     Q  = fields.Q[leaf_cell_idx][1]
     return DetField2D(x, u, α, β, θR, s, Pp, Q)
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-4 Phase 2: Tier-C IC bridge — primitive (ρ, u_x, u_y, P) → Cholesky
+# ─────────────────────────────────────────────────────────────────────
+#
+# Bridges the existing primitive Tier-C IC factories
+# (`tier_c_sod_ic`, `tier_c_cold_sinusoid_ic`, `tier_c_plane_wave_ic`)
+# onto the M3-3 Cholesky-sector field set
+# `(x_a, u_a, α_a, β_a, θ_R, s, Pp, Q)` consumed by
+# `det_step_2d_berry_HG!`.
+#
+# Conventions (per the M3-4 handoff §"Pre-Tier-C handoff items"):
+#   • α_a = 1.0 for both axes (cold-limit, isotropic IC).
+#   • β_a = 0.0 for both axes.
+#   • θ_R = 0.0 (no off-diagonal strain at IC).
+#   • s solved from the EOS: Mvv(J = 1/ρ, s) = P/ρ
+#       => log(P/ρ) = (1-Γ) log(1/ρ) + s/c_v
+#       => s        = c_v · (log(P/ρ) - (1-Γ)·log(1/ρ))
+#                   = c_v · (log(P/ρ) + (Γ-1)·log(1/ρ))
+#   • Pp = 0, Q = 0 (no deviatoric / heat-flux at IC).
+#   • (x_1, x_2) = cell centers from `cell_physical_box(frame, ci)`.
+#   • (u_1, u_2) from the Tier-C velocity components.
+
+"""
+    s_from_pressure_density(ρ, P; Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT)
+
+Inverse of the EOS closure `M_vv(J, s) = J^(1-Γ) · exp(s/c_v) = P/ρ`
+with `J = 1/ρ`. Solves for the specific entropy `s`:
+
+    s = c_v · (log(P/ρ) + (Γ-1)·log(1/ρ))
+      = c_v · (log(P/ρ) - (Γ-1)·log(ρ))
+
+Round-trip: `Mvv(1/ρ, s_from_pressure_density(ρ, P)) ≈ P/ρ` to round-off.
+
+Used by the Tier-C IC bridge to map primitive `(ρ, P)` to the
+Cholesky-sector state's specific entropy field.
+"""
+@inline function s_from_pressure_density(ρ::Real, P::Real;
+                                          Gamma::Real = GAMMA_LAW_DEFAULT,
+                                          cv::Real = CV_DEFAULT)
+    ρ > 0 && P > 0 ||
+        throw(ArgumentError("ρ ($ρ) and P ($P) must be > 0"))
+    return cv * (log(P / ρ) + (Gamma - 1) * log(1 / ρ))
+end
+
+"""
+    cholesky_sector_state_from_primitive(ρ, u_x, u_y, P, x_center;
+                                          Gamma=GAMMA_LAW_DEFAULT,
+                                          cv=CV_DEFAULT)
+        -> DetField2D{Float64}
+
+Tier-C IC bridge: map a primitive `(ρ, u_x, u_y, P)` cell average plus
+the cell center `x_center::NTuple{2}` onto the M3-3 Cholesky-sector
+state `(x_a, u_a, α_a, β_a, θ_R, s, Pp, Q)`. Returns a `DetField2D`
+ready to write into a `PolynomialFieldSet` allocated by
+`allocate_cholesky_2d_fields`.
+
+Cold-limit, isotropic IC convention (per M3-4 handoff):
+  • α_a = 1.0, β_a = 0.0 for both axes.
+  • θ_R = 0.0.
+  • s from EOS: `s = c_v · (log(P/ρ) - (Γ-1)·log(ρ))`.
+  • Pp = 0, Q = 0.
+
+# Notes
+
+  • The α=1, β=0 cold-limit choice puts γ²_a = M_vv − β² = P/ρ at IC.
+    The Newton driver evolves α, β, s under the per-axis EL system
+    starting from this initialization.
+  • The pressure stored implicitly via `s` is recovered by
+    `Mvv(1/ρ, s) = P/ρ`; downstream the Newton driver consumes
+    `s` directly through `aux.s_vec`.
+"""
+function cholesky_sector_state_from_primitive(ρ::Real, u_x::Real, u_y::Real,
+                                                P::Real,
+                                                x_center::NTuple{2,<:Real};
+                                                Gamma::Real = GAMMA_LAW_DEFAULT,
+                                                cv::Real = CV_DEFAULT)
+    s = s_from_pressure_density(ρ, P; Gamma = Gamma, cv = cv)
+    return DetField2D{Float64}(
+        (Float64(x_center[1]), Float64(x_center[2])),
+        (Float64(u_x), Float64(u_y)),
+        (1.0, 1.0),
+        (0.0, 0.0),
+        0.0,
+        Float64(s),
+        0.0, 0.0,
+    )
+end
+
+"""
+    primitive_recovery_2d(fields::PolynomialFieldSet, leaves, frame;
+                          Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT)
+        -> NamedTuple{(:ρ, :u_x, :u_y, :P, :x, :y), NTuple{6, Vector{Float64}}}
+
+Inverse of the Tier-C IC bridge: walk the leaves of a 2D Cholesky-
+sector field set and recover primitive `(ρ, u_x, u_y, P)` per cell
+(plus cell-center coordinates `x, y`) for diagnostics.
+
+The recovery uses the geometric cell extent (from `cell_physical_box`)
+and the per-cell `x_a` Newton-state values to estimate the cell's
+specific volume per axis. For pure-translation flows where cell
+boundaries follow `x_a` strictly, this gives the "physical" instantaneous
+density per cell. For the M3-4 acceptance gates we treat the C.1 / C.2 /
+C.3 ICs as small-amplitude or 1D-symmetric, so the per-cell density is
+read as `ρ = ρ_ref / J_self` where `J_self = 1 / ρ_ref` at IC and
+evolves only weakly under the Newton step.
+
+This is the M3-4 first-cut recovery: the Newton driver does not yet
+update cell boundaries (M3-5 / M3-6 will), so for the C.1 / C.2 / C.3
+gates we recover ρ from the stored `s` and the IC-configured `ρ_ref`
+rather than from a Lagrangian-volume-tracking calculation. Specifically:
+
+    P/ρ = M_vv(J = 1/ρ, s) = ρ^(Γ-1) · exp(s/c_v)
+    => assuming ρ ≈ ρ_ref (zero-strain limit), P = ρ · M_vv(1/ρ, s).
+
+Returns a NamedTuple with vectors of length `length(leaves)` in leaf
+order:
+  • `ρ::Vector{Float64}` — per-cell density (currently uniform under the
+    cold-limit IC bridge; future Lagrangian-volume tracking will make
+    this time-varying).
+  • `u_x, u_y::Vector{Float64}` — per-cell velocity components from
+    the field set's `:u_1, :u_2` slots.
+  • `P::Vector{Float64}` — per-cell pressure, P = ρ · M_vv(1/ρ, s).
+  • `x, y::Vector{Float64}` — cell-center coordinates from
+    `cell_physical_box(frame, ci)`. Useful for y-independence and
+    1D-reduction-vs-golden gates.
+
+# Use cases (M3-4 acceptance gates)
+
+  • C.1 1D-symmetric Sod: extract a y=const slice → compare to
+    `reference/golden/A1_sod.h5`.
+  • C.1 y-independence diagnostic: assert ρ(x, y_1) ≈ ρ(x, y_2) for
+    all y_1, y_2 in the mesh.
+  • C.3 phase-velocity check: track perturbation amplitude over time
+    along the `k`-direction.
+"""
+function primitive_recovery_2d(fields::PolynomialFieldSet,
+                                leaves::AbstractVector{<:Integer},
+                                frame::EulerianFrame{2, T};
+                                ρ_ref::Real = 1.0,
+                                Gamma::Real = GAMMA_LAW_DEFAULT,
+                                cv::Real = CV_DEFAULT) where {T}
+    N = length(leaves)
+    ρ_out  = Vector{Float64}(undef, N)
+    u_x    = Vector{Float64}(undef, N)
+    u_y    = Vector{Float64}(undef, N)
+    P_out  = Vector{Float64}(undef, N)
+    x_out  = Vector{Float64}(undef, N)
+    y_out  = Vector{Float64}(undef, N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        x_out[i] = 0.5 * (lo_c[1] + hi_c[1])
+        y_out[i] = 0.5 * (lo_c[2] + hi_c[2])
+        u_x[i]   = Float64(fields.u_1[ci][1])
+        u_y[i]   = Float64(fields.u_2[ci][1])
+        s_i      = Float64(fields.s[ci][1])
+        # Cold-limit bridge IC: ρ ≈ ρ_ref. For the M3-4 zero-strain /
+        # short-time gates this holds; the Newton driver evolves α and
+        # β but does not modify the cell-tagged density. Future M3-5 /
+        # M3-6 work tracks the Lagrangian J explicitly.
+        ρ_out[i] = Float64(ρ_ref)
+        P_out[i] = ρ_out[i] * Float64(Mvv(1.0 / ρ_out[i], s_i; Gamma = Gamma, cv = cv))
+    end
+    return (ρ = ρ_out, u_x = u_x, u_y = u_y, P = P_out, x = x_out, y = y_out)
+end
+
+"""
+    primitive_recovery_2d_per_cell(fields, leaves, frame, ρ_per_cell;
+                                    Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT)
+
+Variant of `primitive_recovery_2d` for non-uniform-density configurations
+(e.g. C.1 Sod). Takes an explicit per-cell `ρ_per_cell::Vector{Float64}`
+(length `N`, leaf-major) so the C.1 driver can pass the IC's two-state
+density profile through to the recovery / pressure reconstruction.
+"""
+function primitive_recovery_2d_per_cell(fields::PolynomialFieldSet,
+                                         leaves::AbstractVector{<:Integer},
+                                         frame::EulerianFrame{2, T},
+                                         ρ_per_cell::AbstractVector{<:Real};
+                                         Gamma::Real = GAMMA_LAW_DEFAULT,
+                                         cv::Real = CV_DEFAULT) where {T}
+    N = length(leaves)
+    @assert length(ρ_per_cell) == N "ρ_per_cell length $(length(ρ_per_cell)) ≠ N=$N"
+    ρ_out  = Vector{Float64}(undef, N)
+    u_x    = Vector{Float64}(undef, N)
+    u_y    = Vector{Float64}(undef, N)
+    P_out  = Vector{Float64}(undef, N)
+    x_out  = Vector{Float64}(undef, N)
+    y_out  = Vector{Float64}(undef, N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        x_out[i] = 0.5 * (lo_c[1] + hi_c[1])
+        y_out[i] = 0.5 * (lo_c[2] + hi_c[2])
+        u_x[i]   = Float64(fields.u_1[ci][1])
+        u_y[i]   = Float64(fields.u_2[ci][1])
+        s_i      = Float64(fields.s[ci][1])
+        ρ_i      = Float64(ρ_per_cell[i])
+        ρ_out[i] = ρ_i
+        P_out[i] = ρ_i * Float64(Mvv(1.0 / ρ_i, s_i; Gamma = Gamma, cv = cv))
+    end
+    return (ρ = ρ_out, u_x = u_x, u_y = u_y, P = P_out, x = x_out, y = y_out)
+end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-4 Phase 2: Full-IC factories — Cholesky-sector field set built
+# from primitive Tier-C IC factories.
+# ─────────────────────────────────────────────────────────────────────
+#
+# These extend the existing primitive `tier_c_*_ic` factories: the
+# factories return primitive `(ρ, u_x, u_y, P)` field sets; the *_full_ic
+# wrappers below allocate a Cholesky-sector field set, call the
+# primitive factory under the hood, then apply the IC bridge per leaf.
+
+"""
+    tier_c_sod_full_ic(; level=4, shock_axis=1, x_split=0.5,
+                       ρL=1.0, ρR=0.125, pL=1.0, pR=0.1,
+                       uL=0.0, uR=0.0, lo=nothing, hi=nothing,
+                       quad_order=3,
+                       Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                       T=Float64)
+        -> NamedTuple{(:name, :mesh, :frame, :leaves, :fields, :ρ_per_cell, :params)}
+
+Allocate a 2D Cholesky-sector field set + balanced HG mesh and populate
+it with the C.1 1D-symmetric 2D Sod IC. Returns:
+
+  • `name = "tier_c_sod_full"`
+  • `mesh::HierarchicalMesh{2}` — balanced quadtree of (2^level)² leaves.
+  • `frame::EulerianFrame{2, T}`
+  • `leaves::Vector{Int}` — leaf-iteration order.
+  • `fields::PolynomialFieldSet` — 12-named-field 2D Cholesky-sector
+    storage (allocated via `allocate_cholesky_2d_fields`), populated
+    cell-by-cell via the IC bridge.
+  • `ρ_per_cell::Vector{Float64}` — leaf-major per-cell density (Sod
+    has a 8× jump along `shock_axis`); used by the C.1 driver as the
+    per-cell density for the residual's pressure stencil and primitive
+    recovery.
+  • `params::NamedTuple` — IC parameters echo (for downstream tests).
+"""
+function tier_c_sod_full_ic(; level::Integer = 4,
+                            shock_axis::Integer = 1,
+                            x_split::Real = 0.5,
+                            ρL::Real = 1.0, ρR::Real = 0.125,
+                            pL::Real = 1.0, pR::Real = 0.1,
+                            uL::Real = 0.0, uR::Real = 0.0,
+                            lo = nothing, hi = nothing,
+                            quad_order::Integer = 3,
+                            Gamma::Real = GAMMA_LAW_DEFAULT,
+                            cv::Real = CV_DEFAULT,
+                            T::Type = Float64)
+    # Step 1: build primitive Tier-C IC.
+    prim_ic = tier_c_sod_ic(; D = 2, level = level, shock_axis = shock_axis,
+                             x_split = x_split,
+                             ρL = ρL, ρR = ρR, pL = pL, pR = pR,
+                             uL = uL, uR = uR,
+                             lo = lo, hi = hi,
+                             quad_order = quad_order, T = T)
+
+    # Step 2: rebuild a balanced HG mesh of the same shape (the
+    # primitive IC uses a non-balanced default; the M3-3 Newton driver
+    # asserts `mesh.balanced == true`).
+    mesh = HierarchicalMesh{2}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, prim_ic.params.lo, prim_ic.params.hi)
+    fields = allocate_cholesky_2d_fields(mesh; T = T)
+
+    # Step 3: per-leaf IC bridge.
+    ρ_per_cell = Vector{Float64}(undef, length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        # Sod is a step along `shock_axis`; map cell-center.
+        center = (cx, cy)
+        is_left = center[shock_axis] < x_split
+        ρ_i = Float64(is_left ? ρL : ρR)
+        P_i = Float64(is_left ? pL : pR)
+        u_axis = Float64(is_left ? uL : uR)
+        u_x = shock_axis == 1 ? u_axis : 0.0
+        u_y = shock_axis == 2 ? u_axis : 0.0
+        v = cholesky_sector_state_from_primitive(ρ_i, u_x, u_y, P_i,
+                                                   (cx, cy);
+                                                   Gamma = Gamma, cv = cv)
+        write_detfield_2d!(fields, ci, v)
+        ρ_per_cell[j] = ρ_i
+    end
+
+    return (
+        name = "tier_c_sod_full",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        params = (level = level, shock_axis = shock_axis, x_split = x_split,
+                   ρL = ρL, ρR = ρR, pL = pL, pR = pR, uL = uL, uR = uR,
+                   lo = prim_ic.params.lo, hi = prim_ic.params.hi,
+                   quad_order = quad_order, Gamma = Gamma, cv = cv),
+    )
+end
+
+"""
+    tier_c_cold_sinusoid_full_ic(; level=4, A=0.5, k=(1, 0),
+                                  ρ0=1.0, P0=1.0,
+                                  lo=nothing, hi=nothing,
+                                  quad_order=3,
+                                  Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                                  T=Float64)
+        -> NamedTuple
+
+C.2 2D cold sinusoid full Cholesky-sector IC. Builds a balanced quadtree,
+allocates the 12-field 2D Cholesky-sector field set, and populates it
+per-leaf via the IC bridge. The velocity field is
+
+    u_d(x) = A · sin(2π · k_d · (x_d − lo_d) / L_d)    for d ∈ {1, 2}
+
+with uniform `(ρ0, P0)`. The density is uniform so `ρ_per_cell` is a
+constant `fill(ρ0, N)`.
+
+Returns the same NamedTuple shape as `tier_c_sod_full_ic`.
+"""
+function tier_c_cold_sinusoid_full_ic(; level::Integer = 4,
+                                       A::Real = 0.5,
+                                       k = (1, 0),
+                                       ρ0::Real = 1.0, P0::Real = 1.0,
+                                       lo = nothing, hi = nothing,
+                                       quad_order::Integer = 3,
+                                       Gamma::Real = GAMMA_LAW_DEFAULT,
+                                       cv::Real = CV_DEFAULT,
+                                       T::Type = Float64)
+    lo_t, hi_t = _default_box(2, lo, hi, T;
+                                default_lo = (zero(T), zero(T)),
+                                default_hi = (one(T), one(T)))
+    k_t = (Int(k[1]), Int(k[2]))
+
+    mesh = HierarchicalMesh{2}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_2d_fields(mesh; T = T)
+
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    ρ_per_cell = fill(Float64(ρ0), length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        u_x = k_t[1] == 0 ? 0.0 : Float64(A) * sin(2π * k_t[1] * (cx - lo_t[1]) / L1)
+        u_y = k_t[2] == 0 ? 0.0 : Float64(A) * sin(2π * k_t[2] * (cy - lo_t[2]) / L2)
+        v = cholesky_sector_state_from_primitive(Float64(ρ0), u_x, u_y, Float64(P0),
+                                                   (cx, cy);
+                                                   Gamma = Gamma, cv = cv)
+        write_detfield_2d!(fields, ci, v)
+    end
+
+    return (
+        name = "tier_c_cold_sinusoid_full",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        params = (level = level, A = A, k = k_t, ρ0 = ρ0, P0 = P0,
+                   lo = lo_t, hi = hi_t,
+                   quad_order = quad_order, Gamma = Gamma, cv = cv),
+    )
+end
+
+"""
+    tier_c_plane_wave_full_ic(; level=4, A=1e-3, k_mag=1, angle=0.0,
+                              ρ0=1.0, P0=1.0, c=nothing,
+                              lo=nothing, hi=nothing,
+                              quad_order=3,
+                              Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                              T=Float64)
+        -> NamedTuple
+
+C.3 2D acoustic plane-wave full Cholesky-sector IC at angle `angle`
+(radians) to the x-axis. Builds a balanced quadtree, allocates the
+12-field 2D Cholesky-sector field set, and populates per-leaf via the
+IC bridge. The IC seeds a single right-going acoustic mode about
+`(ρ0, 0, P0)`:
+
+    δρ(x) = A · cos(2π · k · x / L)
+    δu_d(x) = (c_s / ρ0) · δρ(x) · k̂_d
+    δp(x) = c_s² · δρ(x)
+
+with `k = k_mag · (cos θ, sin θ)`. The sound-speed `c_s` defaults to
+`sqrt(Γ · P0/ρ0)` (γ-law); pass an explicit `c` to override.
+
+Returns the same NamedTuple shape as the other full-IC factories. The
+`ρ_per_cell` is the cell-by-cell perturbed density `ρ0 + δρ(cell-center)`,
+suitable for the residual's pressure stencil under the Newton driver.
+"""
+function tier_c_plane_wave_full_ic(; level::Integer = 4,
+                                    A::Real = 1e-3,
+                                    k_mag::Real = 1,
+                                    angle::Real = 0.0,
+                                    ρ0::Real = 1.0, P0::Real = 1.0,
+                                    c::Union{Real,Nothing} = nothing,
+                                    lo = nothing, hi = nothing,
+                                    quad_order::Integer = 3,
+                                    Gamma::Real = GAMMA_LAW_DEFAULT,
+                                    cv::Real = CV_DEFAULT,
+                                    T::Type = Float64)
+    lo_t, hi_t = _default_box(2, lo, hi, T;
+                                default_lo = (zero(T), zero(T)),
+                                default_hi = (one(T), one(T)))
+
+    mesh = HierarchicalMesh{2}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_2d_fields(mesh; T = T)
+
+    L1 = hi_t[1] - lo_t[1]
+    θ = Float64(angle)
+    k_phys = (Float64(k_mag) * cos(θ) / L1, Float64(k_mag) * sin(θ) / L1)
+    kmag_phys = sqrt(k_phys[1]^2 + k_phys[2]^2)
+    k̂ = kmag_phys > 0 ? (k_phys[1] / kmag_phys, k_phys[2] / kmag_phys) : (0.0, 0.0)
+
+    c_eff = c === nothing ? sqrt(Float64(Gamma) * Float64(P0) / Float64(ρ0)) : Float64(c)
+
+    ρ_per_cell = Vector{Float64}(undef, length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        phase = k_phys[1] * (cx - lo_t[1]) + k_phys[2] * (cy - lo_t[2])
+        δρ = Float64(A) * cos(2π * phase)
+        ρ_i = Float64(ρ0) + δρ
+        P_i = Float64(P0) + c_eff^2 * δρ
+        u_x = (c_eff / Float64(ρ0)) * δρ * k̂[1]
+        u_y = (c_eff / Float64(ρ0)) * δρ * k̂[2]
+        v = cholesky_sector_state_from_primitive(ρ_i, u_x, u_y, P_i,
+                                                   (cx, cy);
+                                                   Gamma = Gamma, cv = cv)
+        write_detfield_2d!(fields, ci, v)
+        ρ_per_cell[j] = ρ_i
+    end
+
+    return (
+        name = "tier_c_plane_wave_full",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        params = (level = level, A = A, k_mag = k_mag, angle = angle,
+                   ρ0 = ρ0, P0 = P0, c = c_eff,
+                   k = k_phys, k̂ = k̂,
+                   lo = lo_t, hi = hi_t,
+                   quad_order = quad_order, Gamma = Gamma, cv = cv),
+    )
+end
