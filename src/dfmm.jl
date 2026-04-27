@@ -455,6 +455,16 @@ export DetField3D
 export cholesky_decompose_3d, cholesky_recompose_3d, gamma_per_axis_3d
 export rotation_matrix_3d
 
+# --- Phase M3-7a API: 3D Cholesky-sector field-set allocator + helpers ----
+# `allocate_cholesky_3d_fields(mesh::HierarchicalMesh{3})` builds the 16-
+# named-field `PolynomialFieldSet` over `n_cells(mesh)` mirroring the M3-3a
+# 2D allocator pattern; `read_detfield_3d` / `write_detfield_3d!` round-trip
+# a `DetField3D` against it bit-exactly. Lives in `src/setups_2d.jl` (the
+# dimension-generic Tier-C IC factory file). M3-7b will consume these
+# helpers when assembling the native HG-side 3D EL residual.
+# See `reference/notes_M3_7a_3d_halo_allocator.md`.
+export allocate_cholesky_3d_fields, read_detfield_3d, write_detfield_3d!
+
 # --- Phase M3-6 Phase 3 API: 2D substrate (tracers + stoch + γ-diag) -----
 # Three deliverables, each scoped to extend a 1D substrate to 2D:
 #  (a) `TracerMeshHG2D` — per-species per-cell passive scalars on a

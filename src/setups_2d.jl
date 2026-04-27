@@ -2064,3 +2064,153 @@ function tier_d_ism_tracers_ic_full(; level::Integer = 4,
                    Gamma = Gamma, cv = cv),
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-7a: 3D Cholesky-sector field-set allocation + read/write helpers
+# ─────────────────────────────────────────────────────────────────────
+#
+# 3D analog of `allocate_cholesky_2d_fields` / `read_detfield_2d` /
+# `write_detfield_2d!`. Mirrors the 2D pattern but at `MonomialBasis{3,
+# 0}` (one coefficient per cell) and at the 13-Newton-unknowns + (no
+# off-diagonal β + no post-Newton Pp/Q) layout per M3-7 design note §2
+# and `reference/notes_M3_7_prep_3d_scaffolding.md`.
+#
+# Storage layout — 13 named scalar fields on the HG substrate:
+#
+#     :x_1, :x_2, :x_3        Lagrangian position (charge 0)
+#     :u_1, :u_2, :u_3        Lagrangian velocity (charge 0)
+#     :α_1, :α_2, :α_3        principal-axis Cholesky factors
+#     :β_1, :β_2, :β_3        per-axis conjugate momenta (charge 1)
+#     :θ_12, :θ_13, :θ_23     Berry rotation angles (Newton unknowns)
+#     :s                      specific entropy (operator-split)
+#
+# That's 16 named fields total (13 Newton + 1 entropy). The "13 dof"
+# label in the M3-7 design note counts entropy in for completeness but
+# treats it as operator-split — Newton drives 15 fields per cell
+# (positions + velocities + α + β + 3 angles), of which θ_12, θ_13,
+# θ_23 + α + β are the *Cholesky-sector* unknowns (non-position).
+#
+# Off-diagonal β and Pp / Q are deferred — see `DetField3D` docstring
+# for the rationale (M3-3a Q3 default + M3-7 design note §4.4).
+
+"""
+    allocate_cholesky_3d_fields(mesh::HierarchicalMesh{3}; T::Type = Float64)
+        -> PolynomialFieldSet
+
+Allocate the per-cell `PolynomialFieldSet` for the M3-7 3D Cholesky-
+sector EL system (Phase M3-7a). The field set has 16 named scalar
+fields laid out as
+
+    Newton unknowns (13 + s = 16 named):
+        :x_1, :x_2, :x_3      — Lagrangian position components (charge 0)
+        :u_1, :u_2, :u_3      — Lagrangian velocity components (charge 0)
+        :α_1, :α_2, :α_3      — principal-axis Cholesky factors
+        :β_1, :β_2, :β_3      — per-axis conjugate momenta (charge 1)
+        :θ_12, :θ_13, :θ_23   — Berry rotation angles (Cardan ZYX)
+        :s                    — specific entropy (operator-split)
+
+each at `MonomialBasis{3, 0}` (one coefficient per cell — the
+order-0 cell-average storage that mirrors M3-3a's 2D substrate).
+
+# Sizing
+
+The field set is sized to `n_cells(mesh)`, NOT `n_leaves(mesh)`, so
+that HG's `halo_view`-based neighbor access (`hv[i, off]`) maps
+1-to-1 against `mesh.cells[i]`. The leaf-only public API of M3-7b
+will iterate via `enumerate_leaves(mesh)` and use those mesh-cell
+indices directly into the field set.
+
+# Off-diagonal β and post-Newton Pp / Q — deferred
+
+Per M3-7 design note §4.4 + M3-3a Q3 default, the 6 off-diagonal
+`β_{ab}` entries (3 antisymmetric + 3 symmetric in 3D) and the per-
+axis post-Newton `Pp_a`, `Q_a` (3 + 3 = 6 scalars) are NOT carried
+on `DetField3D`. M3-9 (3D D.1 KH follow-up) and M3-7c (post-Newton
+sector activation) will add parallel allocator constructors when
+needed. The current allocator stops at the 13-Newton-unknown set
+matching `n_dof_newton(::DetField3D) == 13`.
+
+# Convention
+
+The Euler-angle convention is the intrinsic Cardan ZYX composition
+pinned in `src/cholesky_DD_3d.jl`:
+
+    R(θ_12, θ_13, θ_23) = R_12(θ_12) · R_13(θ_13) · R_23(θ_23).
+
+At `θ_13 = θ_23 = 0` the 3D rotation reduces to `R_12(θ_12)` byte-
+equally, matching the 2D `R(θ_R)` convention from
+`cholesky_recompose_2d` (the 3D 2D-symmetric ⊂ 2D dimension-lift
+gate, M3-7 design note §7.1b).
+"""
+function allocate_cholesky_3d_fields(mesh::HierarchicalMesh{3};
+                                      T::Type = Float64)
+    basis = MonomialBasis{3, 0}()
+    nc = HierarchicalGrids.n_cells(mesh)
+    return allocate_polynomial_fields(SoA(), basis, Int(nc);
+                                       x_1 = T, x_2 = T, x_3 = T,
+                                       u_1 = T, u_2 = T, u_3 = T,
+                                       α_1 = T, α_2 = T, α_3 = T,
+                                       β_1 = T, β_2 = T, β_3 = T,
+                                       θ_12 = T, θ_13 = T, θ_23 = T,
+                                       s = T)
+end
+
+"""
+    write_detfield_3d!(fields::PolynomialFieldSet, leaf_cell_idx::Integer,
+                        v::DetField3D)
+
+Write a `DetField3D` value into the 16-named-field 3D field set at
+mesh-cell index `leaf_cell_idx`. The field set must be allocated by
+`allocate_cholesky_3d_fields`. Writes 16 scalars total (13 Newton
+unknowns + entropy `s`).
+
+Inverse of `read_detfield_3d`; round-trip is bit-exact.
+"""
+function write_detfield_3d!(fields::PolynomialFieldSet, leaf_cell_idx::Integer,
+                             v::DetField3D)
+    fields.x_1[leaf_cell_idx] = (v.x[1],)
+    fields.x_2[leaf_cell_idx] = (v.x[2],)
+    fields.x_3[leaf_cell_idx] = (v.x[3],)
+    fields.u_1[leaf_cell_idx] = (v.u[1],)
+    fields.u_2[leaf_cell_idx] = (v.u[2],)
+    fields.u_3[leaf_cell_idx] = (v.u[3],)
+    fields.α_1[leaf_cell_idx] = (v.alphas[1],)
+    fields.α_2[leaf_cell_idx] = (v.alphas[2],)
+    fields.α_3[leaf_cell_idx] = (v.alphas[3],)
+    fields.β_1[leaf_cell_idx] = (v.betas[1],)
+    fields.β_2[leaf_cell_idx] = (v.betas[2],)
+    fields.β_3[leaf_cell_idx] = (v.betas[3],)
+    fields.θ_12[leaf_cell_idx] = (v.θ_12,)
+    fields.θ_13[leaf_cell_idx] = (v.θ_13,)
+    fields.θ_23[leaf_cell_idx] = (v.θ_23,)
+    fields.s[leaf_cell_idx]   = (v.s,)
+    return nothing
+end
+
+"""
+    read_detfield_3d(fields::PolynomialFieldSet, leaf_cell_idx::Integer)
+        -> DetField3D
+
+Read a `DetField3D` value from the 16-named-field 3D field set at
+mesh-cell index `leaf_cell_idx`. Inverse of `write_detfield_3d!`;
+round-trip is bit-exact.
+"""
+function read_detfield_3d(fields::PolynomialFieldSet, leaf_cell_idx::Integer)
+    x = (fields.x_1[leaf_cell_idx][1],
+         fields.x_2[leaf_cell_idx][1],
+         fields.x_3[leaf_cell_idx][1])
+    u = (fields.u_1[leaf_cell_idx][1],
+         fields.u_2[leaf_cell_idx][1],
+         fields.u_3[leaf_cell_idx][1])
+    α = (fields.α_1[leaf_cell_idx][1],
+         fields.α_2[leaf_cell_idx][1],
+         fields.α_3[leaf_cell_idx][1])
+    β = (fields.β_1[leaf_cell_idx][1],
+         fields.β_2[leaf_cell_idx][1],
+         fields.β_3[leaf_cell_idx][1])
+    θ12 = fields.θ_12[leaf_cell_idx][1]
+    θ13 = fields.θ_13[leaf_cell_idx][1]
+    θ23 = fields.θ_23[leaf_cell_idx][1]
+    s   = fields.s[leaf_cell_idx][1]
+    return DetField3D(x, u, α, β, θ12, θ13, θ23, s)
+end
