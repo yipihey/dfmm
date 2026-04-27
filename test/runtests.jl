@@ -229,6 +229,19 @@ using Test
         # and `src/berry.jl` for the implementation.
         include("test_M3_prep_berry_stencil.jl")
     end
+    @testset verbose = true "Phase M3-3a: HaloView smoke + 2D field set + Cholesky DD" begin
+        # M3-3a sub-phase of M3-3 (2D Cholesky + Berry connection).
+        # Three tests:
+        #   • HaloView coefficient access for an order-0 MonomialBasis{2, 0}
+        #     field on an 8×8 balanced 2D HierarchicalMesh.
+        #   • Per-axis Cholesky decomposition driver in `src/cholesky_DD.jl`
+        #     (decompose ↔ recompose round-trip; per-axis γ diagnostic).
+        #   • 2D 10-dof field-set allocation + read/write round-trip.
+        # See `reference/notes_M3_3_2d_cholesky_berry.md` §9 (sub-phase
+        # split) and `reference/notes_M3_3a_field_set_cholesky.md`
+        # (this sub-phase's status note).
+        include("test_M3_3a_halo_smoke.jl")
+    end
     @testset verbose = true "Phase M3-2: Phase 7/8/11 + M2 on HG" begin
         # Phase 7 (heat-flux Q + steady shock + inflow/outflow), Phase 8
         # (variance-gamma stochastic injection), Phase 11 (passive
