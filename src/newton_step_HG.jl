@@ -454,23 +454,33 @@ end
                  abstol=1e-13, reltol=1e-13, maxiters=50)
 
 Advance the HG-substrate Phase-2/5/5b/7 mesh by one timestep `dt`.
-Bit-exact delegate to M1's `det_step!`: the cached `Mesh1D` is
-refreshed from the HG field set, M1's `det_step!` is called with
-identical kwargs, and the result is written back. The `tau` /
-`q_kind` / etc. semantics are identical to M1.
+
+**M3-3e-1: native HG-side Newton driver.** Pre-M3-3e-1, this driver
+synced state into a cached `Mesh1D` shim and delegated to M1's
+`det_step!`. Starting M3-3e-1 the deterministic Newton path runs
+natively on the HG field set and per-wrapper bookkeeping (`mesh.Δm`,
+`mesh.L_box`, `mesh.p_half`, `mesh.bc`/`bc_spec`, inflow/outflow
+literals). The `cache_mesh` field is still allocated on the wrapper
+because M3-3e-2 (stochastic injection), M3-3e-3 (AMR + tracers), and
+M3-3e-4 (realizability projection) still consume it; M3-3e-5 will
+drop the field once all paths are native.
+
+Bit-exact contract. The native path produces byte-equal output to
+the cache-mesh-driven path on the deterministic Newton tests
+(Phase 2 / 5 / 5b / 7 + M3-2b Swap 8). The Newton solve itself
+already calls the pure-flat-array `det_el_residual` (so per-Newton
+arithmetic is unchanged); the bit-equality covers also the Phase-5
+post-Newton BGK, Phase-5b q-dissipation entropy update, and Phase-7
+inflow/outflow vertex-chain pinning, which are all reimplemented
+against `fields::PolynomialFieldSet` here.
 
 **M3-2b Swap 8:** boundary-condition data (`bc`, `inflow_state`,
 `outflow_state`, `n_pin`) are read from the wrapper struct, not from
 kwargs. Use `DetMeshHG_from_arrays(...; bc, inflow_state, outflow_state,
 n_pin, bc_spec=...)` to attach them at construction. The 1D
 `FrameBoundaries{1}` lives on `mesh.bc_spec`; we translate it to the
-legacy symbol-tag for the cache-mesh delegate via `bc_symbol_from_spec`.
-
-The Phase-7 inflow_outflow path is honoured automatically when
-`mesh.bc_spec` carries `(INFLOW, OUTFLOW)` and `mesh.inflow_state` is
-populated. `Q` (heat-flux) is advanced by `det_step!`'s post-Newton
-operator-split step regardless of BC, so Phase-7 BGK relaxation is
-bit-exact-equal to M1 by construction.
+legacy symbol-tag (still consumed by `det_el_residual` and the
+Phase-7 pinning branch) via `bc_symbol_from_spec`.
 
 Mutates the HG field set in-place; returns `mesh`.
 """
@@ -482,21 +492,389 @@ function det_step_HG!(mesh::DetMeshHG{T}, dt::Real;
                        c_q_lin::Real  = 0.5,
                        abstol::Real = 1e-13, reltol::Real = 1e-13,
                        maxiters::Int = 50) where {T<:Real}
-    sync_cache_from_HG!(mesh)
+    return det_step_HG_native!(mesh, dt;
+                                tau = tau,
+                                sparse_jac = sparse_jac,
+                                q_kind = q_kind,
+                                c_q_quad = c_q_quad,
+                                c_q_lin  = c_q_lin,
+                                abstol = abstol, reltol = reltol,
+                                maxiters = maxiters)
+end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-3e-1: native deterministic Newton driver on the HG field set.
+# ─────────────────────────────────────────────────────────────────────
+#
+# Mirrors M1's `det_step!` (`src/newton_step.jl`) line-for-line on the
+# physics, but reads/writes the per-cell state through
+# `fields::PolynomialFieldSet` (via `read_detfield` / `write_detfield!`)
+# instead of `mesh.segments[j].state`. The `cache_mesh::Mesh1D` shim is
+# not touched.
+#
+# Sub-blocks:
+#   1. Pre-Newton bookkeeping  — pack flat `y_n` and `s_vec`; cache
+#      pre-Newton `ρ_n_vec` and `Pp_n_vec` (Phase 5 transport step).
+#   2. Newton solve           — `det_el_residual` (pure flat-array)
+#      via NonlinearSolve, identical kwargs to M1.
+#   3. Unpack `(x, u, α, β)`  — write back into `fields`; refresh
+#      `mesh.p_half[i] = m̄_i u_i`.
+#   4. Phase 5b post-Newton entropy update for the q-dissipation
+#      (`q_kind = :vNR_linear_quadratic`).
+#   5. Phase 5  post-Newton BGK joint relaxation of (P_xx, P_⊥) +
+#      β realizability clip + Q · exp(-Δt/τ) (when `tau` is supplied).
+#   6. Phase 7  inflow/outflow Dirichlet pinning of leftmost /
+#      rightmost `n_pin` segments + cumulative-Δx vertex chain.
+#
+# All per-segment scalar arithmetic is byte-identical to M1's
+# `det_step!`: the only change is the storage target.
+"""
+    det_step_HG_native!(mesh::DetMeshHG, dt; ...)
+
+Native HG-side variant of `det_step_HG!` that does not touch
+`mesh.cache_mesh`. Bit-exact equal to the M1 cache-mesh-driven path
+on the deterministic Newton tests (M3-1 Phase 2/5/5b, M3-2 Phase 7,
+M3-2b Swap 8). Internal helper; callers should use `det_step_HG!`.
+"""
+function det_step_HG_native!(mesh::DetMeshHG{T}, dt::Real;
+                              tau::Union{Real,Nothing} = nothing,
+                              sparse_jac::Bool = true,
+                              q_kind::Symbol = Q_KIND_NONE,
+                              c_q_quad::Real = 1.0,
+                              c_q_lin::Real  = 0.5,
+                              abstol::Real = 1e-13, reltol::Real = 1e-13,
+                              maxiters::Int = 50) where {T<:Real}
+    @assert q_kind_supported(q_kind) "Unsupported q_kind = $q_kind. " *
+        "Use :none or :vNR_linear_quadratic."
+    N = n_cells(mesh)
+    fs = mesh.fields
+    Δm_vec = copy(mesh.Δm)
+    L_box  = mesh.L_box
     bc_legacy = bc_symbol_from_spec(mesh.bc_spec)
-    det_step!(mesh.cache_mesh, dt;
-              tau = tau,
-              sparse_jac = sparse_jac,
-              q_kind = q_kind,
-              c_q_quad = c_q_quad,
-              c_q_lin  = c_q_lin,
-              bc = bc_legacy,
-              inflow_state = mesh.inflow_state,
-              outflow_state = mesh.outflow_state,
-              n_pin = mesh.n_pin,
-              abstol = abstol, reltol = reltol,
-              maxiters = maxiters)
-    sync_HG_from_cache!(mesh)
+
+    # ── (1) Pre-Newton bookkeeping ───────────────────────────────────
+    # Pack `y_n` and `s_vec` from the field set, cache pre-Newton ρ_n
+    # (segment density) and Pp_n for the Phase-5 transport step.
+    y_n      = Vector{T}(undef, 4N)
+    s_vec    = Vector{T}(undef, N)
+    ρ_n_vec  = Vector{T}(undef, N)
+    Pp_n_vec = Vector{T}(undef, N)
+    @inbounds for j in 1:N
+        x_j  = T(fs.x[j][1])
+        u_j  = T(fs.u[j][1])
+        α_j  = T(fs.alpha[j][1])
+        β_j  = T(fs.beta[j][1])
+        s_j  = T(fs.s[j][1])
+        Pp_j = T(fs.Pp[j][1])
+        y_n[4*(j-1) + 1] = x_j
+        y_n[4*(j-1) + 2] = u_j
+        y_n[4*(j-1) + 3] = α_j
+        y_n[4*(j-1) + 4] = β_j
+        s_vec[j]  = s_j
+        Pp_n_vec[j] = Pp_j
+        # ρ_n = Δm_j / (x_{j+1} - x_j), with periodic wrap on j == N.
+        if j < N
+            x_right_j = T(fs.x[j+1][1])
+        else
+            x_right_j = T(fs.x[1][1]) + L_box
+        end
+        ρ_n_vec[j] = Δm_vec[j] / (x_right_j - x_j)
+    end
+
+    y0 = explicit_euler_guess(y_n, Δm_vec, s_vec, L_box, T(dt))
+
+    # Phase 7: precompute inflow / outflow ghost data for the residual
+    # so the cyclic stencil at the boundary is replaced by Dirichlet
+    # ghosts. Mirrors M1's `det_step!` exactly.
+    inflow_xun  = nothing
+    outflow_xun = nothing
+    inflow_Pq   = nothing
+    outflow_Pq  = nothing
+    if bc_legacy == :inflow_outflow && mesh.inflow_state !== nothing
+        inflow_Pq = T(mesh.inflow_state.Pp)
+        if mesh.outflow_state !== nothing
+            outflow_xun = (
+                x_n   = T(L_box),
+                x_np1 = T(L_box),
+                u_n   = T(mesh.outflow_state.u),
+                u_np1 = T(mesh.outflow_state.u),
+            )
+            outflow_Pq = T(mesh.outflow_state.Pp)
+        end
+    end
+
+    cqq = T(c_q_quad)
+    cql = T(c_q_lin)
+
+    # ── (2) Newton solve ────────────────────────────────────────────
+    p = (y_n, Δm_vec, s_vec, L_box, T(dt))
+    f = (u, p_in) -> begin
+        y_n_in, Δm_in, s_in, L_box_in, dt_in = p_in
+        return det_el_residual(u, y_n_in, Δm_in, s_in, L_box_in, dt_in;
+                               q_kind = q_kind,
+                               c_q_quad = cqq,
+                               c_q_lin  = cql,
+                               bc = bc_legacy,
+                               inflow_xun = inflow_xun,
+                               outflow_xun = outflow_xun,
+                               inflow_Pq = inflow_Pq,
+                               outflow_Pq = outflow_Pq)
+    end
+
+    if sparse_jac && N ≥ 16
+        jac_proto = det_jac_sparsity(N)
+        nf = NonlinearFunction(f; jac_prototype = jac_proto)
+        prob = NonlinearProblem(nf, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    else
+        prob = NonlinearProblem(f, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    end
+    res = det_el_residual(sol.u, y_n, Δm_vec, s_vec, L_box, T(dt);
+                          q_kind = q_kind,
+                          c_q_quad = cqq,
+                          c_q_lin  = cql,
+                          bc = bc_legacy,
+                          inflow_xun = inflow_xun,
+                          outflow_xun = outflow_xun,
+                          inflow_Pq = inflow_Pq,
+                          outflow_Pq = outflow_Pq)
+    res_norm = maximum(abs, res)
+    if res_norm > 1e6 * abstol && sol.retcode != ReturnCode.Success
+        error("det_step_HG_native! Newton solve failed: retcode = $(sol.retcode), " *
+              "‖residual‖∞ = $res_norm")
+    end
+
+    # ── (3) Unpack `(x, u, α, β)` and refresh p_half ────────────────
+    # Mirrors M1's `unpack_state!`: rewrites only x/u/α/β, leaves
+    # s/Pp/Q untouched (entropy is frozen across the Newton step;
+    # post-Newton operator splits below mutate them).
+    @inbounds for j in 1:N
+        x_new = T(sol.u[4*(j-1) + 1])
+        u_new = T(sol.u[4*(j-1) + 2])
+        α_new = T(sol.u[4*(j-1) + 3])
+        β_new = T(sol.u[4*(j-1) + 4])
+        fs.x[j]     = (x_new,)
+        fs.u[j]     = (u_new,)
+        fs.alpha[j] = (α_new,)
+        fs.beta[j]  = (β_new,)
+        i_left = j == 1 ? N : j - 1
+        m̄ = (Δm_vec[i_left] + Δm_vec[j]) / 2
+        mesh.p_half[j] = m̄ * u_new
+    end
+
+    # ── (4) Phase 5b post-Newton entropy update for q-dissipation ────
+    # The artificial viscosity dissipates kinetic energy at rate
+    # `(q/ρ) ∂_x u` (negative when ∂_x u < 0, i.e. compression heats).
+    # For an ideal-gas EOS `M_vv = J^{1-Γ} exp(s/c_v)`, the change in
+    # internal energy at fixed J converts to entropy via
+    #   Δs/c_v = -(Γ-1) (q/P_xx) (∂_x u) Δt
+    # which is non-negative in compression (q > 0, ∂_x u < 0). Skipped
+    # at `q_kind = :none` so Phase 5 behaviour is bit-equal.
+    if q_active(q_kind)
+        Γ_q = T(GAMMA_LAW_DEFAULT)
+        @inbounds for j in 1:N
+            j_right = j == N ? 1 : j + 1
+            wrap = (j == N) ? L_box : zero(T)
+            x_left_n  = y_n[4*(j-1) + 1]
+            x_right_n = y_n[4*(j_right-1) + 1] + wrap
+            x_left_np1  = T(fs.x[j][1])
+            x_right_np1 = T(fs.x[j_right][1]) + wrap
+            u_left_n  = y_n[4*(j-1) + 2]
+            u_right_n = y_n[4*(j_right-1) + 2]
+            u_left_np1  = T(fs.u[j][1])
+            u_right_np1 = T(fs.u[j_right][1])
+
+            x̄_left  = (x_left_n  + x_left_np1)  / 2
+            x̄_right = (x_right_n + x_right_np1) / 2
+            ū_left  = (u_left_n  + u_left_np1)  / 2
+            ū_right = (u_right_n + u_right_np1) / 2
+            Δx̄ = x̄_right - x̄_left
+            divu_j = (ū_right - ū_left) / Δx̄
+            J̄_j = Δx̄ / Δm_vec[j]
+            ρ̄_j = one(T) / J̄_j
+            s_pre = T(fs.s[j][1])
+            M̄vv_j = Mvv(J̄_j, s_pre)
+            P̄xx_j = ρ̄_j * M̄vv_j
+
+            c_s_bar = sqrt(max(Γ_q * M̄vv_j, zero(T)))
+            q_j = compute_q_segment(divu_j, ρ̄_j, c_s_bar, Δx̄;
+                                    c_q_quad = cqq, c_q_lin = cql)
+            if q_j > 0 && P̄xx_j > 0
+                Δs_q = -(Γ_q - one(T)) * (q_j / P̄xx_j) * divu_j * T(dt)
+                fs.s[j] = (s_pre + Δs_q,)
+            end
+        end
+    end
+
+    # ── (5) Phase 5 post-Newton BGK joint relaxation ────────────────
+    # Three substeps per segment (matches M1's `det_step!`):
+    #   (1) Lagrangian transport of P_⊥: Pp_transport = Pp_n · ρ_np1/ρ_n.
+    #   (2) Joint BGK relaxation of (P_xx, P_⊥) toward P_iso, with
+    #       conservation of the trace P_xx + 2 P_⊥ to round-off.
+    #   (3) Re-anchor entropy: s_new = s_old + log(P_xx_new / P_xx_pre).
+    # Then β decays by `exp(-Δt/τ)` with realizability clip
+    # `|β| ≤ 0.999 √M_vv_new`, and Q transports + decays the same way.
+    if tau !== nothing
+        τ = T(tau)
+        decay = exp(-T(dt) / τ)
+        rh = T(0.999)
+        @inbounds for j in 1:N
+            # ρ_np1 from the post-Newton x-chain (with periodic wrap).
+            x_j    = T(fs.x[j][1])
+            if j < N
+                x_jp1 = T(fs.x[j+1][1])
+            else
+                x_jp1 = T(fs.x[1][1]) + L_box
+            end
+            ρ_np1 = Δm_vec[j] / (x_jp1 - x_j)
+            J_np1 = one(T) / ρ_np1
+            s_pre = T(fs.s[j][1])
+            Mvv_pre = Mvv(J_np1, s_pre)
+            Pxx_pre = ρ_np1 * Mvv_pre
+
+            Pp_transport = Pp_n_vec[j] * ρ_np1 / ρ_n_vec[j]
+            Pxx_new, Pp_new = bgk_relax_pressures(Pxx_pre, Pp_transport,
+                                                   T(dt), τ)
+            Mvv_new = Pxx_new / ρ_np1
+            if Mvv_new > 0 && Mvv_pre > 0
+                Δs_over_cv = log(Mvv_new / Mvv_pre)
+                s_new = s_pre + Δs_over_cv
+            else
+                s_new = s_pre
+                Mvv_new = Mvv_pre
+            end
+            β_pre = T(fs.beta[j][1])
+            β_new = β_pre * decay
+            β_max = rh * sqrt(max(Mvv_new, zero(T)))
+            if β_new > β_max
+                β_new = β_max
+            elseif β_new < -β_max
+                β_new = -β_max
+            end
+            Q_n = T(fs.Q[j][1])
+            Q_transport = Q_n * ρ_np1 / ρ_n_vec[j]
+            Q_new = Q_transport * decay
+
+            fs.beta[j] = (β_new,)
+            fs.s[j]    = (s_new,)
+            fs.Pp[j]   = (Pp_new,)
+            fs.Q[j]    = (Q_new,)
+        end
+    end
+
+    # ── (6) Phase 7 inflow/outflow pinning ──────────────────────────
+    # After the Newton solve + BGK + q-dissipation, pin the leftmost
+    # `n_pin` segments to the upstream Dirichlet state and the rightmost
+    # `n_pin` segments to the downstream state. The pinning preserves
+    # `Δm` and only overwrites the segment's per-cell state and
+    # vertex chain. Inflow segments march at `u_inflow` with vertex
+    # spacing `Δx_j = Δm_j / ρ_inflow`; outflow segments anchor the
+    # right boundary at `x = L_box` and chain leftward with
+    # `Δx_j = Δm_j / ρ_outflow`.
+    if bc_legacy == :inflow_outflow
+        @assert mesh.inflow_state !== nothing "bc = :inflow_outflow requires inflow_state"
+        n_pin_left  = mesh.n_pin
+        n_pin_right = mesh.n_pin
+
+        # Left (inflow) chain: anchor segment 1's left vertex at x = 0.
+        ρ_in = T(mesh.inflow_state.rho)
+        u_in   = T(mesh.inflow_state.u)
+        α_in   = T(mesh.inflow_state.alpha)
+        β_in   = T(mesh.inflow_state.beta)
+        s_in   = T(mesh.inflow_state.s)
+        Pp_in  = T(mesh.inflow_state.Pp)
+        Q_in   = T(mesh.inflow_state.Q)
+        cum_Δx_in = zero(T)
+        @inbounds for j in 1:min(n_pin_left, N)
+            x_left_pinned = (j == 1) ? zero(T) : cum_Δx_in
+            cum_Δx_in += Δm_vec[j] / ρ_in
+            fs.x[j]     = (x_left_pinned,)
+            fs.u[j]     = (u_in,)
+            fs.alpha[j] = (α_in,)
+            fs.beta[j]  = (β_in,)
+            fs.s[j]     = (s_in,)
+            fs.Pp[j]    = (Pp_in,)
+            fs.Q[j]     = (Q_in,)
+            i_left = j == 1 ? N : j - 1
+            m̄ = (Δm_vec[i_left] + Δm_vec[j]) / 2
+            mesh.p_half[j] = m̄ * u_in
+        end
+
+        # Right (outflow) chain.
+        if mesh.outflow_state !== nothing
+            ρ_out  = T(mesh.outflow_state.rho)
+            u_out  = T(mesh.outflow_state.u)
+            α_out  = T(mesh.outflow_state.alpha)
+            β_out  = T(mesh.outflow_state.beta)
+            s_out  = T(mesh.outflow_state.s)
+            Pp_out = T(mesh.outflow_state.Pp)
+            Q_out  = T(mesh.outflow_state.Q)
+            cum_Δx = zero(T)
+            @inbounds for j in N:-1:(N - n_pin_right + 1)
+                Δx_j = Δm_vec[j] / ρ_out
+                cum_Δx += Δx_j
+                x_left_pinned = T(L_box) - cum_Δx
+                fs.x[j]     = (x_left_pinned,)
+                fs.u[j]     = (u_out,)
+                fs.alpha[j] = (α_out,)
+                fs.beta[j]  = (β_out,)
+                fs.s[j]     = (s_out,)
+                fs.Pp[j]    = (Pp_out,)
+                fs.Q[j]     = (Q_out,)
+                i_left = j == 1 ? N : j - 1
+                m̄ = (Δm_vec[i_left] + Δm_vec[j]) / 2
+                mesh.p_half[j] = m̄ * u_out
+            end
+        else
+            # Zero-gradient outflow: copy state of the first interior
+            # segment into the trailing n_pin_right segments. Chain
+            # rightward from segment (N - n_pin_right) using its
+            # post-Newton density.
+            j_src = max(1, N - n_pin_right)
+            src_x = T(fs.x[j_src][1])
+            src_u = T(fs.u[j_src][1])
+            src_α = T(fs.alpha[j_src][1])
+            src_β = T(fs.beta[j_src][1])
+            src_s = T(fs.s[j_src][1])
+            src_Pp = T(fs.Pp[j_src][1])
+            src_Q  = T(fs.Q[j_src][1])
+            # Density of the source segment (post-Newton).
+            if j_src < N
+                src_x_right = T(fs.x[j_src + 1][1])
+            else
+                src_x_right = T(fs.x[1][1]) + L_box
+            end
+            ρ_src = Δm_vec[j_src] / max(src_x_right - src_x, eps(T))
+            @inbounds for j in (N - n_pin_right + 1):N
+                if j > 1
+                    prev_x  = T(fs.x[j-1][1])
+                    x_left_pinned = prev_x + (Δm_vec[j-1] / ρ_src)
+                else
+                    x_left_pinned = T(fs.x[j][1])
+                end
+                fs.x[j]     = (x_left_pinned,)
+                fs.u[j]     = (src_u,)
+                fs.alpha[j] = (src_α,)
+                fs.beta[j]  = (src_β,)
+                fs.s[j]     = (src_s,)
+                fs.Pp[j]    = (src_Pp,)
+                fs.Q[j]     = (src_Q,)
+                i_left = j == 1 ? N : j - 1
+                m̄ = (Δm_vec[i_left] + Δm_vec[j]) / 2
+                mesh.p_half[j] = m̄ * src_u
+            end
+        end
+    end
+
     return mesh
 end
 

@@ -343,4 +343,13 @@ using Test
         include("test_M3_2b_swap6_sparsity_HG.jl")
         include("test_M3_2b_swap8_bckind_HG.jl")
     end
+    @testset verbose = true "Phase M3-3e-1: native det_step_HG! vs cache_mesh" begin
+        # M3-3e-1 defensive cross-check: the native deterministic-Newton
+        # path must produce byte-equal state to running M1's `det_step!`
+        # on the cached `Mesh1D` shim. After M3-3e-5 drops the cache_mesh
+        # field this test will be retired (it relies on directly running
+        # the M1 baseline alongside). See
+        # `reference/notes_M3_3e_1_det_step_native.md`.
+        include("test_M3_3e_1_native_vs_cache.jl")
+    end
 end
