@@ -1,45 +1,173 @@
-# action_amr_helpers.jl — HG-side Phase M3-2 (M2-1) action-AMR shim.
+# action_amr_helpers.jl — HG-side Phase M3-2 (M2-1) action-AMR primitives.
 #
 # This file implements the conservative refine/coarsen + indicator
 # bookkeeping for a `DetMeshHG{T}` wrapper, mirroring `src/amr_1d.jl`'s
-# operations on `Mesh1D{T,DetField{T}}`. Per M3-2's brief, the
-# implementation here goes through the cached `Mesh1D` shim — the
-# canonical M1 refine/coarsen primitives are called on the cache mesh,
-# and the HG wrapper's auxiliary state (the `SimplicialMesh{1, T}`
-# vertex topology, the order-0 `PolynomialFieldSet`, `Δm`, `p_half`)
-# is rebuilt from scratch from the cache mesh. The cost is one per-AMR-
-# event re-allocation of the simplicial mesh; the bit-equality
-# property is automatic (the AMR call path is byte-identical to M1's).
+# operations on `Mesh1D{T,DetField{T}}`.
 #
-# When HG ships a `register_on_refine!` callback API
-# (design-guidance item #5 in `notes_HG_design_guidance.md`), this
-# rebuild step can be replaced by an in-place HG-side update. M3-2
-# defers that to a future milestone (M3-3 or later) and stays inside
-# the cache-mesh shim pattern.
+# **M3-3e-3 (2026-04-26):** the 1D AMR primitives previously delegated to
+# M1's `refine_segment!` / `coarsen_segment_pair!` on the cached
+# `Mesh1D` shim and rebuilt the HG `SimplicialMesh{1, T}` from scratch
+# afterwards. Per Option B of `reference/notes_M3_3e_cache_mesh_retirement.md`
+# §C, the M3-3e-3 lift hand-rolls 1D-Lagrangian refine/coarsen primitives
+# operating directly on `(SimplicialMesh{1, T}, PolynomialFieldSet,
+# Δm::Vector, p_half::Vector)` without going through Mesh1D. The cache
+# mesh field stays allocated on `DetMeshHG` (M3-3e-4 / M3-3e-5 own its
+# eventual retirement) but is no longer touched by these helpers.
+#
+# Bit-exact parity. The native primitives reproduce M1's per-segment
+# scalar arithmetic byte-for-byte: each `seg.state.{α, β, x, u, s,
+# Pp, Q}` access becomes a `read_detfield(fields, j)` read, each
+# `seg.Δm` becomes `mesh.Δm[j]`, and the law-of-total-covariance
+# computation is character-identical.
 
 using HierarchicalGrids: SimplicialMesh
+
+# ─────────────────────────────────────────────────────────────────────
+# Helpers — periodic-aware Eulerian length / density on HG storage.
+# ─────────────────────────────────────────────────────────────────────
+
+"""
+    _segment_length_HG_native(fields, j::Integer, N::Integer, L_box::Real)
+
+Eulerian length of segment `j` on an HG `PolynomialFieldSet`,
+periodic-wrapped. Mirrors M1's `segment_length(mesh::Mesh1D, j)`. Not
+exported — internal helper used by the AMR primitives.
+"""
+@inline function _segment_length_HG_native(fields, j::Integer, N::Integer, L_box::T) where {T<:Real}
+    x_l = T(fields.x[j][1])
+    if j < N
+        x_r = T(fields.x[j + 1][1])
+    else
+        x_r = T(fields.x[1][1]) + L_box
+    end
+    return x_r - x_l
+end
+
+"""
+    _segment_density_HG_native(fields, j::Integer, Δm_j::Real, N::Integer, L_box::Real)
+
+Eulerian density `ρ_j = Δm_j / Δx_j` of segment `j` on HG storage.
+"""
+@inline function _segment_density_HG_native(fields, j::Integer, Δm_j::T,
+                                             N::Integer, L_box::T) where {T<:Real}
+    return Δm_j / _segment_length_HG_native(fields, j, N, L_box)
+end
+
+"""
+    _refresh_p_half_HG!(mesh::DetMeshHG)
+
+Recompute `mesh.p_half[i] = m̄_i · u_i` from the current HG field set
+and `mesh.Δm`. Mirrors M1's `refresh_p_half!` on `Mesh1D`. Used after
+a topology change.
+"""
+@inline function _refresh_p_half_HG!(mesh::DetMeshHG{T}) where {T<:Real}
+    N = length(mesh.Δm)
+    if length(mesh.p_half) != N
+        resize!(mesh.p_half, N)
+    end
+    fs = mesh.fields
+    @inbounds for i in 1:N
+        i_left = i == 1 ? N : i - 1
+        m̄ = (mesh.Δm[i_left] + mesh.Δm[i]) / 2
+        mesh.p_half[i] = m̄ * T(fs.u[i][1])
+    end
+    return mesh
+end
+
+"""
+    _rebuild_simplicial_mesh_HG!(mesh::DetMeshHG)
+
+After `mesh.Δm` and `mesh.fields` have been resized to a new `N`,
+reassemble the periodic-wrap `SimplicialMesh{1, T}` and store it back
+on `mesh.mesh`. Cumulative-mass coordinate exactly mirrors
+`DetMeshHG_from_arrays`. Periodic-wrap topology is used regardless of
+`bc` (M1's convention — `det_step_HG_native!` honours BC via the BC
+spec, not via the simplex-neighbour matrix).
+"""
+function _rebuild_simplicial_mesh_HG!(mesh::DetMeshHG{T}) where {T<:Real}
+    N = length(mesh.Δm)
+    cum_m = T(0)
+    pos_m = Vector{NTuple{1, T}}(undef, N + 1)
+    pos_m[1] = (T(0),)
+    @inbounds for j in 1:N
+        cum_m += T(mesh.Δm[j])
+        pos_m[j + 1] = (cum_m,)
+    end
+    sv = Matrix{Int32}(undef, 2, N)
+    sn = zeros(Int32, 2, N)
+    @inbounds for j in 1:N
+        sv[1, j] = j
+        sv[2, j] = j + 1
+        sn[1, j] = j > 1 ? Int32(j - 1) : Int32(N)
+        sn[2, j] = j < N ? Int32(j + 1) : Int32(1)
+    end
+    mesh.mesh = SimplicialMesh{1, T}(pos_m, sv, sn)
+    return mesh
+end
+
+"""
+    _resize_cache_mesh_HG!(mesh::DetMeshHG)
+
+Resize `mesh.cache_mesh.segments` and `mesh.cache_mesh.p_half` to
+match the current `mesh.Δm` length, then write per-cell HG state into
+the cache mesh. Used after a topology-changing refine/coarsen event
+to keep the cache mesh in lock-step with the HG side, so downstream
+helpers that still go through the cache (`total_momentum_HG`,
+`total_energy_HG`, `segment_density_HG`, `segment_length_HG`,
+`realizability_project_HG!`) continue to function during M3-3e-3.
+M3-3e-4 / M3-3e-5 will retire the cache mesh entirely.
+"""
+function _resize_cache_mesh_HG!(mesh::DetMeshHG{T}) where {T<:Real}
+    N = length(mesh.Δm)
+    cache = mesh.cache_mesh
+    fs = mesh.fields
+
+    # Resize the cache mesh's `segments` and `p_half` vectors to N.
+    if length(cache.segments) != N
+        resize!(cache.segments, N)
+    end
+    if length(cache.p_half) != N
+        resize!(cache.p_half, N)
+    end
+
+    # Write per-cell state from HG into the cache mesh. The Mesh1D
+    # `Segment` struct is parameterized by `T,DetField{T}`; we
+    # reconstruct each entry from the HG field set.
+    cum_m = zero(T)
+    @inbounds for j in 1:N
+        m_center = cum_m + mesh.Δm[j] / 2
+        cum_m += mesh.Δm[j]
+        det = read_detfield(fs, j)
+        cache.segments[j] = Segment{T, DetField{T}}(m_center,
+                                                     mesh.Δm[j], det)
+    end
+    @inbounds for i in 1:N
+        cache.p_half[i] = mesh.p_half[i]
+    end
+    return mesh
+end
+
+# ─────────────────────────────────────────────────────────────────────
+# Legacy cache-mesh rebuild — retained for test-side diagnostic helpers
+# (`test_M3_1_phase5_sod_HG.jl_helpers.jl`, `test_M3_2_phase7_steady_shock_HG.jl`)
+# that read `mesh.cache_mesh` after an external resync. Not used by the
+# AMR primitives in M3-3e-3.
+# ─────────────────────────────────────────────────────────────────────
 
 """
     rebuild_HG_from_cache!(mesh::DetMeshHG)
 
 Rebuild the HG wrapper's `SimplicialMesh{1, T}`, `PolynomialFieldSet`,
 `Δm`, `p_half`, and `L_box` fields from the current state of
-`mesh.cache_mesh`. Used internally by the AMR helpers after a
-refine/coarsen event mutates the cache mesh's segment vector.
-
-The HG simplicial mesh is rebuilt with periodic-wrap topology (as
-in `DetMeshHG_from_arrays`) — even on `bc = :inflow_outflow` paths
-the simplicial mesh wiring is periodic; M1's `det_step!` handles
-the BC via the `bc` kwarg / inflow-outflow ghost cells, not via
-the simplex-neighbour matrix.
+`mesh.cache_mesh`. Pre-M3-3e-3 this was used after every AMR event.
+M3-3e-3 retires it from the AMR path; the helper is retained for
+future diagnostic / migration use only.
 """
 function rebuild_HG_from_cache!(mesh::DetMeshHG{T}) where {T<:Real}
     cache = mesh.cache_mesh
     N = n_segments(cache)
     Lt = T(cache.L_box)
 
-    # Rebuild the per-mass-coordinate vertex positions. Cumulative sum of
-    # cache_mesh segment Δm.
     cum_m = T(0)
     pos_m = Vector{NTuple{1, T}}(undef, N + 1)
     pos_m[1] = (T(0),)
@@ -57,14 +185,11 @@ function rebuild_HG_from_cache!(mesh::DetMeshHG{T}) where {T<:Real}
     end
     mesh.mesh = SimplicialMesh{1, T}(pos_m, sv, sn)
 
-    # Reallocate the field set to match the new N and populate from the
-    # cache mesh segments.
     mesh.fields = allocate_detfield_HG(N; T = T)
     @inbounds for j in 1:N
         write_detfield!(mesh.fields, j, cache.segments[j].state)
     end
 
-    # Update Δm, p_half, L_box from the cache mesh.
     if length(mesh.Δm) != N
         resize!(mesh.Δm, N)
     end
@@ -81,29 +206,97 @@ function rebuild_HG_from_cache!(mesh::DetMeshHG{T}) where {T<:Real}
     return mesh
 end
 
+# ─────────────────────────────────────────────────────────────────────
+# Native refine / coarsen primitives.
+# ─────────────────────────────────────────────────────────────────────
+
 """
     refine_segment_HG!(mesh::DetMeshHG, j::Integer; tracers = nothing)
         -> DetMeshHG
 
 Split simplex `j` of the HG-substrate mesh into two equal-mass
-daughters. Mirrors `refine_segment!` on `Mesh1D`. Bit-exact-equivalent:
-the cache mesh's `refine_segment!` is invoked, then the HG state is
-rebuilt from the cache.
+daughter simplices at the mid-mass-coordinate. Native HG-side
+implementation operating directly on `mesh.fields::PolynomialFieldSet`,
+`mesh.Δm`, `mesh.p_half`, and `mesh.mesh::SimplicialMesh{1, T}`. The
+cache mesh is **not** touched.
 
-Optional `tracers::TracerMeshHG` is forwarded to the cache mesh's
-embedded `TracerMesh` (which wraps the same cache mesh); after
-the cache mesh refines, the HG-side tracer view sees the resized
-matrix automatically because it shares storage with the cache mesh.
+Conservation properties (mirrored from M1's `refine_segment!`):
+  * Mass: bit-exact (each daughter gets `Δm/2`).
+  * Momentum: exact (the inserted mid-vertex velocity is the
+    arithmetic mean of the parent's left and right vertex velocities).
+  * Cholesky `(α, β, s, Pp, Q)`: copied from parent (uniform within
+    parent under the M1 first-order reconstruction).
+  * Tracers: bit-exact daughter copy (Phase-11 exactness preserved).
+
+Bit-exact parity to M1's `refine_segment!` on a parallel `Mesh1D` is
+verified by `test_M3_2_M2_1_amr_HG.jl` and the M3-3e-3 cross-check
+test.
 """
 function refine_segment_HG!(mesh::DetMeshHG{T}, j::Integer;
                              tracers = nothing) where {T<:Real}
-    sync_cache_from_HG!(mesh)
-    if tracers === nothing
-        refine_segment!(mesh.cache_mesh, j)
-    else
-        refine_segment!(mesh.cache_mesh, j; tracers = tracers.tm)
+    fs = mesh.fields
+    N = length(mesh.Δm)
+    @assert 1 ≤ j ≤ N "refine: segment index $j out of range 1:$N"
+
+    # Read parent state — mirrors M1's `parent_seg.state` access.
+    parent = read_detfield(fs, j)
+    Δm_parent = mesh.Δm[j]
+    Δm_half = Δm_parent / 2
+
+    # Mid-vertex position: parent's left vertex + half the periodic-aware
+    # Eulerian length. Bit-identical to M1's
+    # `parent_state.x + segment_length(mesh, j) / 2`.
+    Δx_parent = _segment_length_HG_native(fs, j, N, mesh.L_box)
+    x_mid = parent.x + Δx_parent / 2
+
+    # Right-vertex velocity: the segment's right vertex is the next
+    # segment's left vertex (periodic).
+    j_right = j == N ? 1 : j + 1
+    u_right = T(fs.u[j_right][1])
+    u_mid = (parent.u + u_right) / 2  # linear interpolation, momentum-conserving
+
+    # Build the two daughters.
+    left_state = DetField{T}(parent.x, parent.u,
+                              parent.α, parent.β,
+                              parent.s, parent.Pp, parent.Q)
+    right_state = DetField{T}(x_mid, u_mid,
+                               parent.α, parent.β,
+                               parent.s, parent.Pp, parent.Q)
+
+    # Resize the field set and Δm, shifting everything right of j by
+    # one slot. Easiest path: reallocate the field set and copy. This
+    # mirrors M1's `splice!` (replace at j, insert at j+1) byte-equally
+    # because the per-cell scalar values are unchanged.
+    new_fields = allocate_detfield_HG(N + 1; T = T)
+    @inbounds for k in 1:(j - 1)
+        write_detfield!(new_fields, k, read_detfield(fs, k))
     end
-    rebuild_HG_from_cache!(mesh)
+    write_detfield!(new_fields, j,     left_state)
+    write_detfield!(new_fields, j + 1, right_state)
+    @inbounds for k in (j + 1):N
+        write_detfield!(new_fields, k + 1, read_detfield(fs, k))
+    end
+    mesh.fields = new_fields
+
+    # Δm splice — replace at j, insert at j+1 (mirrors M1).
+    mesh.Δm[j] = Δm_half
+    insert!(mesh.Δm, j + 1, Δm_half)
+
+    # Rebuild the simplicial mesh on the new mass coordinate, refresh
+    # p_half from the (now N+1)-cell field set + Δm.
+    _rebuild_simplicial_mesh_HG!(mesh)
+    _refresh_p_half_HG!(mesh)
+
+    # Keep the (still-allocated) cache mesh in lock-step so M3-3e-4
+    # consumers (`total_momentum_HG`, `realizability_project_HG!`, etc.)
+    # remain functional. M3-3e-5 retires the cache mesh entirely.
+    _resize_cache_mesh_HG!(mesh)
+
+    # Tracers: bit-exact daughter copy.
+    if tracers !== nothing
+        _refine_tracer_HG!(tracers, j)
+    end
+
     return mesh
 end
 
@@ -111,36 +304,265 @@ end
     coarsen_segment_pair_HG!(mesh::DetMeshHG, j::Integer; tracers = nothing,
                              Gamma = GAMMA_LAW_DEFAULT) -> DetMeshHG
 
-Merge simplices `j` and `j+1` of the HG-substrate mesh into one.
-Mirrors `coarsen_segment_pair!` on `Mesh1D`. Bit-exact-equivalent.
+Merge simplices `j` and `j+1` of the HG-substrate mesh into one,
+operating directly on HG storage. Native HG-side counterpart to M1's
+`coarsen_segment_pair!`. The cache mesh is **not** touched.
+
+Conservation properties (mirrored from M1's `coarsen_segment_pair!`):
+  * Mass: bit-exact (`Δm_new = Δm_l + Δm_r`).
+  * Momentum: exact (vertex-velocity redistribution preserves
+    `Σ m̄_i u_i` to round-off).
+  * Cholesky `(α, β)` use the law-of-total-covariance (intra-cell +
+    between-cell variance); γ stays real-valued.
+  * Tracers: mass-weighted average (conservative; bit-exactness lost,
+    matching M1's behaviour).
+
+Bit-exact parity to M1's `coarsen_segment_pair!` on a parallel
+`Mesh1D` is verified by `test_M3_2_M2_1_amr_HG.jl` and the M3-3e-3
+cross-check test.
 """
 function coarsen_segment_pair_HG!(mesh::DetMeshHG{T}, j::Integer;
                                    tracers = nothing,
                                    Gamma::Real = GAMMA_LAW_DEFAULT) where {T<:Real}
-    sync_cache_from_HG!(mesh)
-    if tracers === nothing
-        coarsen_segment_pair!(mesh.cache_mesh, j; Gamma = Gamma)
-    else
-        coarsen_segment_pair!(mesh.cache_mesh, j; tracers = tracers.tm,
-                               Gamma = Gamma)
+    fs = mesh.fields
+    N = length(mesh.Δm)
+    @assert 1 ≤ j ≤ N "coarsen: segment index $j out of range 1:$N"
+    @assert N ≥ 2 "coarsen: cannot reduce mesh below 1 segment"
+    j_next = j == N ? 1 : j + 1
+    @assert j != j_next "coarsen: degenerate j == j+1 (N = 1)"
+
+    # Per-segment state reads — mirror M1's `state_l = seg_l.state`.
+    state_l = read_detfield(fs, j)
+    state_r = read_detfield(fs, j_next)
+
+    Δm_l = mesh.Δm[j]
+    Δm_r = mesh.Δm[j_next]
+    Δm_new = Δm_l + Δm_r
+
+    # Eulerian lengths (periodic-aware, byte-equal to M1's
+    # `segment_length(mesh, j)` reads).
+    Δx_l = _segment_length_HG_native(fs, j,      N, mesh.L_box)
+    Δx_r = _segment_length_HG_native(fs, j_next, N, mesh.L_box)
+    Δx_new = Δx_l + Δx_r
+    ρ_l = Δm_l / Δx_l
+    ρ_r = Δm_r / Δx_r
+    J_new = Δx_new / Δm_new
+
+    # Cell-center velocity for the law-of-total-covariance — read the
+    # vertex-velocity of the segment after j_next (periodic).
+    j_after = j_next == N ? 1 : j_next + 1
+    u_cell_l = (state_l.u + state_r.u) / 2
+    u_cell_r = (state_r.u + T(fs.u[j_after][1])) / 2
+
+    # Pre-merge M_vv per segment from the EOS.
+    M_vv_l = Mvv(Δx_l / Δm_l, state_l.s; Gamma = Gamma)
+    M_vv_r = Mvv(Δx_r / Δm_r, state_r.s; Gamma = Gamma)
+
+    # Law of total covariance.
+    M_vv_intra = (Δm_l * M_vv_l + Δm_r * M_vv_r) / Δm_new
+    M_vv_between = (Δm_l * Δm_r / Δm_new^2) * (u_cell_l - u_cell_r)^2
+    M_vv_new = M_vv_intra + M_vv_between
+
+    β_new = (Δm_l * state_l.β + Δm_r * state_r.β) / Δm_new
+    γ²_new = max(M_vv_new - β_new^2, zero(T))
+    if M_vv_new - β_new^2 < zero(T)
+        # Round-off; absorb the deficit by lifting M_vv just to β².
+        M_vv_new = β_new^2
     end
-    rebuild_HG_from_cache!(mesh)
+
+    cv = T(CV_DEFAULT)
+    s_new = M_vv_new > 0 ?
+            cv * (log(M_vv_new) - (1 - Gamma) * log(J_new)) :
+            (state_l.s + state_r.s) / 2
+
+    α_new = (Δm_l * state_l.α + Δm_r * state_r.α) / Δm_new
+    Pp_new = (Δm_l * state_l.Pp + Δm_r * state_r.Pp) / Δm_new
+    Q_new  = (Δm_l * state_l.Q  + Δm_r * state_r.Q ) / Δm_new
+
+    # Vertex-velocity redistribution (mirrors M1 byte-equally).
+    j_left_of_seam  = j == 1 ? N : j - 1
+    j_right_of_seam = j_next == N ? 1 : j_next + 1
+
+    m̄_left_pre  = (mesh.Δm[j_left_of_seam] + Δm_l) / 2
+    m̄_seam_pre  = (Δm_l + Δm_r) / 2
+    m̄_rite_pre  = (Δm_r + mesh.Δm[j_right_of_seam]) / 2
+
+    m̄_left_post = (mesh.Δm[j_left_of_seam] + Δm_new) / 2
+    m̄_rite_post = (Δm_new + mesh.Δm[j_right_of_seam]) / 2
+
+    u_seam_pre = state_r.u
+    u_left_pre = state_l.u
+    u_rite_pre = T(fs.u[j_right_of_seam][1])
+
+    p_left_new = m̄_left_pre * u_left_pre + (Δm_r / 2) * u_seam_pre
+    p_rite_new = m̄_rite_pre * u_rite_pre + (Δm_l / 2) * u_seam_pre
+    u_left_new = p_left_new / m̄_left_post
+    u_rite_new = p_rite_new / m̄_rite_post
+
+    # Build the merged segment's state.
+    merged_state = DetField{T}(
+        state_l.x,            # left vertex of merged = left vertex of seg_l
+        u_left_new,
+        α_new, β_new,
+        s_new, Pp_new, Q_new,
+    )
+
+    # Snapshot the right-of-seam state so we can apply the new u_rite
+    # consistently when N != 2 (when N == 2 the right-of-seam wraps
+    # back onto the merged cell; M1 skips the rewrite in that case).
+    right_of_seam_state = if j_right_of_seam != j
+        rs = read_detfield(fs, j_right_of_seam)
+        DetField{T}(rs.x, u_rite_new, rs.α, rs.β, rs.s, rs.Pp, rs.Q)
+    else
+        merged_state  # unused
+    end
+
+    # Rebuild the field set into N - 1 cells.
+    new_fields = allocate_detfield_HG(N - 1; T = T)
+    if j_next == 1
+        # j == N path. M1's `deleteat!(mesh.segments, j_next = 1)` shifts
+        # the array down by 1 and overwrites segment N (the merged) with
+        # `merged_state`. The periodic right-of-seam is the (now-)last
+        # segment which already got its u updated.
+        @inbounds for k in 2:(N - 1)
+            write_detfield!(new_fields, k - 1, read_detfield(fs, k))
+        end
+        # The merged cell sits at the new last index (N - 1). It absorbs
+        # the (now-removed) segment 1.
+        write_detfield!(new_fields, N - 1, merged_state)
+        # Right-of-seam segment is `j_right_of_seam = 2` pre-merge in the
+        # j == N path. Its post-merge index is 1 (after the shift).
+        if j_right_of_seam != j
+            # j_right_of_seam = 2 (post-shift index 1)
+            write_detfield!(new_fields, j_right_of_seam - 1, right_of_seam_state)
+        end
+    else
+        @inbounds for k in 1:(j - 1)
+            write_detfield!(new_fields, k, read_detfield(fs, k))
+        end
+        write_detfield!(new_fields, j, merged_state)
+        # Update the right-of-seam segment if it's not the merged cell
+        # itself. In M1's path j_right_of_seam pre-merge is at
+        # `j_next + 1`; post-merge that index becomes `j_next` (since
+        # we deleted j_next), but only if j_right_of_seam was right of
+        # j_next. In the wrap case j_right_of_seam == 1 (when j_next ==
+        # N), but that branch is the j_next == 1 case handled above.
+        # Here j_next ∈ 2:N and j_right_of_seam = j_next + 1 unless
+        # j_next == N (in which case j_right_of_seam = 1 — but j_next ==
+        # N implies j == N - 1, which is handled in the else branch).
+        @inbounds for k in (j + 2):N
+            if k == j_right_of_seam
+                write_detfield!(new_fields, k - 1, right_of_seam_state)
+            else
+                write_detfield!(new_fields, k - 1, read_detfield(fs, k))
+            end
+        end
+        # Edge case: when j_next == N (i.e. j == N - 1 with N ≥ 3), the
+        # right-of-seam wraps to 1. The loop above starts at j + 2 == N + 1
+        # and is empty. We need to apply right_of_seam_state to index 1.
+        if j_right_of_seam < j  # = wrap-around to 1 (so j_right_of_seam = 1, j_next == N)
+            write_detfield!(new_fields, j_right_of_seam, right_of_seam_state)
+        end
+    end
+    mesh.fields = new_fields
+
+    # Δm splice — bit-equally mirrors M1's mass bookkeeping.
+    if j_next == 1
+        # j == N path. M1: deleteat!(segments, 1) shifts down, then
+        # mesh.segments[j] = merged_segment overwrote segment N earlier.
+        # Equivalently: remove Δm[1], replace merged at the (now-shifted)
+        # slot N - 1.
+        deleteat!(mesh.Δm, 1)
+        mesh.Δm[end] = Δm_new
+    else
+        mesh.Δm[j] = Δm_new
+        deleteat!(mesh.Δm, j_next)
+    end
+
+    # Rebuild simplicial mesh + p_half from the new (N-1)-cell state.
+    _rebuild_simplicial_mesh_HG!(mesh)
+    _refresh_p_half_HG!(mesh)
+
+    # Keep the (still-allocated) cache mesh in lock-step so M3-3e-4
+    # consumers remain functional during M3-3e-3.
+    _resize_cache_mesh_HG!(mesh)
+
+    # Tracers: mass-weighted average and remove the second column.
+    if tracers !== nothing
+        _coarsen_tracer_HG!(tracers, j; Δm_l = Δm_l, Δm_r = Δm_r)
+    end
+
     return mesh
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Indicators on HG storage
+# ─────────────────────────────────────────────────────────────────────
 
 """
     action_error_indicator_HG(mesh::DetMeshHG; dt = nothing,
                               Gamma = GAMMA_LAW_DEFAULT) -> Vector
 
 Per-segment ΔS_cell action-error indicator on the HG-substrate mesh.
-Bit-equal-equivalent to `action_error_indicator(mesh_M1)` on the
-underlying cache mesh.
+Bit-equal-equivalent to M1's `action_error_indicator(mesh_M1)` on a
+parallel Mesh1D with the same per-cell state. M3-3e-3: native HG
+implementation; the cache mesh is no longer touched.
 """
 function action_error_indicator_HG(mesh::DetMeshHG{T};
                                     dt::Union{Real,Nothing} = nothing,
                                     Gamma::Real = GAMMA_LAW_DEFAULT) where {T<:Real}
-    sync_cache_from_HG!(mesh)
-    return action_error_indicator(mesh.cache_mesh; dt = dt, Gamma = Gamma)
+    fs = mesh.fields
+    N = length(mesh.Δm)
+    out = zeros(T, N)
+    if N < 3
+        return out
+    end
+    is_periodic = mesh.bc == :periodic
+
+    # Pre-compute per-segment ρ, M_vv, c_s — same arithmetic as M1's
+    # `action_error_indicator`, just sourced from HG storage.
+    ρ_arr   = Vector{T}(undef, N)
+    Mvv_arr = Vector{T}(undef, N)
+    cs_arr  = Vector{T}(undef, N)
+    @inbounds for j in 1:N
+        Δx_j = _segment_length_HG_native(fs, j, N, mesh.L_box)
+        ρ_arr[j] = mesh.Δm[j] / Δx_j
+        s_j = T(fs.s[j][1])
+        Mvv_arr[j] = Mvv(one(T) / ρ_arr[j], s_j; Gamma = Gamma)
+        cs_arr[j]  = sqrt(max(Gamma * Mvv_arr[j], T(eps(T))))
+    end
+
+    @inbounds for j in 1:N
+        if is_periodic
+            jl = j == 1 ? N : j - 1
+            jr = j == N ? 1 : j + 1
+        else
+            jl = max(j - 1, 1)
+            jr = min(j + 1, N)
+            if jl == j || jr == j
+                continue
+            end
+        end
+        αl = T(fs.alpha[jl][1]);  αj = T(fs.alpha[j][1]);  αr = T(fs.alpha[jr][1])
+        βl = T(fs.beta[jl][1]);   βj = T(fs.beta[j][1]);   βr = T(fs.beta[jr][1])
+        sl = T(fs.s[jl][1]);      sj = T(fs.s[j][1]);      sr = T(fs.s[jr][1])
+        ul = T(fs.u[jl][1]);      uj = T(fs.u[j][1]);      ur = T(fs.u[jr][1])
+
+        d2_α = abs(αr - 2 * αj + αl)
+        d2_β = abs(βr - 2 * βj + βl)
+        d2_s = abs(sr - 2 * sj + sl)
+
+        d2_u = abs(ur - 2 * uj + ul)
+        d2_u_norm = d2_u / max(cs_arr[j], T(eps(T)))
+
+        γ²_j  = max(Mvv_arr[j] - βj^2, T(0))
+        γ_inv = sqrt(max(Mvv_arr[j], T(eps(T)))) /
+                sqrt(max(γ²_j, T(eps(T))))
+        γ_marker = (γ_inv - one(T))
+
+        out[j] = d2_α + d2_β + d2_s + d2_u_norm + T(0.01) * γ_marker
+    end
+    return out
 end
 
 """
@@ -148,24 +570,71 @@ end
                           Gamma = GAMMA_LAW_DEFAULT) -> Vector
 
 Per-segment relative-gradient indicator on the HG-substrate mesh.
-Bit-equal-equivalent to `gradient_indicator(mesh_M1; field = field)`.
+Bit-equal-equivalent to M1's `gradient_indicator(mesh_M1; field)`.
+M3-3e-3: native HG implementation; the cache mesh is no longer touched.
 """
 function gradient_indicator_HG(mesh::DetMeshHG{T};
                                 field::Symbol = :rho,
                                 Gamma::Real = GAMMA_LAW_DEFAULT) where {T<:Real}
-    sync_cache_from_HG!(mesh)
-    return gradient_indicator(mesh.cache_mesh; field = field, Gamma = Gamma)
+    fs = mesh.fields
+    N = length(mesh.Δm)
+    out = zeros(T, N)
+    if N < 3
+        return out
+    end
+    is_periodic = mesh.bc == :periodic
+
+    ρs = Vector{T}(undef, N)
+    @inbounds for j in 1:N
+        Δx_j = _segment_length_HG_native(fs, j, N, mesh.L_box)
+        ρs[j] = mesh.Δm[j] / Δx_j
+    end
+
+    @inbounds for j in 1:N
+        if is_periodic
+            jl = j == 1 ? N : j - 1
+            jr = j == N ? 1 : j + 1
+        else
+            jl = max(j - 1, 1)
+            jr = min(j + 1, N)
+            if jl == j || jr == j
+                continue
+            end
+        end
+        if field == :rho
+            scale = max(ρs[j], eps(T))
+            out[j] = abs(ρs[jr] - ρs[jl]) / (2 * scale)
+        elseif field == :u
+            J_j = one(T) / ρs[j]
+            s_j = T(fs.s[j][1])
+            Mvv_j = Mvv(J_j, s_j; Gamma = Gamma)
+            c_s = sqrt(max(Gamma * Mvv_j, T(eps(T))))
+            ul = T(fs.u[jl][1])
+            ur = T(fs.u[jr][1])
+            out[j] = abs(ur - ul) / (2 * c_s)
+        elseif field == :P
+            P(j_) = ρs[j_] * Mvv(one(T) / ρs[j_], T(fs.s[j_][1]); Gamma = Gamma)
+            scale = max(P(j), eps(T))
+            out[j] = abs(P(jr) - P(jl)) / (2 * scale)
+        else
+            error("gradient_indicator_HG: unknown field $field. Use :rho, :u, or :P.")
+        end
+    end
+    return out
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# AMR driver — mirrors M1's `amr_step!`.
+# ─────────────────────────────────────────────────────────────────────
 
 """
     amr_step_HG!(mesh::DetMeshHG, indicator, τ_refine,
                  τ_coarsen = τ_refine/4; tracers = nothing,
                  max_segments = 4096, min_segments = 4)
 
-Apply one round of refine / coarsen events to a `DetMeshHG{T}`
-mesh based on `indicator`. Mirrors `amr_step!` on `Mesh1D`.
-
-Returns `(n_refined, n_coarsened)` for diagnostics.
+Apply one round of refine / coarsen events to a `DetMeshHG{T}` mesh
+based on `indicator`. M3-3e-3: native HG implementation, mirrors
+M1's `amr_step!` byte-equally. Returns `(n_refined, n_coarsened)`.
 """
 function amr_step_HG!(mesh::DetMeshHG{T},
                       indicator::AbstractVector{<:Real},
@@ -174,19 +643,123 @@ function amr_step_HG!(mesh::DetMeshHG{T},
                       tracers = nothing,
                       max_segments::Int = 4096,
                       min_segments::Int = 4) where {T<:Real}
-    sync_cache_from_HG!(mesh)
-    if tracers === nothing
-        result = amr_step!(mesh.cache_mesh, indicator, τ_refine, τ_coarsen;
-                           max_segments = max_segments,
-                           min_segments = min_segments)
-    else
-        result = amr_step!(mesh.cache_mesh, indicator, τ_refine, τ_coarsen;
-                           tracers = tracers.tm,
-                           max_segments = max_segments,
-                           min_segments = min_segments)
+    @assert τ_coarsen ≤ τ_refine / 4 + eps(τ_refine) "hysteresis violation: τ_coarsen ($τ_coarsen) must be ≤ τ_refine/4 ($(τ_refine/4))"
+    N = length(mesh.Δm)
+    @assert length(indicator) == N "indicator length $(length(indicator)) ≠ N=$N"
+
+    refine_set = Int[]
+    for j in 1:N
+        if indicator[j] > τ_refine
+            push!(refine_set, j)
+        end
     end
-    rebuild_HG_from_cache!(mesh)
-    return result
+
+    coarsen_pairs = Int[]
+    for j in 1:N-1
+        if indicator[j] < τ_coarsen && indicator[j+1] < τ_coarsen &&
+           !(j in refine_set) && !(j+1 in refine_set)
+            push!(coarsen_pairs, j)
+        end
+    end
+
+    n_coarsened = 0
+    sort!(coarsen_pairs; rev = true)
+    last_j = typemax(Int)
+    for j in coarsen_pairs
+        if j + 1 >= last_j
+            continue
+        end
+        if length(mesh.Δm) ≤ min_segments
+            break
+        end
+        coarsen_segment_pair_HG!(mesh, j; tracers = tracers)
+        last_j = j
+        n_coarsened += 1
+    end
+
+    n_refined = 0
+    if n_coarsened == 0
+        sort!(refine_set; rev = true)
+        for j in refine_set
+            if length(mesh.Δm) ≥ max_segments
+                break
+            end
+            refine_segment_HG!(mesh, j; tracers = tracers)
+            n_refined += 1
+        end
+    end
+
+    return (n_refined = n_refined, n_coarsened = n_coarsened)
+end
+
+# ─────────────────────────────────────────────────────────────────────
+# Tracer refine / coarsen helpers — operate on the native
+# `_TracerStorageHG{T}` storage (defined in `src/newton_step_HG_M3_2.jl`).
+# ─────────────────────────────────────────────────────────────────────
+
+"""
+    _refine_tracer_HG!(tracers::TracerMeshHG, j::Integer)
+
+Insert a duplicate of column `j` at column `j+1` in the tracer
+matrix (bit-exact). Mirrors M1's `refine_tracer!` byte-equally.
+"""
+function _refine_tracer_HG!(tracers, j::Integer)
+    mat = tracers.tm.tracers
+    K, N = size(mat)
+    @assert 1 ≤ j ≤ N "_refine_tracer_HG!: column $j out of range 1:$N"
+    new_mat = Matrix{eltype(mat)}(undef, K, N + 1)
+    @inbounds for col in 1:j
+        for row in 1:K
+            new_mat[row, col] = mat[row, col]
+        end
+    end
+    @inbounds for row in 1:K
+        new_mat[row, j + 1] = mat[row, j]   # bit-exact daughter copy
+    end
+    @inbounds for col in (j + 1):N
+        for row in 1:K
+            new_mat[row, col + 1] = mat[row, col]
+        end
+    end
+    tracers.tm.tracers = new_mat
+    return tracers
+end
+
+"""
+    _coarsen_tracer_HG!(tracers::TracerMeshHG, j::Integer; Δm_l, Δm_r)
+
+Replace columns `j, j+1` (cyclic) with a single column of
+mass-weighted averages. Mirrors M1's `coarsen_tracer!` byte-equally.
+"""
+function _coarsen_tracer_HG!(tracers, j::Integer;
+                              Δm_l::Real, Δm_r::Real)
+    mat = tracers.tm.tracers
+    K, N = size(mat)
+    @assert N ≥ 2 && 1 ≤ j ≤ N "_coarsen_tracer_HG!: invalid index"
+    Tt = eltype(mat)
+    Δm_total = Tt(Δm_l + Δm_r)
+    j_next = j == N ? 1 : j + 1
+    new_mat = Matrix{Tt}(undef, K, N - 1)
+    @inbounds for row in 1:K
+        merged_val = (Tt(Δm_l) * mat[row, j] +
+                      Tt(Δm_r) * mat[row, j_next]) / Δm_total
+        if j_next == 1
+            for col in 2:N-1
+                new_mat[row, col - 1] = mat[row, col]
+            end
+            new_mat[row, N - 1] = merged_val
+        else
+            for col in 1:j-1
+                new_mat[row, col] = mat[row, col]
+            end
+            new_mat[row, j] = merged_val
+            for col in (j + 2):N
+                new_mat[row, col - 1] = mat[row, col]
+            end
+        end
+    end
+    tracers.tm.tracers = new_mat
+    return tracers
 end
 
 # ─────────────────────────────────────────────────────────────────────

@@ -384,4 +384,15 @@ using Test
         # `reference/notes_M3_3e_2_stochastic_native.md`.
         include("test_M3_3e_2_stochastic_native_vs_cache.jl")
     end
+    @testset verbose = true "Phase M3-3e-3: native AMR + TracerMeshHG vs cache_mesh" begin
+        # M3-3e-3 defensive cross-check: native `refine_segment_HG!`,
+        # `coarsen_segment_pair_HG!`, `amr_step_HG!`, and the standalone
+        # `TracerMeshHG` storage must produce byte-equal state to running
+        # M1's AMR primitives + `TracerMesh` on a parallel `Mesh1D`. K =
+        # 10 refine + K = 10 coarsen + 5 (det_step + amr_step) cycles +
+        # 6 mixed refine/coarsen with 3 tracers. After M3-3e-5 drops the
+        # cache_mesh field this test will be retired. See
+        # `reference/notes_M3_3e_3_amr_tracers_native.md`.
+        include("test_M3_3e_3_amr_tracer_native_vs_cache.jl")
+    end
 end

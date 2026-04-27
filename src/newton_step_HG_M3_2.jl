@@ -371,42 +371,76 @@ end
 # ─────────────────────────────────────────────────────────────────────
 
 """
+    _TracerStorageHG{T<:Real}
+
+Internal mutable struct holding the per-cell tracer matrix and the
+symbolic-label vector for `TracerMeshHG`. M3-3e-3 introduced this
+storage type to retire the cache_mesh-shared M1 `TracerMesh` that
+`TracerMeshHG` previously wrapped.
+
+The shape of this struct preserves the test-side accessors
+`tm.tm.tracers` (Matrix{T}) and `tm.tm.names` (Vector{Symbol}) used
+by `test_M3_2_phase11_tracer_HG.jl` and
+`test_M3_2_M2_2_multitracer_HG.jl`. Those tests compare HG and M1
+matrices for bit-exact parity (`tm_M1.tracers == tm_HG.tm.tracers`),
+which still works because both are plain `Matrix{Float64}` storage.
+"""
+mutable struct _TracerStorageHG{T<:Real}
+    tracers::Matrix{T}
+    names::Vector{Symbol}
+end
+
+"""
     TracerMeshHG{T<:Real}
 
 A passive-scalar field bundle attached to a `DetMeshHG{T}` fluid
 mesh. The HG-side counterpart to M1's `TracerMesh{T, M<:Mesh1D}`.
 
-Internally a `TracerMeshHG` wraps an M1 `TracerMesh` whose `fluid`
-field is the HG wrapper's cached `Mesh1D`. The HG path therefore
-gets the exact same matrix-of-tracer-rows storage layout, the same
-`set_tracer!` / `add_tracer!` / `tracer_at_position` semantics, and
-the same bit-exact preservation property — at zero algorithmic
-divergence from the M1 path.
+**M3-3e-3 (2026-04-26):** the storage is now native HG-side — a
+freestanding `_TracerStorageHG{T}` whose `tracers::Matrix{T}` and
+`names::Vector{Symbol}` are not aliased to the cache mesh's tracer
+storage. Pre-M3-3e-3, `TracerMeshHG` wrapped an M1 `TracerMesh` whose
+`fluid` field pointed at the HG wrapper's cached `Mesh1D` — that
+path is gone. Mass-coordinate accessors (`set_tracer!(::Function)`)
+now derive `m_j` from the cumulative `mesh.Δm` directly; Eulerian
+position lookups (`tracer_at_position`) walk `mesh.fields.x[j]`.
 
 Construct via `TracerMeshHG(fluid_HG; n_tracers, names)`. The
-`tracers(tm)` matrix is the live tracer state and is not mutated by
+`tm.tracers` matrix is the live tracer state and is not mutated by
 `advect_tracers_HG!` (which is a no-op in the pure-Lagrangian
 frame); the user can mutate it directly via `set_tracer!` /
-`add_tracer!`.
+`add_tracer!`. AMR refine/coarsen mutations of the matrix go through
+`_refine_tracer_HG!` / `_coarsen_tracer_HG!` (see
+`src/action_amr_helpers.jl`), which mirror M1's
+`refine_tracer!` / `coarsen_tracer!` byte-equally.
 """
 mutable struct TracerMeshHG{T<:Real}
     fluid::DetMeshHG{T}
-    tm::TracerMesh{T, Mesh1D{T, DetField{T}}}
+    tm::_TracerStorageHG{T}
 end
 
 """
     TracerMeshHG(fluid::DetMeshHG{T}; n_tracers = 1, names = nothing)
         -> TracerMeshHG
 
-Allocate a `TracerMeshHG` for `n_tracers` rows on `fluid`'s cache
-mesh. Mirrors `TracerMesh(fluid::Mesh1D; n_tracers, names)`.
+Allocate a `TracerMeshHG` for `n_tracers` rows on `fluid`. Mirrors
+`TracerMesh(fluid::Mesh1D; n_tracers, names)` for the matrix shape
+and default names.
 """
 function TracerMeshHG(fluid::DetMeshHG{T};
                        n_tracers::Integer = 1,
                        names::Union{Nothing,AbstractVector{Symbol}} = nothing) where {T<:Real}
-    sync_cache_from_HG!(fluid)
-    tm = TracerMesh(fluid.cache_mesh; n_tracers = n_tracers, names = names)
-    return TracerMeshHG{T}(fluid, tm)
+    @assert n_tracers ≥ 1 "TracerMeshHG requires at least one tracer field"
+    N = length(fluid.Δm)
+    values = zeros(T, n_tracers, N)
+    nms = if names === nothing
+        [Symbol("tracer", k) for k in 1:n_tracers]
+    else
+        @assert length(names) == n_tracers "names length must match n_tracers"
+        collect(Symbol, names)
+    end
+    storage = _TracerStorageHG{T}(values, nms)
+    return TracerMeshHG{T}(fluid, storage)
 end
 
 """
@@ -414,49 +448,142 @@ end
 
 No-op step (pure-Lagrangian frame): the tracer matrix is never
 mutated. Provided for symmetry with `det_step_HG!` driver loops.
+M3-3e-3: the implementation is now a native no-op (no delegation to
+M1's `advect_tracers!`); the per-cell matrix is untouched.
 """
-@inline advect_tracers_HG!(tm::TracerMeshHG, dt::Real) =
-    (advect_tracers!(tm.tm, dt); tm)
+@inline advect_tracers_HG!(tm::TracerMeshHG, dt::Real) = tm
 
 # Forward the per-tracer accessors so callers can use the same names
-# they used for `TracerMesh`. Each one delegates to the inner `tm`.
+# they used for `TracerMesh`. Each one operates on the native HG-side
+# storage in `tm.tm`.
 
 """
     n_tracer_fields(tm::TracerMeshHG) -> Int
 """
-n_tracer_fields(tm::TracerMeshHG) = n_tracer_fields(tm.tm)
+n_tracer_fields(tm::TracerMeshHG) = size(tm.tm.tracers, 1)
 
 """
     n_tracer_segments(tm::TracerMeshHG) -> Int
 """
-n_tracer_segments(tm::TracerMeshHG) = n_tracer_segments(tm.tm)
+n_tracer_segments(tm::TracerMeshHG) = size(tm.tm.tracers, 2)
 
 """
     tracer_index(tm::TracerMeshHG, name::Symbol) -> Int
-"""
-tracer_index(tm::TracerMeshHG, name::Symbol) = tracer_index(tm.tm, name)
 
+Look up a tracer's row index by its symbolic name. Raises an
+`ArgumentError` if the name is not present.
 """
-    set_tracer!(tm::TracerMeshHG, name_or_index, values_or_f) -> TracerMeshHG
-"""
-function set_tracer!(tm::TracerMeshHG, key, values_or_f)
-    set_tracer!(tm.tm, key, values_or_f)
-    return tm
+function tracer_index(tm::TracerMeshHG, name::Symbol)
+    k = findfirst(==(name), tm.tm.names)
+    k === nothing && throw(ArgumentError(
+        "tracer name $name not found; have $(tm.tm.names)"))
+    return k
 end
 
 """
-    add_tracer!(tm::TracerMeshHG, name::Symbol, values_or_f) -> TracerMeshHG
+    set_tracer!(tm::TracerMeshHG, name_or_index, values_or_f) -> TracerMeshHG
+
+Initialise a tracer field. Mirrors M1's
+`set_tracer!(::TracerMesh, …)`. The vector form sets row `k` to
+`values[1:N]`. The functional form evaluates `f(m_j)` at each
+segment's Lagrangian mass-coordinate `m_j` (segment center, derived
+from the cumulative `fluid.Δm` directly — no cache_mesh access).
+
+Both raise if `name_or_index` is invalid or if the vector length
+does not match `n_tracer_segments(tm)`.
 """
-function add_tracer!(tm::TracerMeshHG{T}, name::Symbol, values_or_f) where {T}
-    new_tm = add_tracer!(tm.tm, name, values_or_f)
-    return TracerMeshHG{T}(tm.fluid, new_tm)
+function set_tracer!(tm::TracerMeshHG, k::Integer, values::AbstractVector)
+    N = n_tracer_segments(tm)
+    @assert length(values) == N "values length $(length(values)) ≠ N=$N"
+    @assert 1 ≤ k ≤ n_tracer_fields(tm) "tracer index $k out of range"
+    @inbounds for j in 1:N
+        tm.tm.tracers[k, j] = values[j]
+    end
+    return tm
+end
+set_tracer!(tm::TracerMeshHG, name::Symbol, values::AbstractVector) =
+    set_tracer!(tm, tracer_index(tm, name), values)
+
+function set_tracer!(tm::TracerMeshHG{T}, k::Integer, f::Function) where {T<:Real}
+    N = n_tracer_segments(tm)
+    @assert 1 ≤ k ≤ n_tracer_fields(tm) "tracer index $k out of range"
+    Δm = tm.fluid.Δm
+    cum = T(0)
+    @inbounds for j in 1:N
+        # Mass-coordinate cell center: cum_left + Δm_j/2.
+        m_j = cum + Δm[j] / 2
+        tm.tm.tracers[k, j] = f(m_j)
+        cum += Δm[j]
+    end
+    return tm
+end
+set_tracer!(tm::TracerMeshHG, name::Symbol, f::Function) =
+    set_tracer!(tm, tracer_index(tm, name), f)
+
+"""
+    add_tracer!(tm::TracerMeshHG, name::Symbol, values_or_f) -> TracerMeshHG
+
+Allocate a new `TracerMeshHG` with one additional row whose values
+come from `values_or_f`. Mirrors M1's
+`add_tracer!(::TracerMesh, …)`. Existing rows are copied; the fluid
+mesh reference is shared.
+"""
+function add_tracer!(tm::TracerMeshHG{T}, name::Symbol,
+                      values::AbstractVector) where {T<:Real}
+    @assert !(name in tm.tm.names) "tracer name $name already exists"
+    N = n_tracer_segments(tm)
+    @assert length(values) == N
+    K = n_tracer_fields(tm) + 1
+    new_mat = zeros(T, K, N)
+    new_mat[1:end-1, :] = tm.tm.tracers
+    @inbounds for j in 1:N
+        new_mat[K, j] = T(values[j])
+    end
+    new_names = vcat(tm.tm.names, name)
+    return TracerMeshHG{T}(tm.fluid, _TracerStorageHG{T}(new_mat, new_names))
+end
+function add_tracer!(tm::TracerMeshHG{T}, name::Symbol,
+                      f::Function) where {T<:Real}
+    N = n_tracer_segments(tm)
+    Δm = tm.fluid.Δm
+    cum = T(0)
+    vals = Vector{T}(undef, N)
+    @inbounds for j in 1:N
+        m_j = cum + Δm[j] / 2
+        vals[j] = T(f(m_j))
+        cum += Δm[j]
+    end
+    return add_tracer!(tm, name, vals)
 end
 
 """
     tracer_at_position(tm::TracerMeshHG, x::Real, k::Integer = 1) -> Real
+
+Sample tracer `k` at Eulerian (lab-frame) position `x`. Walks the HG
+field set's `x` coefficients cyclically until the segment containing
+`x` is found and returns the segment-centred tracer value. Mirrors
+M1's `tracer_at_position(::TracerMesh, …)` semantics.
 """
-tracer_at_position(tm::TracerMeshHG, x::Real, k::Integer = 1) =
-    tracer_at_position(tm.tm, x, k)
+function tracer_at_position(tm::TracerMeshHG{T}, x::Real,
+                             k::Integer = 1) where {T<:Real}
+    @assert 1 ≤ k ≤ n_tracer_fields(tm) "tracer index $k out of range"
+    fluid = tm.fluid
+    fs = fluid.fields
+    N = n_tracer_segments(tm)
+    L = fluid.L_box
+    x_left_1 = T(fs.x[1][1])
+    xq = mod(x - x_left_1, L) + x_left_1
+    @inbounds for j in 1:N
+        x_l = T(fs.x[j][1])
+        j_r = j == N ? 1 : j + 1
+        wrap = (j == N) ? L : zero(T)
+        x_r = T(fs.x[j_r][1]) + wrap
+        if x_l ≤ xq < x_r
+            return tm.tm.tracers[k, j]
+        end
+    end
+    return tm.tm.tracers[k, N]
+end
 
 # ─────────────────────────────────────────────────────────────────────
 # M2-3 — realizability projection (M3-2 Block 4b).
