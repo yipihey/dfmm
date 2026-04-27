@@ -476,4 +476,21 @@ using Test
         # mode amplitude under linear-acoustic evolution; conservation.
         include("test_M3_4_C3_plane_wave.jl")
     end
+
+    @testset verbose = true "Phase M3-6 Phase 0: off-diagonal β reactivation" begin
+        # M3-6 Phase 0 reactivates the off-diagonal Cholesky pair
+        # `β_12, β_21` in the 2D residual. The Newton system grows from
+        # 9 dof per cell (M3-3c) to 11 dof per cell. At β_12=β_21=0
+        # IC (the M3-3c regression configuration), the new residual
+        # rows are trivial-drive `(β_*_np1 − β_*_n)/dt` and the
+        # 11-dof system factorises to the 9-dof M3-3c sub-system byte-
+        # equally. M3-6 Phase 1 (D.1 KH falsifier) will activate the
+        # off-diagonal strain coupling drive that breaks the
+        # triviality. See `reference/notes_M3_6_phase0_offdiag_beta.md`
+        # and `scripts/verify_berry_connection_offdiag.py` (9 SymPy
+        # CHECKs reproduced numerically at the residual level).
+        include("test_M3_6_phase0_offdiag_residual.jl")
+        include("test_M3_6_phase0_offdiag_dimension_lift.jl")
+        include("test_M3_6_phase0_offdiag_realizability.jl")
+    end
 end
