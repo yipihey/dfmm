@@ -1799,3 +1799,268 @@ function tier_d_dust_trap_ic_full(; level::Integer = 4,
                    Gamma = Gamma, cv = cv),
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-6 Phase 5: D.10 ISM-like 2D multi-tracer IC factory
+# ─────────────────────────────────────────────────────────────────────
+#
+# Methods paper §10.5 D.10 community-impact test: "Multi-tracer 2D
+# shocked turbulence; metallicity PDF and spatial structure consistent
+# with Lagrangian methods (SPH, AREPO); significantly better than
+# Eulerian methods." The dfmm 2D variational scheme tests this via a
+# multi-phase ISM-like IC carrying N_species ≥ 3 passive scalars on a
+# sheared KH base flow, then driven through the 2D Newton step
+# (`det_step_2d_berry_HG!`) optionally combined with stochastic
+# injection (`inject_vg_noise_HG_2d!`) for the "shocked turbulence"
+# regime. The headline result is multi-tracer fidelity: the tracer
+# matrix stays *byte-stable* through K stochastic-injection +
+# deterministic-step iterations because (i) `advect_tracers_HG_2d!`
+# is a no-op (Phase 3 design contract — pure-Lagrangian frame) and
+# (ii) `inject_vg_noise_HG_2d!`'s write set is a strict subset of the
+# fluid Cholesky-sector fields (excludes `tm.tracers` by inspection;
+# 2D analog of the M2-2 1D structural argument).
+
+"""
+    tier_d_ism_tracers_ic_full(; level=4, n_species=3,
+                                 U_jet=1.0, jet_width=0.1,
+                                 perturbation_amp=1e-3, perturbation_k=2,
+                                 y_0=nothing,
+                                 ρ0=1.0, P0=1.0,
+                                 lo=nothing, hi=nothing,
+                                 species_names=nothing,
+                                 species_widths=nothing,
+                                 species_centres=nothing,
+                                 ε_phase=0.02,
+                                 Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                                 T=Float64) -> NamedTuple
+
+D.10 ISM-like multi-tracer Cholesky-sector full IC.
+
+Builds a balanced HG quadtree on `[lo, hi]` (default `[0, 1]²`),
+allocates the 14-named-field 2D Cholesky-sector field set, applies
+`cholesky_sector_state_from_primitive` per leaf with the KH-style
+sheared base flow
+
+    u_1(y) = U_jet · tanh((y - y_0) / w)
+    u_2    = 0
+
+uniform `(ρ0, P0)`, cold-limit `α = 1, β = 0, β_off = 0, θ_R = 0`,
+plus an antisymmetric tilt-mode perturbation `δβ_12 = -δβ_21 = A ·
+sin(2π k_x x) · sech²((y - y_0)/w)` (the M3-6 Phase 1b stencil).
+
+Allocates an `n_species`-row `TracerMeshHG2D` carrying ISM-like
+phase-tagged tracers. The default 3-species recipe places one phase
+in each y-band:
+
+  • Species 1 `:cold`: peaked at `y < y_lo + L2/3` (cold molecular
+    phase analog).
+  • Species 2 `:warm`: peaked in `[y_lo + L2/3, y_lo + 2L2/3]` (warm
+    neutral phase analog).
+  • Species 3 `:hot`: peaked at `y > y_lo + 2L2/3` (hot ionized
+    phase analog).
+
+The per-species concentration profile is a Gaussian-windowed
+metallicity-tracer-like field
+
+    c_k(x, y) = clamp(exp(-(y - y_centre[k])² / (2·width[k]²))
+                       + ε_phase · cos(2π m_1) · cos(2π m_2),
+                     0, ∞)
+
+which sums to ≈ 1 along columns (so the multi-phase ISM mixing
+signature is well-defined). The small `ε_phase` term tilts the
+species spatially in `m_1` to break the 1D-symmetry and drive the
+"multi-phase mixing" regime under stochastic injection.
+
+Returns a NamedTuple shape matching `tier_c_*_full_ic` plus the new
+`tm::TracerMeshHG2D` field:
+
+  • `name = "tier_d_ism_tracers"`
+  • `mesh, frame, leaves, fields` — Cholesky-sector field set ready
+    for `det_step_2d_berry_HG!`.
+  • `tm::TracerMeshHG2D{Float64}` — `n_species`-species tracer mesh
+    populated at the cell-centred concentrations.
+  • `ρ_per_cell::Vector{Float64}` — uniform `fill(ρ0, N)`.
+  • `params::NamedTuple` — IC parameters echo plus `(L1, L2, t_KH)`.
+
+The KH timescale `t_KH = L1 / U_jet` is the natural simulation
+horizon for the shocked-turbulence regime (multiple shears across
+the box).
+
+# Boundary conditions
+
+The recommended BC mix is
+
+    bc_ism = FrameBoundaries{2}(((PERIODIC, PERIODIC),
+                                  (REFLECTING, REFLECTING)))
+
+(periodic along the streamwise / shearing axis; reflecting along the
+phase-stratification axis).
+
+# Per-species M_vv for γ diagnostic
+
+The default per-species `M_vv` recipe carries a *species-dependent
+thermal velocity dispersion* analogous to the warm/hot/cold ISM
+phases:
+
+    M_vv_per_species = ((1.0, 1.0),    # cold (small dispersion)
+                         (2.0, 2.0),    # warm (intermediate)
+                         (4.0, 4.0))    # hot (large)
+
+The per-species γ diagnostic via
+`gamma_per_axis_2d_per_species_field(...; M_vv_override_per_species)`
+then has each species' γ trajectory distinct from the others — the
+qualitative "per-species γ separation" test.
+
+# Honest scientific note
+
+In the dfmm 2D variational scheme `advect_tracers_HG_2d!` is a no-op
+(Phase 3 design contract — pure-Lagrangian frame; the tracer matrix
+is byte-stable per step), AND `inject_vg_noise_HG_2d!` writes only
+fluid `(β_a, u_a, s, Pp)` fields (NOT `tm.tracers`). This means the
+multi-tracer matrix stays bit-identical to its IC value through any
+combination of `det_step_2d_berry_HG!` + `inject_vg_noise_HG_2d!`
+calls — the 2D analog of the M2-2 structural bit-exactness argument.
+The Phase 5 test exercises this contract as a *defensive regression
+guard* against future refactors that might accidentally put
+`tm.tracers` in the write set of either operator.
+"""
+function tier_d_ism_tracers_ic_full(; level::Integer = 4,
+                                     n_species::Integer = 3,
+                                     U_jet::Real = 1.0,
+                                     jet_width::Real = 0.1,
+                                     perturbation_amp::Real = 1e-3,
+                                     perturbation_k::Integer = 2,
+                                     y_0::Union{Real,Nothing} = nothing,
+                                     ρ0::Real = 1.0, P0::Real = 1.0,
+                                     lo = nothing, hi = nothing,
+                                     species_names = nothing,
+                                     species_centres = nothing,
+                                     species_widths = nothing,
+                                     ε_phase::Real = 0.02,
+                                     Gamma::Real = GAMMA_LAW_DEFAULT,
+                                     cv::Real = CV_DEFAULT,
+                                     T::Type = Float64)
+    @assert n_species ≥ 1 "tier_d_ism_tracers_ic_full requires ≥ 1 species"
+    lo_t, hi_t = _default_box(2, lo, hi, T;
+                                default_lo = (zero(T), zero(T)),
+                                default_hi = (one(T), one(T)))
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    y0_t = y_0 === nothing ? T(0.5) * (lo_t[2] + hi_t[2]) : T(y_0)
+    w_t  = T(jet_width)
+    U_t  = T(U_jet)
+    A_t  = T(perturbation_amp)
+    k_x  = Int(perturbation_k)
+    ns   = Int(n_species)
+
+    # Default species partitioning: evenly placed centres along axis 2
+    # with characteristic width L2 / (3 · ns).
+    if species_centres === nothing
+        species_centres = ntuple(k -> Float64(lo_t[2]) +
+                                  (Float64(k) - 0.5) * Float64(L2) /
+                                  Float64(ns),
+                                  ns)
+    else
+        @assert length(species_centres) == ns "species_centres length must == n_species"
+    end
+    if species_widths === nothing
+        species_widths = ntuple(_ -> Float64(L2) / (3.0 * Float64(ns)), ns)
+    else
+        @assert length(species_widths) == ns "species_widths length must == n_species"
+    end
+    # Default species names: :cold, :warm, :hot for ns == 3; generic
+    # `:species_k` otherwise.
+    if species_names === nothing
+        if ns == 3
+            species_names = [:cold, :warm, :hot]
+        else
+            species_names = [Symbol("species_$(k)") for k in 1:ns]
+        end
+    else
+        @assert length(species_names) == ns "species_names length must == n_species"
+    end
+
+    mesh = HierarchicalMesh{2}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_2d_fields(mesh; T = T)
+
+    ρ_per_cell = fill(Float64(ρ0), length(leaves))
+
+    # Pre-compute per-leaf cell centres + per-species concentrations.
+    # Layout: c_per_species[k] is a Vector{Float64} of length(leaves).
+    c_per_species = [Vector{Float64}(undef, length(leaves)) for _ in 1:ns]
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        m1 = (cx - Float64(lo_t[1])) / Float64(L1)
+        m2 = (cy - Float64(lo_t[2])) / Float64(L2)
+        # KH base flow + cold-limit Cholesky state.
+        u1 = Float64(U_t) * tanh((cy - Float64(y0_t)) / Float64(w_t))
+        u2 = 0.0
+        v_base = cholesky_sector_state_from_primitive(Float64(ρ0), u1, u2,
+                                                        Float64(P0),
+                                                        (cx, cy);
+                                                        Gamma = Gamma, cv = cv)
+        # Phase 1b antisymmetric tilt-mode β_off perturbation.
+        sech_arg = (cy - Float64(y0_t)) / Float64(w_t)
+        sech_val = 1.0 / cosh(sech_arg)
+        sech2 = sech_val * sech_val
+        sin_phase = sin(2π * Float64(k_x) * (cx - Float64(lo_t[1])) / Float64(L1))
+        δβ12 = Float64(A_t) * sin_phase * sech2
+        v = DetField2D{Float64}(
+            v_base.x, v_base.u, v_base.alphas, v_base.betas,
+            (δβ12, -δβ12),
+            v_base.θ_R, v_base.s, v_base.Pp, v_base.Q,
+        )
+        write_detfield_2d!(fields, ci, v)
+        # Per-species concentration: Gaussian-windowed in y +
+        # ε_phase tilt term in (m_1, m_2).
+        for k in 1:ns
+            yc = Float64(species_centres[k])
+            σk = Float64(species_widths[k])
+            σ2 = max(σk * σk, 1e-300)
+            gauss = exp(-((cy - yc)^2) / (2.0 * σ2))
+            tilt = Float64(ε_phase) * cos(2π * m1) * cos(2π * m2)
+            c_per_species[k][j] = max(gauss + tilt, 0.0)
+        end
+    end
+
+    # KH simulation horizon: t_KH = L1 / U_jet.
+    t_KH = Float64(L1) / max(Float64(U_t), 1e-300)
+
+    # Allocate the n_species TracerMeshHG2D and populate.
+    tm = TracerMeshHG2D(fields, mesh; n_species = ns,
+                         names = collect(Symbol, species_names),
+                         T = Float64)
+    for k in 1:ns
+        set_species!(tm, k, c_per_species[k], leaves)
+    end
+
+    return (
+        name = "tier_d_ism_tracers",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        tm = tm,
+        ρ_per_cell = ρ_per_cell,
+        t_KH = t_KH,
+        params = (level = level, n_species = ns,
+                   U_jet = Float64(U_t), jet_width = Float64(w_t),
+                   perturbation_amp = Float64(A_t),
+                   perturbation_k = k_x,
+                   y_0 = Float64(y0_t),
+                   ρ0 = Float64(ρ0), P0 = Float64(P0),
+                   ε_phase = Float64(ε_phase),
+                   species_names = Tuple(species_names),
+                   species_centres = Tuple(Float64.(species_centres)),
+                   species_widths = Tuple(Float64.(species_widths)),
+                   lo = lo_t, hi = hi_t,
+                   L1 = Float64(L1), L2 = Float64(L2),
+                   t_KH = t_KH,
+                   Gamma = Gamma, cv = cv),
+    )
+end

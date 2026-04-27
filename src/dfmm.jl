@@ -484,4 +484,12 @@ export gamma_per_axis_2d_per_species, gamma_per_axis_2d_per_species_field
 # See `reference/notes_M3_6_phase4_D7_dust_traps.md`.
 export tier_d_dust_trap_ic_full
 
+# --- Phase M3-6 Phase 5 API: D.10 ISM-tracers IC factory -----------------
+# `tier_d_ism_tracers_ic_full` (KH-style sheared base flow + N≥3 species
+# `TracerMeshHG2D` with phase-stratified concentration profiles) factory
+# for the D.10 ISM-like 2D multi-tracer fidelity falsifier (M3-6 Phase 5).
+# Methods paper §10.5 D.10. Builds on Phase 1b KH IC + Phase 3 substrate.
+# See `reference/notes_M3_6_phase5_D10_ism_tracers.md`.
+export tier_d_ism_tracers_ic_full
+
 end # module
