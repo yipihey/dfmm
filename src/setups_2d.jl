@@ -45,35 +45,45 @@ Each IC returns a `(mesh, frame, fields, params)` NamedTuple where:
 - `params::NamedTuple` — the input parameters echoed back for
   bookkeeping (so downstream tests can re-derive analytical values).
 
-The cell-average is computed via Gauss quadrature on the reference
-domain (HG `gauss_quadrature_*`) of the appropriate dimension and an
-affine map to the cell's physical AABB. With `quad_order = 3` the
-factories integrate cubic polynomials exactly; the smoothness of the
-ICs makes higher orders unnecessary in practice but the kwarg is
-exposed for the convergence-order tests.
+# L²-projection backing (M3-2b Swap 5)
 
-# HG API gap (per `reference/notes_HG_design_guidance.md` item #9)
+Per-cell projection is delegated to HG's `init_field_from!`
+(`HierarchicalGrids.Storage.Initialization`, commit 4b481da). For an
+order-0 monomial basis the local mass matrix reduces to `M = [1]` and
+the L²-projection collapses to the cell average
 
-There is currently no `HG.init_field_from!(field, mesh, f::Function)`
-helper that handles the quadrature + projection in a single call. We
-hand-roll the projection inline. When HG ships item #9 the helper
-`_cell_average_*` blocks below should reduce to a single call.
+    c[1] = ∫_ref f(x(ξ)) dξ  ≈  Σ_k w_k * f(x_k),
+
+reproducing the previous hand-rolled tensor-product GL quadrature
+exactly for the same number of GL points per axis. The public
+`quad_order` kwarg keeps its original semantics ("n GL points per
+axis"); internally we translate to HG's `quadrature_order = 2n - 1`
+which yields the same n-point tensor rule.
+
+`init_field_from!` writes coefficients to *every* cell of the input
+field set (including non-leaves of an AMR tree). The Tier-C public API
+exposes leaf-indexed storage, so each factory allocates a temporary
+n_cells-sized single-field PolynomialFieldSet per quantity, runs
+`init_field_from!` on it, and copies leaf entries into the master
+n_leaves-sized field set. This preserves bit-exact parity with the
+previous hand-rolled version (the L²-projection at P = 0 is the
+midpoint/GL cell average) while removing ~150 LOC of in-factory
+quadrature plumbing.
 
 # References
 
 - methods paper §10.4 (Tier C list)
 - `reference/MILESTONE_3_PLAN.md` Phase M3-4
-- `reference/notes_HG_design_guidance.md` items #9
+- `reference/notes_M3_2b_swap5_init_field.md` (this swap's design note)
 """
 
 using HierarchicalGrids: HierarchicalMesh, EulerianFrame,
     refine_cells!, enumerate_leaves, cell_physical_box,
-    gauss_quadrature_interval, gauss_quadrature_quad, gauss_quadrature_cube,
     MonomialBasis, allocate_polynomial_fields, SoA, PolynomialFieldSet,
-    n_quad_points
+    init_field_from!
 
 # ─────────────────────────────────────────────────────────────────────
-# Mesh + quadrature plumbing (dimension-generic)
+# Mesh + field-set plumbing (dimension-generic)
 # ─────────────────────────────────────────────────────────────────────
 
 """
@@ -101,47 +111,15 @@ function uniform_eulerian_mesh(D::Integer, level::Integer)
 end
 
 """
-    _quad_for_dim(D::Integer, order::Integer; T::Type = Float64)
+    _hg_quadrature_order(quad_order_n::Integer) -> Int
 
-Pick the right HG quadrature rule for an axis-aligned `D`-cube on the
-reference domain `[0, 1]^D`. `order` is the number of points per axis
-(tensor-product). Returns a `QuadRule{D, T}`.
+Translate dfmm's "n GL points per axis" `quad_order` into HG's
+`init_field_from!(...; quadrature_order)` argument. HG selects the
+tensor-product rule via `n = ceil((order + 1) / 2)`, so
+`quadrature_order = 2n - 1` reproduces the n-point Gauss-Legendre
+tensor rule used by the legacy hand-rolled factory.
 """
-function _quad_for_dim(D::Integer, order::Integer; T::Type = Float64)
-    if D == 1
-        return gauss_quadrature_interval(Int(order); T = T)
-    elseif D == 2
-        return gauss_quadrature_quad(Int(order); T = T)
-    elseif D == 3
-        return gauss_quadrature_cube(Int(order); T = T)
-    else
-        throw(ArgumentError("dimension D=$D not supported by Tier-C IC factories"))
-    end
-end
-
-"""
-    _cell_average(f, lo::NTuple{D,T}, hi::NTuple{D,T}, quad)
-
-Evaluate the cell average `(1/V) ∫_cell f(x) dx` for the axis-aligned
-cell `[lo, hi]` ⊂ ℝ^D, using the HG reference-domain quadrature `quad`
-and an affine pull-back. `f` must accept an `NTuple{D,T}` of physical
-coordinates and return a scalar. Returns the average as a `Float64`.
-
-The cell volume cancels between the Jacobian (= prod(extents)) and
-the average's `1/V`, so the result is just the weighted sum of `f` at
-the mapped quadrature points.
-"""
-@inline function _cell_average(f, lo::NTuple{D,T}, hi::NTuple{D,T},
-                                quad) where {D, T}
-    extents = ntuple(d -> hi[d] - lo[d], Val(D))
-    s = zero(Float64)
-    @inbounds for k in 1:n_quad_points(quad)
-        ξ = quad.points[k]
-        x = ntuple(d -> lo[d] + extents[d] * ξ[d], Val(D))
-        s += quad.weights[k] * Float64(f(x))
-    end
-    return s
-end
+@inline _hg_quadrature_order(n::Integer) = 2 * Int(n) - 1
 
 """
     _allocate_tierc_fields(D::Integer, n_leaves::Integer; T::Type = Float64)
@@ -168,6 +146,33 @@ function _allocate_tierc_fields(D::Integer, n_leaves::Integer;
     else
         throw(ArgumentError("dimension D=$D not supported"))
     end
+end
+
+"""
+    _project_scalar_to_leaves!(target_view, frame, leaves, f, basis,
+                                n_total_cells, hg_quad_order)
+
+Project the scalar function `f` onto the order-0 polynomial basis on
+every cell of the parent mesh via `init_field_from!`, then copy the
+resulting leaf coefficients into `target_view` (a single named field
+view of the public Tier-C field set). Returns nothing.
+
+The temporary PolynomialFieldSet is allocated freshly per call; for
+the order-0 monomial basis used by Tier-C, each cell holds one scalar
+(the cell average), so this is a thin wrapper around HG's L²
+projection helper.
+"""
+function _project_scalar_to_leaves!(target_view, frame::EulerianFrame{D, T},
+                                     leaves::AbstractVector{<:Integer},
+                                     f, basis, n_total_cells::Integer,
+                                     hg_quad_order::Integer) where {D, T}
+    tmp = allocate_polynomial_fields(SoA(), basis, Int(n_total_cells);
+                                      v = T)
+    init_field_from!(tmp, frame, f; quadrature_order = Int(hg_quad_order))
+    @inbounds for (j, ci) in enumerate(leaves)
+        target_view[j] = (tmp.v[ci][1],)
+    end
+    return nothing
 end
 
 # ─────────────────────────────────────────────────────────────────────
@@ -229,32 +234,33 @@ function tier_c_sod_ic(; D::Integer = 2,
     leaves = enumerate_leaves(mesh)
     n = length(leaves)
     fields = _allocate_tierc_fields(D, n; T = T)
-    quad = _quad_for_dim(D, quad_order; T = T)
 
-    # Per-cell average of the two-state primitives. The step is along
-    # shock_axis; we map the "indicator(x_axis < x_split)" through the
-    # quadrature so cells straddling the split receive the linearly
-    # interpolated cell-average.
+    # HG's L² projection helper writes to every cell of its target field;
+    # we project on the full n_cells(mesh) and copy leaves into `fields`.
+    basis = MonomialBasis{Int(D), 0}()
+    nc = HierarchicalGrids.n_cells(mesh)
+    hg_qo = _hg_quadrature_order(quad_order)
+
     rho_l = T(ρL); rho_r = T(ρR)
     p_l   = T(pL); p_r   = T(pR)
     u_l   = T(uL); u_r   = T(uR)
     xs    = T(x_split)
     sa    = Int(shock_axis)
 
-    f_rho(x) = x[sa] < xs ? rho_l : rho_r
-    f_P(x)   = x[sa] < xs ? p_l   : p_r
-    f_us(x)  = x[sa] < xs ? u_l   : u_r   # velocity along shock axis
+    # Two-state primitives. The step is along shock_axis; mapping the
+    # indicator through the quadrature gives cells straddling the split
+    # the linearly-interpolated cell-average.
+    f_rho = x -> x[sa] < xs ? rho_l : rho_r
+    f_P   = x -> x[sa] < xs ? p_l   : p_r
+    f_us  = x -> x[sa] < xs ? u_l   : u_r   # velocity along shock axis
+    f_zero = _ -> zero(T)
 
-    @inbounds for (j, ci) in enumerate(leaves)
-        lo_c, hi_c = cell_physical_box(frame, ci)
-        fields.rho[j] = (_cell_average(f_rho, lo_c, hi_c, quad),)
-        fields.P[j]   = (_cell_average(f_P,   lo_c, hi_c, quad),)
-        # Set every velocity component: along shock_axis use the
-        # primitive jump; transverse axes are zero by construction.
-        for d in 1:D
-            v = d == sa ? _cell_average(f_us, lo_c, hi_c, quad) : zero(T)
-            _set_velocity_component!(fields, j, d, v)
-        end
+    _project_scalar_to_leaves!(fields.rho, frame, leaves, f_rho, basis, nc, hg_qo)
+    _project_scalar_to_leaves!(fields.P,   frame, leaves, f_P,   basis, nc, hg_qo)
+    for d in 1:D
+        view_d = _velocity_view(fields, d)
+        f_d = (d == sa) ? f_us : f_zero
+        _project_scalar_to_leaves!(view_d, frame, leaves, f_d, basis, nc, hg_qo)
     end
 
     return (
@@ -331,7 +337,10 @@ function tier_c_cold_sinusoid_ic(; D::Integer = 2,
     leaves = enumerate_leaves(mesh)
     n = length(leaves)
     fields = _allocate_tierc_fields(D, n; T = T)
-    quad = _quad_for_dim(D, quad_order; T = T)
+
+    basis = MonomialBasis{Int(D), 0}()
+    nc = HierarchicalGrids.n_cells(mesh)
+    hg_qo = _hg_quadrature_order(quad_order)
 
     A_t  = T(A)
     ρ_t  = T(ρ0)
@@ -339,22 +348,26 @@ function tier_c_cold_sinusoid_ic(; D::Integer = 2,
     L_d  = ntuple(d -> hi_t[d] - lo_t[d], D)
     lo_d = lo_t
 
-    # u_d(x) = A * sin(2π k_d (x_d - lo_d) / L_d) when k_d != 0, else 0.
-    @inline function u_axis(x, axis::Int)
-        kd = k_t[axis]
-        kd == 0 && return zero(T)
-        return A_t * sin(T(2π) * T(kd) * (x[axis] - lo_d[axis]) / L_d[axis])
-    end
+    # Constant fields: ρ0, P0.
+    _project_scalar_to_leaves!(fields.rho, frame, leaves,
+                                _ -> ρ_t, basis, nc, hg_qo)
+    _project_scalar_to_leaves!(fields.P, frame, leaves,
+                                _ -> P_t, basis, nc, hg_qo)
 
-    @inbounds for (j, ci) in enumerate(leaves)
-        lo_c, hi_c = cell_physical_box(frame, ci)
-        fields.rho[j] = (ρ_t,)
-        fields.P[j]   = (P_t,)
-        for d in 1:D
-            f_d(x) = u_axis(x, d)
-            v = _cell_average(f_d, lo_c, hi_c, quad)
-            _set_velocity_component!(fields, j, d, v)
+    # u_d(x) = A * sin(2π k_d (x_d - lo_d) / L_d) when k_d != 0, else 0.
+    for d in 1:D
+        kd = k_t[d]
+        Ld = L_d[d]
+        ld = lo_d[d]
+        f_d = if kd == 0
+            _ -> zero(T)
+        else
+            let A_t = A_t, kd = kd, Ld = Ld, ld = ld, axis = d
+                x -> A_t * sin(T(2π) * T(kd) * (x[axis] - ld) / Ld)
+            end
         end
+        view_d = _velocity_view(fields, d)
+        _project_scalar_to_leaves!(view_d, frame, leaves, f_d, basis, nc, hg_qo)
     end
 
     return (
@@ -432,7 +445,10 @@ function tier_c_plane_wave_ic(; D::Integer = 2,
     leaves = enumerate_leaves(mesh)
     n = length(leaves)
     fields = _allocate_tierc_fields(D, n; T = T)
-    quad = _quad_for_dim(D, quad_order; T = T)
+
+    basis = MonomialBasis{Int(D), 0}()
+    nc = HierarchicalGrids.n_cells(mesh)
+    hg_qo = _hg_quadrature_order(quad_order)
 
     # Wavevector in physical units, scaled to "k_mag full wavelengths
     # per box side". Use lo_t[1]'s box length as the reference scale.
@@ -455,28 +471,28 @@ function tier_c_plane_wave_ic(; D::Integer = 2,
     A_t = T(A); ρ_t = T(ρ0); P_t = T(P0)
     c_eff = c === nothing ? sqrt(P_t / ρ_t) : T(c)
 
-    @inline function δρ(x)
-        # k · (x - lo) phase in cycles
-        phase = zero(T)
-        for d in 1:D
-            phase += k_phys[d] * (x[d] - lo_t[d])
+    # Closures pulled out to keep the projection calls flat.
+    let A_t = A_t, ρ_t = ρ_t, P_t = P_t, c_eff = c_eff,
+        k_phys = k_phys, k̂ = k̂, lo_t = lo_t, D = D
+        @inline function δρ(x)
+            phase = zero(T)
+            for d in 1:D
+                phase += k_phys[d] * (x[d] - lo_t[d])
+            end
+            return A_t * cos(T(2π) * phase)
         end
-        return A_t * cos(T(2π) * phase)
-    end
-    f_rho(x) = ρ_t + δρ(x)
-    f_P(x)   = P_t + c_eff^2 * δρ(x)
-    @inline function f_u(x, d::Int)
-        return (c_eff / ρ_t) * δρ(x) * k̂[d]
-    end
+        f_rho = x -> ρ_t + δρ(x)
+        f_P   = x -> P_t + c_eff^2 * δρ(x)
 
-    @inbounds for (j, ci) in enumerate(leaves)
-        lo_c, hi_c = cell_physical_box(frame, ci)
-        fields.rho[j] = (_cell_average(f_rho, lo_c, hi_c, quad),)
-        fields.P[j]   = (_cell_average(f_P,   lo_c, hi_c, quad),)
+        _project_scalar_to_leaves!(fields.rho, frame, leaves, f_rho, basis, nc, hg_qo)
+        _project_scalar_to_leaves!(fields.P,   frame, leaves, f_P,   basis, nc, hg_qo)
         for d in 1:D
-            f_d(x) = f_u(x, d)
-            v = _cell_average(f_d, lo_c, hi_c, quad)
-            _set_velocity_component!(fields, j, d, v)
+            kd_hat = k̂[d]
+            f_d = let kd_hat = kd_hat, c_eff = c_eff, ρ_t = ρ_t
+                x -> (c_eff / ρ_t) * δρ(x) * kd_hat
+            end
+            view_d = _velocity_view(fields, d)
+            _project_scalar_to_leaves!(view_d, frame, leaves, f_d, basis, nc, hg_qo)
         end
     end
 
@@ -520,32 +536,30 @@ function _default_box(D::Integer, lo, hi, T::Type;
 end
 
 """
-    _set_velocity_component!(fields, j, axis, value)
+    _velocity_view(fields, axis)
 
-Write a velocity-component cell-average into the Tier-C field set.
-Dispatches on `axis ∈ 1:3` to the matching named field
-(`:ux`, `:uy`, `:uz`). Used by all three factories.
+Return the named field view for the `axis`-th velocity component
+(`:ux`, `:uy`, `:uz`) of a Tier-C `PolynomialFieldSet`. Used to plumb
+per-axis projections into the master field set.
 """
-@inline function _set_velocity_component!(fields::PolynomialFieldSet,
-                                           j::Integer, axis::Integer,
-                                           value)
+@inline function _velocity_view(fields::PolynomialFieldSet, axis::Integer)
     if axis == 1
-        fields.ux[j] = (value,)
+        return fields.ux
     elseif axis == 2
-        fields.uy[j] = (value,)
+        return fields.uy
     elseif axis == 3
-        fields.uz[j] = (value,)
+        return fields.uz
     else
         throw(ArgumentError("axis $axis out of range [1, 3]"))
     end
-    return value
 end
 
 """
     tier_c_velocity_component(fields, j, axis)
 
 Read the cell-average of the `axis`-th velocity component at leaf `j`.
-Dispatches across `:ux`, `:uy`, `:uz` like `_set_velocity_component!`.
+Dispatches across `:ux`, `:uy`, `:uz` (the inverse of the per-axis
+projection writes performed by the factories).
 """
 @inline function tier_c_velocity_component(fields::PolynomialFieldSet,
                                             j::Integer, axis::Integer)
