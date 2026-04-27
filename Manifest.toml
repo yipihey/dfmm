@@ -2489,8 +2489,8 @@ weakdeps = ["SparseArrays", "StatsBase"]
 
 [[deps.R3D]]
 deps = ["StaticArrays"]
-git-tree-sha1 = "e7a1adaf0421459cb0caf1ba0d9485f72403e65b"
-repo-rev = "ff23853fae4b551a09b5ae91805ee9fbf65d33d5"
+git-tree-sha1 = "4b8f995ca50ef22910ce45deda1e2a6661c61a01"
+repo-rev = "154b346"
 repo-subdir = "R3D.jl"
 repo-url = "https://github.com/yipihey/r3djl"
 uuid = "6888587b-6711-4ff3-8558-83329515e735"
