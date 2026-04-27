@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "81737ae4cf6099fbceaf2d475208be409149527d"
+project_hash = "622fc242b68ee9915043d59c18bd2518c25f729b"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -1195,6 +1195,14 @@ deps = ["LinearAlgebra", "OhMyThreads", "R3D", "SparseArrays", "StaticArrays"]
 path = "../HierarchicalGrids.jl"
 uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 version = "0.1.0"
+
+    [deps.HierarchicalGrids.extensions]
+    HierarchicalGridsHwlocExt = "Hwloc"
+    HierarchicalGridsThreadPinningExt = "ThreadPinning"
+
+    [deps.HierarchicalGrids.weakdeps]
+    Hwloc = "0e44f5e4-bd66-52a0-8798-143a42290a1d"
+    ThreadPinning = "811555cd-349b-4f26-b7bc-1f208b848042"
 
 [[deps.Hwloc_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "XML2_jll", "Xorg_libpciaccess_jll"]
@@ -3331,7 +3339,7 @@ uuid = "b2a88e68-78e7-5e94-8c20-c02986ec140e"
 version = "0.2.10+0"
 
 [[deps.dfmm]]
-deps = ["CairoMakie", "DifferentiationInterface", "Distributions", "Enzyme", "ForwardDiff", "GeometricIntegrators", "GeometricalPredicates", "HDF5", "HierarchicalGrids", "JLD2", "LinearSolve", "NPZ", "NonlinearSolve", "OrdinaryDiffEq", "Printf", "QuadGK", "R3D", "Random", "SparseArrays", "SparseConnectivityTracer", "SparseMatrixColorings", "SpecialFunctions", "StaticArrays", "StatsBase", "WriteVTK"]
+deps = ["CairoMakie", "DifferentiationInterface", "Distributions", "Enzyme", "ForwardDiff", "GeometricIntegrators", "GeometricalPredicates", "HDF5", "HierarchicalGrids", "JLD2", "LinearAlgebra", "LinearSolve", "NPZ", "NonlinearSolve", "OrdinaryDiffEq", "Printf", "QuadGK", "R3D", "Random", "SparseArrays", "SparseConnectivityTracer", "SparseMatrixColorings", "SpecialFunctions", "StaticArrays", "StatsBase", "WriteVTK"]
 path = "."
 uuid = "3fe8d9ee-2bda-457c-82d7-3afede950fc2"
 version = "0.1.0"

@@ -571,4 +571,33 @@ using Test
         # See `reference/notes_M3_6_phase2_D4_zeldovich.md`.
         include("test_M3_6_phase2_D4_zeldovich.jl")
     end
+
+    @testset verbose = true "Phase M3-7 prep: 3D field set + per-axis Cholesky DD" begin
+        # M3-7 prep scaffolding for the 3D extension milestone (the
+        # full M3-7a-e phases land scientifically later). Scope of
+        # this prep:
+        #   • `DetField3D{T}` working struct — 13 dof per leaf cell
+        #     `(x_a, u_a, α_a, β_a)_{a=1,2,3} + (θ_12, θ_13, θ_23) + s`.
+        #     Off-diagonal β + post-Newton (Pp/Q) deferred per M3-3a
+        #     Q3 / M3-7 design note §4.4.
+        #   • Per-axis Cholesky decomposition driver in
+        #     `src/cholesky_DD_3d.jl` (NEW FILE — separate from
+        #     `src/cholesky_DD.jl` for parallel-safety with M3-6
+        #     Phase 3): `cholesky_decompose_3d`, `cholesky_recompose_3d`,
+        #     `gamma_per_axis_3d` (matrix + diagonal forms),
+        #     `rotation_matrix_3d`. Intrinsic Cardan ZYX Euler-angle
+        #     convention (`R = R_12 · R_13 · R_23`) — pinned in the
+        #     top-of-file docstring; matches the SymPy authority in
+        #     `scripts/verify_berry_connection_3D.py`.
+        #   • Five test blocks: round-trip (50 random samples to ≤
+        #     1e-12); iso-pullback (α_1 = α_2 = α_3 well-defined; γ
+        #     equal); 2D reduction (θ_13 = θ_23 = 0 reproduces 2D byte-
+        #     equal on top-left 2×2 block); per-axis γ on anisotropic
+        #     M_vv (matrix + M1-form signatures); zero allocations on
+        #     hot path.
+        # See `reference/notes_M3_7_3d_extension.md` (full M3-7 design
+        # note) and `reference/notes_M3_7_prep_3d_scaffolding.md` (this
+        # sub-phase's status note).
+        include("test_M3_7_prep_3d_scaffolding.jl")
+    end
 end

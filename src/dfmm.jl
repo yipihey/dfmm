@@ -428,4 +428,31 @@ export tier_d_kh_ic, tier_d_kh_ic_full
 # See `reference/notes_M3_6_phase2_D4_zeldovich.md`.
 export tier_d_zeldovich_pancake_ic
 
+# --- Phase M3-7 prep API: 3D field set + 3D Cholesky decomposition --------
+# Scaffolding for the M3-7 (3D extension) milestone. Adds:
+#   • `DetField3D{T}` — the 3D analog of `DetField2D{T}` carrying the
+#     13-dof Newton unknown set `(x_a, u_a, α_a, β_a)_{a=1,2,3} +
+#     (θ_12, θ_13, θ_23) + s` per leaf cell. (Off-diagonal β and post-
+#     Newton Pp/Q sectors are deferred per M3-3a Q3 default + M3-7
+#     design note §4.4.)
+#   • `cholesky_decompose_3d`, `cholesky_recompose_3d` — 3×3 SPD ↔
+#     (α, θ) round-trip via eigendecomposition (intrinsic Cardan ZYX
+#     Euler-angle convention; reduces byte-equally to the 2D
+#     `cholesky_recompose_2d` on the dimension-lift slice).
+#   • `gamma_per_axis_3d` — per-axis γ diagnostic in the 3D principal-
+#     axis frame.
+#   • `rotation_matrix_3d` — helper to build the SO(3) rotation matrix
+#     from three Euler angles in the chosen convention.
+#
+# This phase does NOT write the 3D EL residual or any 3D scientific
+# drivers — those are M3-7a (halo smoke + field set), M3-7b (residual),
+# M3-7c (Berry coupling), M3-7d (per-axis γ AMR), M3-7e (Tier C/D).
+# The new file `src/cholesky_DD_3d.jl` is intentionally separate from
+# `src/cholesky_DD.jl` to avoid conflict with M3-6 Phase 3 work in
+# parallel. See `reference/notes_M3_7_prep_3d_scaffolding.md`.
+include("cholesky_DD_3d.jl")
+export DetField3D
+export cholesky_decompose_3d, cholesky_recompose_3d, gamma_per_axis_3d
+export rotation_matrix_3d
+
 end # module

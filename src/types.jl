@@ -541,3 +541,179 @@ Newton sectors `Pp`, `Q` are NOT counted.
 @inline n_dof_newton(::DetField2D) = 12
 @inline n_dof_newton(::Type{<:DetField2D}) = 12
 
+# ──────────────────────────────────────────────────────────────────────
+# Phase M3-7 prep: working 3D Cholesky-sector field type.
+# ──────────────────────────────────────────────────────────────────────
+#
+# `DetFieldND{3, T}` is a documentation / dispatch tag. M3-7-prep
+# promotes the 3D variant to a *working* struct carrying the 13-dof
+# Cholesky-sector unknown set used by the upcoming 3D Euler–Lagrange
+# residual (M3-7b/c).
+#
+# # Per-cell unknowns (M3-7 design note §2)
+#
+#     (x_a, u_a, α_a, β_a)_{a=1,2,3} + (θ_12, θ_13, θ_23) + s
+#                                                          ╰── 13 dof
+#
+# Mirroring M3-3a's clean cold-limit start (Q3 default of the M3-3
+# design note), we **omit** the off-diagonal β_{ab} sector entirely in
+# the M3-7 prep field set. The full 19-dof variant (with Pp_a, Q_a per
+# axis) is M3-7c work; the off-diagonal-β 19-dof variant for 3D D.1 KH
+# is post-M3-7. Keeping the prep at 13 dof matches M3-3a's pattern and
+# the M3-7 design note §2 boxed equation.
+#
+# # M3-3a → M3-7 prep transition
+#
+# Compared to `DetField2D` (12 named scalars + post-Newton sectors),
+# `DetField3D` carries:
+#   - per-axis tuples of length 3 (rather than 2) for `x`, `u`,
+#     `alphas`, `betas`,
+#   - **three** Euler angles `(θ_12, θ_13, θ_23)` rather than the
+#     single 2D rotation angle `θ_R`,
+#   - `s` for entropy (operator-split as in 1D / 2D).
+#
+# **No off-diagonal β fields** (M3-3a Q3 default; M3-9 will add a
+# parallel `DetField3D_offdiag` constructor when 3D D.1 KH lands).
+# **No Pp / Q post-Newton sectors yet** (M3-7c will extend; mirrors
+# M3-3a where Pp/Q rode along on `DetField2D`'s storage but are
+# operator-split, not Newton unknowns).
+#
+# # SO(3) Euler-angle convention (intrinsic Cardan ZYX)
+#
+# The three angles parameterize the principal-axis rotation as
+#
+#     R(θ_12, θ_13, θ_23) = R_12(θ_12) · R_13(θ_13) · R_23(θ_23)
+#
+# where `R_{ab}(θ)` is the elementary Givens rotation in the (a, b)
+# coordinate plane (the SymPy script's pair-rotation generator). At
+# the 3D 2D-symmetric reduction (`θ_13 = θ_23 = 0`,
+# `α_3 = const, β_3 = 0`) this reduces to the 2D `R(θ_R) = R_12(θ_R)`
+# byte-equally — see §7.1b of the M3-7 design note for the dimension-
+# lift gate. The convention is pinned in `src/cholesky_DD_3d.jl`'s
+# top-of-file docstring (read first).
+
+"""
+    DetField3D{T<:Real}
+
+Per-cell deterministic state for the 3D Cholesky-sector variational
+scheme (M3-7 prep). Carries the 13 Newton unknowns
+
+    `x = (x_1, x_2, x_3)` — Lagrangian position (3 components, charge 0).
+    `u = (u_1, u_2, u_3)` — Lagrangian velocity (3 components, charge 0).
+    `alphas = (α_1, α_2, α_3)` — principal-axis Cholesky factors
+                                  (`α_a > 0`, charge 0).
+    `betas = (β_1, β_2, β_3)`  — per-axis conjugate momenta (charge 1).
+    `θ_12::T` — Berry rotation angle in plane (1, 2) (Newton unknown).
+    `θ_13::T` — Berry rotation angle in plane (1, 3) (Newton unknown).
+    `θ_23::T` — Berry rotation angle in plane (2, 3) (Newton unknown).
+    `s::T`    — specific entropy (charge 0; operator-split).
+
+# Storage layout
+
+The per-cell tuple has total scalar count
+
+    3 + 3 + 3 + 3 + 1 + 1 + 1 + 1 = 16 scalars,
+
+of which the **first 12 + 3** ≡ **15** are non-trivial (positions,
+velocities, alphas, betas, three Euler angles); `s` is operator-split.
+M3-7 design note §2 calls this "13 dof per leaf cell" because position
++ velocity (6 components) are normally counted together with the
+Cholesky-sector unknowns; the boxed formula
+
+    Cholesky-sector dof = D × 4 + binom(D, 2) + 1
+                        = 3 × 4 + 3 + 1 = 16 named, 13 Newton-driven.
+
+The Newton-driven count of **13** matches the design note (s frozen
+post-Newton, but counted in the 13-tuple of "per-cell unknowns").
+
+# M3-7 prep scope (this commit)
+
+This struct is **only the type definition**: the 3D EL residual,
+Newton driver, field-set allocator, and remap glue are M3-7a/b/c/d/e
+work, not landed here. The struct exists so that:
+  - downstream M3-7a/b/c agents have a stable type to extend,
+  - `cholesky_decompose_3d` / `cholesky_recompose_3d` (in
+    `src/cholesky_DD_3d.jl`) can pin their per-cell `(α, θ)`
+    convention against this struct's field layout,
+  - the field set allocator (M3-7a) can mirror
+    `allocate_cholesky_2d_fields`'s SoA pattern.
+
+# Off-diagonal β / post-Newton (Pp / Q) — deferred
+
+The off-diagonal β_{ab} sector (six entries in 3D — three antisymmetric,
+three symmetric) is **not** carried on `DetField3D`. M3-7 design note
+§4.4 recommends pinning all six off-diagonals to zero in the M3-7
+default; activating them is post-M3-7 (M3-9 D.1 KH 3D follow-up).
+
+The post-Newton `Pp_a, Q_a` (per-axis deviatoric pressure / heat flux,
+3 + 3 = 6 fields) are likewise omitted. M3-7c will extend with these
+when the 3D D.7 / D.10 drivers need them; until then the 13 Newton
+unknowns are sufficient (M3-3a pattern, where Pp / Q rode along on
+`DetField2D` but the EL residual ignored them through M3-3a/b/c).
+
+# Naming
+
+`DetField3D` (rather than refactoring `DetFieldND` to carry three
+angles) keeps the 1D `DetFieldND{1, T}` doc-tag intact and avoids
+breaking the M3-0/1/2 1D path. The three coexist (`DetField{T}` 1D,
+`DetField2D{T}` 2D, `DetField3D{T}` 3D); the dimension-lift gates
+verify byte-equal reductions across them.
+"""
+struct DetField3D{T<:Real}
+    x::NTuple{3, T}
+    u::NTuple{3, T}
+    alphas::NTuple{3, T}
+    betas::NTuple{3, T}
+    θ_12::T
+    θ_13::T
+    θ_23::T
+    s::T
+end
+
+"""
+    DetField3D(x, u, alphas, betas, θ_12, θ_13, θ_23, s)
+
+M3-7 prep 8-arg constructor with element-type promotion. Carries the
+13-dof Cholesky-sector unknown set per leaf cell (no off-diagonal β,
+no post-Newton sectors — see the type docstring for the rationale).
+"""
+function DetField3D(x::NTuple{3}, u::NTuple{3},
+                    alphas::NTuple{3}, betas::NTuple{3},
+                    θ_12, θ_13, θ_23, s)
+    T = promote_type(eltype(x), eltype(u),
+                     eltype(alphas), eltype(betas),
+                     typeof(θ_12), typeof(θ_13), typeof(θ_23),
+                     typeof(s))
+    return DetField3D{T}(
+        NTuple{3, T}(x), NTuple{3, T}(u),
+        NTuple{3, T}(alphas), NTuple{3, T}(betas),
+        T(θ_12), T(θ_13), T(θ_23), T(s),
+    )
+end
+
+"""
+    spatial_dimension(::DetField3D{T}) -> 3
+
+Spatial dimension of the 3D Cholesky-sector deterministic field.
+"""
+@inline spatial_dimension(::DetField3D{T}) where {T} = 3
+
+"""
+    n_dof_newton(::DetField3D) -> 13
+
+Number of per-cell Newton-named fields in the M3-7 3D Cholesky-sector
+EL system: `(x_1, x_2, x_3, u_1, u_2, u_3, α_1, α_2, α_3, β_1, β_2, β_3,
+θ_12, θ_13, θ_23, s)`. Of these, **15 enter the discrete residual**
+(s is operator-split, frozen across the Newton step). The M3-7 design
+note labels this "13 dof per leaf cell" by counting only the
+Cholesky-sector unknowns (12 per-axis + 3 angles + 1 entropy − the
+Newton-frozen entropy = 13 driven; M3-7 design note §2 boxed equation
+counts entropy in for completeness).
+
+(Was 12 in M3-6 Phase 0 2D with off-diag β; the 3D extension drops
+off-diag in the prep per M3-3a Q3 default. M3-9 will lift to 19 dof
+when 3D D.1 KH activates the off-diagonal β_{ab} sector.)
+"""
+@inline n_dof_newton(::DetField3D) = 13
+@inline n_dof_newton(::Type{<:DetField3D}) = 13
+
