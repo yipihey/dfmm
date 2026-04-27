@@ -332,11 +332,12 @@ using Test
         # Phase 7 (heat-flux Q + steady shock + inflow/outflow), Phase 8
         # (variance-gamma stochastic injection), Phase 11 (passive
         # tracers), and M2-1 (action-AMR) + M2-3 (realizability
-        # projection) sub-phases ported onto the HG substrate. All
-        # wrappers delegate to their M1 counterparts through the
-        # `cache_mesh` shim for bit-exact parity. See
-        # `reference/notes_M3_2_phase7811_m2_port.md` and
-        # `reference/MILESTONE_3_PLAN.md` Phase M3-2.
+        # projection) sub-phases on the HG substrate. M3-3e retired the
+        # `cache_mesh::Mesh1D` shim across all paths; these tests now
+        # gate the native HG-side implementations. See
+        # `reference/notes_M3_2_phase7811_m2_port.md`,
+        # `reference/notes_M3_3e_5_cache_mesh_dropped.md`, and
+        # `reference/MILESTONE_3_PLAN.md` Phase M3-2 / M3-3.
         @testset "Phase 7 (HG): steady-shock + heat flux Q" begin
             include("test_M3_2_phase7_steady_shock_HG.jl")
         end

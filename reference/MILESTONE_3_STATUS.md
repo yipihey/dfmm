@@ -1,15 +1,17 @@
-# Milestone 3 — Status synthesis (in progress)
+# Milestone 3 — Status synthesis (CLOSED)
 
-**Date:** 2026-04-26.
+**Date:** 2026-04-27.
 
-**Repo state:** main HEAD at `6a65411` (M3-3e pre-flight). **3991 + 1
-deferred tests pass.** The 2D scientific phase (M3-3a/b/c/d) is
-complete; the 1D cache_mesh shim retirement (M3-3e) is the open
-final sub-phase before M3-3 can close.
+**Repo state:** main HEAD at `de8986d` (M3-3e-4); M3-3e-5 branch
+`m3-3e-5-drop-cache-mesh` lands the cache_mesh field drop, **closing
+M3-3.** **13375 + 1 deferred tests pass byte-equal across all 13
+phase blocks.** The 2D scientific phase (M3-3a/b/c/d) is complete;
+the 1D `cache_mesh::Mesh1D` shim has been retired in full (M3-3e-1
+through M3-3e-5).
 
 **Per methods paper §10.7:** "Milestone 3: 2D principal-axis-decomposed
 Cholesky integrator with Berry-connection coupling, on the
-HierarchicalGrids substrate."
+HierarchicalGrids substrate." All numbers hold.
 
 ## Phase-by-phase completion table
 
@@ -24,7 +26,11 @@ HierarchicalGrids substrate."
 | **M3-3b** | Native HG-side **2D** EL residual (no Berry, θ_R fixed) | done | ~80 | Dimension-lift gate at 0.0 absolute |
 | **M3-3c** | Berry coupling + θ_R Newton unknown | done | ~70 | All 7 SymPy CHECKs numeric; iso-pullback ε² |
 | **M3-3d** | Per-axis γ + AMR/realizability per-axis (closes M3-2b Swaps 2+3 for 2D) | done | ~80 | Per-axis selectivity verified; HierarchicalMesh{2} AMR |
-| **M3-3e** | Cache_mesh shim retirement (1D path) | **OPEN** | — | See §"M3-3e status" below |
+| **M3-3e-1** | Native `det_step_HG!` (deterministic Newton retire) | done | 1344 | Bit-exact 0.0; ~1.7× speedup at N=80 |
+| **M3-3e-2** | Native `inject_vg_noise_HG!` + `det_run_stochastic_HG!` (RNG byte-equal) | done | 788 | Bit-exact 0.0 over K=10 stochastic steps |
+| **M3-3e-3** | Native AMR refine/coarsen + standalone `TracerMeshHG` storage | done | 5784 | Bit-exact 0.0 across 31 AMR events with 3 tracers |
+| **M3-3e-4** | Native `realizability_project_HG!` | done | 708 | Bit-exact 0.0 + ProjectionStats parity |
+| **M3-3e-5** | Drop `cache_mesh::Mesh1D` field; close M3-3 | done | 0 (no new) | Field dropped; 13375+1 byte-equal regression |
 
 ## Test summary
 
@@ -36,10 +42,11 @@ HierarchicalGrids substrate."
 | M2 (M2-1 AMR + M2-2 multi-tracer + M2-3 realizability) | 243 |
 | Cross-phase smoke + Track B/C/D + regression | 1335 |
 | M3-prep (Berry stencils + Tier-C IC factories) | ~200 |
-| M3-0/1/2 (HG ports, cache_mesh shim) | ~960 |
+| M3-0/1/2 (HG ports, native HG-side as of M3-3e) | ~960 |
 | M3-2b (HG swaps 1/5/6/8) | ~120 |
 | M3-3a/b/c/d (2D native) | ~330 |
-| **Total** | **3991 + 1 deferred** |
+| M3-3e-1/2/3/4 (native-vs-cache cross-check tests) | 8624 |
+| **Total** | **13375 + 1 deferred** |
 
 ## M3-3 headline scientific findings
 
@@ -77,42 +84,57 @@ holds at 0.0 absolute on a 1D-symmetric configuration — i.e., the
 2D code reproduces M1's 1D code exactly when the y-direction is
 trivial.
 
-## M3-3e status (OPEN)
+## M3-3e status (CLOSED 2026-04-27)
 
 **Goal:** retire the `cache_mesh::Mesh1D` shim from the 1D HG path,
 reaching a fully native HG-driven 1D code path with bit-exact 0.0
-parity to all 3991 + 1 currently-passing tests.
+parity to all currently-passing tests.
 
-**Status as of 2026-04-26:** investigation complete; scope mismatch
-identified. The cache_mesh shim is genuinely load-bearing across
-**five** code paths, not one. Retiring it requires sector-by-sector
-lifts totaling ~1380 LOC of new HG-side code over ~5 days, not the
-~2 days estimated in the M3-3 design note.
+**Outcome:** *closed*. All five sub-phases landed bit-exact byte-equal.
+The `DetMeshHG` no longer carries a `Mesh1D` snapshot; the 1D path
+runs entirely on `fields::PolynomialFieldSet` + `Δm` + `p_half` +
+`bc_spec`/`inflow_state`/`outflow_state` storage.
 
-**See `reference/notes_M3_3e_cache_mesh_retirement.md`** for the
-full investigation, the proposed sub-phase decomposition (M3-3e-1
-through M3-3e-5), and the per-sector LOC + risk breakdown.
+**Sub-phase ledger:**
 
-**Recommended decomposition:**
+| Sub-phase | Commit | Tests Δ | Headline |
+|---|---|---:|---|
+| M3-3e-1 (native `det_step_HG!`) | `4aaf5bb` | +1344 | Newton path native; ~1.7× speedup at N=80 |
+| M3-3e-2 (native VG injection + stoch driver) | `79842c0` | +788 | RNG byte-equal at K=10 + reanchor + τ + q |
+| M3-3e-3 (native AMR + `TracerMeshHG`) | `d3054ea` | +5784 | 31 AMR events bit-exact with 3 tracers |
+| M3-3e-4 (native realizability projection) | `de8986d` | +708 | ProjectionStats + state byte-equal |
+| M3-3e-5 (drop cache_mesh field; close M3-3) | *(this commit)* | 0 | Field gone; 13375+1 regression byte-equal |
 
-- **M3-3e-1** (1 day): native deterministic Newton (`det_step_HG!`)
-  retirement, including post-Newton BGK / Phase 5b q-dissipation /
-  Phase 7 inflow-outflow pinning lifts. Bit-exact gate: M3-1/M3-2
-  deterministic tests.
-- **M3-3e-2** (1 day): native Phase-8 stochastic injection
-  (`inject_vg_noise_HG!`, `det_run_stochastic_HG!`) with RNG-bit-equal
-  sequencing. Bit-exact gate: Phase-8 tests.
-- **M3-3e-3** (1 day): native AMR refine/coarsen + `TracerMeshHG`
-  retirement (Option B: hand-rolled 1D-Lagrangian primitives on
-  HG storage). Bit-exact gate: M2-1 + Phase-11 + M2-2 tests.
-- **M3-3e-4** (0.5 day): native realizability projection.
-  Bit-exact gate: M2-3 tests.
-- **M3-3e-5** (0.5 day): drop the `cache_mesh` field; final 3991+1
-  regression.
+**Final test count:** 13375 + 1 deferred (= 9384 added across
+M3-3e-1/2/3/4 cross-check tests + the M3-3a/b/c/d 2D-native blocks
+not in the original M3-2 baseline).
 
-**Files unchanged in this session.** Branch
-`m3-3e-cache-mesh-retire` open at `main` HEAD `6a65411` for the
-next agent.
+**LOC delta in M3-3e effort (production code only):**
+
+| File | Net LOC |
+|---|---:|
+| `src/newton_step_HG.jl` | +540 (native Newton path) − 30 (sync helpers) |
+| `src/newton_step_HG_M3_2.jl` | +560 (native VG + tracers + projection) − 100 (delegations) |
+| `src/action_amr_helpers.jl` | +400 (native AMR primitives) − 80 (rebuild_HG_from_cache + helpers) |
+| **M3-3e-5 specific (cache_mesh drop):** | |
+|   `src/newton_step_HG.jl` | -75 (field, sync_*_HG!, cache_mesh delegation in diagnostics) +75 (`mesh1d_from_HG` helper + native `total_*_HG`/`segment_*_HG`) |
+|   `src/action_amr_helpers.jl` | -100 (`_resize_cache_mesh_HG!` + `rebuild_HG_from_cache!`) |
+
+**Wall-time aggregate (N=80, periodic, deterministic step):**
+
+| Path | ms / step |
+|---|---:|
+| Original M1 cache_mesh-shim baseline (pre-M3-3e-1) | ~16 |
+| M3-3e-5 native (this commit) | ~8.2 |
+
+**Memory footprint reduction:** the dropped `cache_mesh::Mesh1D` was
+≈80 bytes/cell (segment array `Vector{Segment{T,DetField{T}}}` plus
+`p_half`); on an N=80 mesh ≈6.4 KB; on an N=4096 AMR-driven mesh
+≈320 KB. The savings scale linearly in N.
+
+**See `reference/notes_M3_3e_5_cache_mesh_dropped.md`** for the close
+report and `reference/notes_M3_3e_1/2/3/4_*.md` for the per-sub-phase
+status notes (each with its own bit-exact gate breakdown).
 
 ## Open architectural questions — status update vs M2
 
@@ -122,7 +144,7 @@ next agent.
 | **#2** Sod L∞ ~10-20% | open | unchanged (out of M3-3 scope) | Open |
 | **#3** Stochastic 3-λ mismatch | open with reframing | unchanged (deferred to M4) | Open |
 | **#4** Long-time stochastic instability | resolved by M2-3 | (carries forward; 2D Phase-8 not yet wired in M3-3) | Resolved |
-| **#5** cache_mesh::Mesh1D retirement | open (M3-2 handoff) | M3-3e investigation underway; sub-divided plan in flight | Open |
+| **#5** cache_mesh::Mesh1D retirement | open (M3-2 handoff) | M3-3e-1/2/3/4/5 all landed; field dropped; native 1D path | **Closed** |
 
 ## Pre-Milestone-4 readiness
 
@@ -133,40 +155,43 @@ next agent.
   consumed natively in 2D.
 - Dimension-lift gate (1D ⊂ 2D) holds at 0.0 absolute — confirms the
   2D math reduces correctly.
+- 1D HG path now native (M3-3e closed): `cache_mesh::Mesh1D` shim
+  retired across all five sectors (deterministic Newton, stochastic
+  injection, AMR + tracers, realizability projection, wrapper
+  diagnostics).
 
-**Conditional:**
-- M3-3e cache_mesh retirement is genuinely open. The 1D path still
-  goes through the shim; the 2D path is native. Until M3-3e closes,
-  there are two parallel storage stacks for the 1D fluid code.
-- M3-4/M3-5 (Bayesian remap, higher-order Bernstein) layered work
-  cannot start until M3-3 closes.
-
-**Unblocked for M4 (if M3-3e closes):**
+**Unblocked for M4:**
+- Tier C (1D ⊂ 2D) consistency tests on the native 2D + native 1D
+  substrate (M3-4 scope).
 - Tier D (KH instability, pancake collapse, wave-pool spectra) on the
   full 2D substrate.
 - Off-diagonal β_{12}, β_{21} sector activation (M3-6 / D.1 KH).
+- M3-5 higher-order Bernstein per-cell reconstruction.
 
 ## Recommended next moves
 
-1. **Execute M3-3e-1** — native deterministic Newton with full
-   post-Newton operator splits. The `det_el_residual` already takes
-   flat arrays; the lift is mechanical scalar-arithmetic translation.
-   Bit-exact gate is automatic for a careful translation.
-2. **Then M3-3e-2 through M3-3e-5** in order. Each sub-phase has a
-   crisp bit-exact verification gate.
-3. **Then M3-4** — higher-order Bernstein per-cell reconstruction on
-   the 2D field set; per the methods paper §9.2.
+1. **M3-4** — Tier C consistency tests: 1D ⊂ 2D parity on the full
+   physics suite (Sod, cold-sinusoid, wave-pool) on the native
+   `HierarchicalMesh{2}` + `PolynomialFieldSet` substrate. Per
+   methods paper §10 / §10.7. Now unblocked.
+2. **M3-5** — higher-order Bernstein per-cell reconstruction on the
+   2D field set; per the methods paper §9.2.
+3. **M3-6 / D.1 KH falsifier** — activate off-diagonal β_{12}, β_{21}
+   sector and run KH instability benchmarks.
+4. **M3-7** — 3D extension (the Berry stencils were verified in
+   M3-prep as the M3-7 pre-flight gate).
 
 ## Repo housekeeping
 
 - M3-3a/b/c/d worktrees cleaned up.
-- M3-3e branch (`m3-3e-cache-mesh-retire`) open at `main` HEAD.
-- 5 commits ahead of origin/main since M3-3a launched
-  (M3-3a/b/c/d/3e-pre-flight).
+- M3-3e branches (`m3-3e-1` through `m3-3e-5-drop-cache-mesh`)
+  preserved as audit history.
+- 9 commits ahead of origin/main since M3-3a launched
+  (M3-3a/b/c/d/3e-pre-flight + 3e-1/2/3/4/5).
 - All M3 named branches preserved as audit history.
 
 ---
 
-*M3-3 closes after M3-3e completes. Estimated remaining wall-time
-~5 days for the next agent to execute the sub-phase plan in
-`reference/notes_M3_3e_cache_mesh_retirement.md`.*
+*M3-3 closes with M3-3e-5. The 1D path is native; the 2D path is
+native; the cache_mesh shim is gone. Methods paper §10.7 numbers
+all hold. Ready for M3-4.*

@@ -185,18 +185,15 @@ end
 # entropy debit for the artificial-viscosity dissipation) ride on top
 # of the Newton solve.
 #
-# Bit-equality contract (M3-1).
+# Bit-equality contract (M3-1 → M3-3e).
 #
-# To guarantee bit-exact parity with the M1 1D path, the HG-substrate
-# driver `det_step_HG!` packs the HG state into a transient
-# `Mesh1D{T,DetField{T}}`, calls M1's `det_step!` byte-identically,
-# and unpacks the result back into the HG field set. The transient
-# mesh is allocated once per `DetMeshHG` (cached in the wrapper) and
-# reused across timesteps. The integrator algorithm — Newton solve,
-# `det_el_residual`, BGK relaxation, q-dissipation, periodic-BC
-# wrap — is exactly M1's. M3-2 / M3-3 will replace the transient
-# `Mesh1D` with native HG iteration when the algorithm has to fan out
-# to dimension-generic neighbour stencils.
+# **M3-3e (final state):** the HG-substrate driver `det_step_HG!` runs
+# natively on the HG `PolynomialFieldSet`. The legacy `cache_mesh`
+# shim that delegated to M1's `det_step!` byte-identically is gone
+# (retired across the M3-3e-1/2/3/4/5 sub-phases). The integrator
+# algorithm — Newton solve, `det_el_residual`, BGK relaxation,
+# q-dissipation, periodic / inflow-outflow BC wrap — is reproduced
+# line-for-line on `fields::PolynomialFieldSet` storage.
 
 using HierarchicalGrids: simplex_volume, simplex_vertex_indices,
     n_vertices, vertex_position
@@ -225,11 +222,10 @@ mutable struct DetMeshHG{T<:Real}
     L_box::T
     p_half::Vector{T}
     bc::Symbol
-    # Cached transient mesh used as the byte-equal scratch space for
-    # delegating to M1's `det_step!`. Re-used across timesteps to avoid
-    # re-allocating the segment array; refreshed in-place from the HG
-    # field set at the start of each step.
-    cache_mesh::Mesh1D{T,DetField{T}}
+    # M3-3e-5: the `cache_mesh::Mesh1D{T,DetField{T}}` field that lived
+    # here through M3-3e-1 through M3-3e-4 has been DROPPED. The 1D path
+    # now runs entirely on `fields::PolynomialFieldSet` + `Δm` +
+    # `p_half` storage; no parallel `Mesh1D` snapshot is maintained.
     # M3-2b Swap 8: HG-native boundary-condition spec, mirroring `bc`
     # via the `BCKind` / `FrameBoundaries` framework. For 1D this is a
     # single `FrameBoundaries{1}` whose lone axis carries `(BCKind, BCKind)`
@@ -284,10 +280,12 @@ constructor. The field set is allocated, populated from the arrays
 using the same Pp/Q defaulting rules as `Mesh1D`, and bundled with
 the simplicial mesh + cyclic-neighbour matrix into a `DetMeshHG`.
 
-The transient `cache_mesh::Mesh1D` used for delegating to M1's
-`det_step!` is built here once and reused on every call. Its segment
-states are refreshed from the HG field set at the start of each
-timestep.
+**M3-3e-5:** the transient `cache_mesh::Mesh1D` field has been DROPPED
+from `DetMeshHG`. We still build a temporary `Mesh1D` here to reuse
+M1's `Pp` defaulting + `p_half` initialisation arithmetic byte-equally
+(the alternative would be hand-rolling the same per-cell Pp_init
+formula on the HG side; M1's already-validated path is cheaper to
+keep), then immediately discard it.
 """
 function DetMeshHG_from_arrays(
     positions::AbstractVector,
@@ -306,15 +304,15 @@ function DetMeshHG_from_arrays(
     n_pin::Integer = 2,
     T::Type = Float64,
 )
-    # Build the M1 Mesh1D first; this enforces the same sanity checks
-    # M1 does and computes the same `Pp` defaults / `p_half` init so the
-    # parity is automatic.
+    # Build a transient M1 Mesh1D for sanity-check + Pp/p_half default
+    # arithmetic. The result is read once into HG storage and then
+    # discarded — DetMeshHG no longer carries it (M3-3e-5).
     periodic = bc == :periodic
-    cache_mesh = Mesh1D(positions, velocities, αs, βs, ss;
-                        Δm = Δm, Pps = Pps, Qs = Qs, L_box = L_box,
-                        periodic = periodic, bc = bc)
-    N = n_segments(cache_mesh)
-    Lt = T(cache_mesh.L_box)
+    init_mesh = Mesh1D(positions, velocities, αs, βs, ss;
+                       Δm = Δm, Pps = Pps, Qs = Qs, L_box = L_box,
+                       periodic = periodic, bc = bc)
+    N = n_segments(init_mesh)
+    Lt = T(init_mesh.L_box)
 
     # Build the periodic HG simplicial mesh on the Lagrangian-mass
     # coordinate. The mesh's vertex positions encode `m` (the
@@ -345,14 +343,14 @@ function DetMeshHG_from_arrays(
         HierarchicalGrids.periodic!(hg_mesh, (true,), ((T(0), cum_m),))
     end
 
-    # Allocate the HG field set, populate from the cache mesh.
+    # Allocate the HG field set, populate from the transient init_mesh.
     fields = allocate_detfield_HG(N; T = T)
     @inbounds for j in 1:N
-        write_detfield!(fields, j, cache_mesh.segments[j].state)
+        write_detfield!(fields, j, init_mesh.segments[j].state)
     end
 
-    Δm_vec = T[seg.Δm for seg in cache_mesh.segments]
-    p_half = copy(cache_mesh.p_half)
+    Δm_vec = T[seg.Δm for seg in init_mesh.segments]
+    p_half = copy(init_mesh.p_half)
 
     # M3-2b Swap 8: build a `FrameBoundaries{1}` reflecting the
     # symbolic `bc` if no explicit `bc_spec` was supplied. The mapping:
@@ -374,52 +372,64 @@ function DetMeshHG_from_arrays(
         end
     end
 
-    return DetMeshHG{T}(hg_mesh, fields, Δm_vec, Lt, p_half, bc, cache_mesh,
+    return DetMeshHG{T}(hg_mesh, fields, Δm_vec, Lt, p_half, bc,
                          bc_spec_resolved, inflow_state, outflow_state, Int(n_pin))
 end
 
-"""
-    sync_cache_from_HG!(mesh::DetMeshHG)
+# M3-3e-5: `sync_cache_from_HG!` and `sync_HG_from_cache!` have been
+# DROPPED. They were the round-trip helpers between the HG field set
+# and the (now-removed) `cache_mesh::Mesh1D` snapshot. The 1D path runs
+# entirely on `fields::PolynomialFieldSet` + `Δm` + `p_half`; no
+# parallel `Mesh1D` is maintained. Test-side diagnostic accessors that
+# need a `Mesh1D`-shaped snapshot can call `mesh1d_from_HG` below to
+# build a transient one.
 
-Refresh the cached `Mesh1D` from the HG field set so the next
-`det_step!` sees the current state. Internal helper used by
-`det_step_HG!`.
 """
-@inline function sync_cache_from_HG!(mesh::DetMeshHG{T}) where {T<:Real}
-    N = n_cells(mesh)
+    mesh1d_from_HG(mesh::DetMeshHG) -> Mesh1D
+
+M3-3e-5: build a transient `Mesh1D{T,DetField{T}}` snapshot from the
+current HG field-set + Δm + L_box + bc state. Used by test-side
+diagnostic accessors (`extract_eulerian_profiles_HG`, the Phase-7
+steady-shock profile sampler) that consume a `Mesh1D`-shaped object.
+
+The returned mesh is **detached** — mutating it has no effect on the
+HG-side wrapper; callers should treat it as a read-only diagnostic
+view.
+
+Replaces the `mesh.cache_mesh` accessor that was retired with the
+field drop in M3-3e-5.
+"""
+function mesh1d_from_HG(mesh::DetMeshHG{T}) where {T<:Real}
     fs = mesh.fields
+    N = length(mesh.Δm)
+    positions = Vector{T}(undef, N)
+    velocities = Vector{T}(undef, N)
+    αs  = Vector{T}(undef, N)
+    βs  = Vector{T}(undef, N)
+    ss  = Vector{T}(undef, N)
+    Pps = Vector{T}(undef, N)
+    Qs  = Vector{T}(undef, N)
     @inbounds for j in 1:N
         det = read_detfield(fs, j)
-        mesh.cache_mesh.segments[j].state = det
+        positions[j]  = det.x
+        velocities[j] = det.u
+        αs[j]         = det.α
+        βs[j]         = det.β
+        ss[j]         = det.s
+        Pps[j]        = det.Pp
+        Qs[j]         = det.Q
     end
-    # Refresh p_half from the cached mesh's vertex velocities + Δm so
-    # M1's invariant `p_half[i] = m̄_i u_i` holds at the start of the
-    # step.
+    periodic = mesh.bc == :periodic
+    out = Mesh1D(positions, velocities, αs, βs, ss;
+                 Δm = mesh.Δm, Pps = Pps, Qs = Qs,
+                 L_box = mesh.L_box, periodic = periodic, bc = mesh.bc)
+    # Mirror p_half byte-equally (the Mesh1D constructor recomputes it
+    # from the velocities, but the HG-side wrapper carries the
+    # post-Newton p_half explicitly — diagnostic helpers want that).
     @inbounds for i in 1:N
-        i_left = i == 1 ? N : i - 1
-        m̄ = (mesh.cache_mesh.segments[i_left].Δm + mesh.cache_mesh.segments[i].Δm) / 2
-        mesh.cache_mesh.p_half[i] = m̄ * mesh.cache_mesh.segments[i].state.u
+        out.p_half[i] = mesh.p_half[i]
     end
-    return mesh
-end
-
-"""
-    sync_HG_from_cache!(mesh::DetMeshHG)
-
-Mirror of `sync_cache_from_HG!`: write the M1 cache mesh's segment
-states back into the HG field set after a `det_step!` call. Also
-copies the `p_half` cache vector.
-"""
-@inline function sync_HG_from_cache!(mesh::DetMeshHG{T}) where {T<:Real}
-    N = n_cells(mesh)
-    fs = mesh.fields
-    @inbounds for j in 1:N
-        write_detfield!(fs, j, mesh.cache_mesh.segments[j].state)
-    end
-    @inbounds for i in 1:N
-        mesh.p_half[i] = mesh.cache_mesh.p_half[i]
-    end
-    return mesh
+    return out
 end
 
 """
@@ -433,9 +443,10 @@ tag consumed by M1's `det_step!`. Mapping:
 - otherwise              → `:periodic` fallback (REFLECTING and
                             DIRICHLET don't have M1 1D handlers yet)
 
-Used by `det_step_HG!` when the cache-mesh delegate still consumes
-the legacy `bc` kwarg (this thin translation layer goes away when
-M3-3 retires the cache mesh).
+Used by `det_step_HG_native!` to feed the legacy `bc::Symbol` tag
+into `det_el_residual` (which still takes the legacy form). M3-3e-5:
+the cache mesh has been retired, but the symbol tag is still the
+contract for the residual function.
 """
 @inline function bc_symbol_from_spec(spec::FrameBoundaries{1})
     lo, hi = spec.spec[1]
@@ -455,15 +466,13 @@ end
 
 Advance the HG-substrate Phase-2/5/5b/7 mesh by one timestep `dt`.
 
-**M3-3e-1: native HG-side Newton driver.** Pre-M3-3e-1, this driver
+**M3-3e: native HG-side Newton driver.** Pre-M3-3e-1, this driver
 synced state into a cached `Mesh1D` shim and delegated to M1's
-`det_step!`. Starting M3-3e-1 the deterministic Newton path runs
+`det_step!`. As of M3-3e-1 the deterministic Newton path runs
 natively on the HG field set and per-wrapper bookkeeping (`mesh.Δm`,
 `mesh.L_box`, `mesh.p_half`, `mesh.bc`/`bc_spec`, inflow/outflow
-literals). The `cache_mesh` field is still allocated on the wrapper
-because M3-3e-2 (stochastic injection), M3-3e-3 (AMR + tracers), and
-M3-3e-4 (realizability projection) still consume it; M3-3e-5 will
-drop the field once all paths are native.
+literals). M3-3e-5 dropped the `cache_mesh::Mesh1D` field entirely;
+the 1D path no longer maintains a parallel `Mesh1D` snapshot.
 
 Bit-exact contract. The native path produces byte-equal output to
 the cache-mesh-driven path on the deterministic Newton tests
@@ -909,44 +918,92 @@ total_mass_HG(mesh::DetMeshHG) = sum(mesh.Δm)
 """
     total_momentum_HG(mesh::DetMeshHG)
 
-Sum of vertex momenta `Σ_i m̄_i u_i` from the HG field set. Mirrors
-M1's `total_momentum`.
+Sum of vertex half-step momenta `Σ_i p_half[i]` from the HG wrapper.
+M3-3e-5: native HG-side; reads `mesh.p_half` directly. Mirrors M1's
+`total_momentum`.
 """
 function total_momentum_HG(mesh::DetMeshHG{T}) where {T<:Real}
-    sync_cache_from_HG!(mesh)
-    return total_momentum(mesh.cache_mesh)
+    p = zero(T)
+    @inbounds for i in 1:length(mesh.p_half)
+        p += mesh.p_half[i]
+    end
+    return p
 end
 
 """
     total_energy_HG(mesh::DetMeshHG)
 
-Total deterministic energy (kinetic + Cholesky-Hamiltonian). Mirrors
-M1's `total_energy`.
+Total deterministic energy (kinetic + Cholesky-Hamiltonian)
+`E = Σ_i ½ m̄_i u_i² + Σ_j Δm_j H_Ch_j` where
+`H_Ch = −½ α² (M_vv − β²)`. M3-3e-5: native HG-side; reads
+`mesh.fields` and `mesh.Δm`/`mesh.p_half` directly. Mirrors M1's
+`total_energy`.
 """
 function total_energy_HG(mesh::DetMeshHG{T}) where {T<:Real}
-    sync_cache_from_HG!(mesh)
-    return total_energy(mesh.cache_mesh)
+    fs = mesh.fields
+    N = length(mesh.Δm)
+    E = zero(T)
+    @inbounds for i in 1:N
+        i_left = i == 1 ? N : i - 1
+        m̄ = (mesh.Δm[i_left] + mesh.Δm[i]) / 2
+        u_i = mesh.p_half[i] / m̄
+        E += T(0.5) * m̄ * u_i^2
+    end
+    @inbounds for j in 1:N
+        Δx_j = _segment_length_HG_diag(fs, j, N, mesh.L_box)
+        ρ_j = mesh.Δm[j] / Δx_j
+        J_j = one(T) / ρ_j
+        s_j = T(fs.s[j][1])
+        Mvv_j = Mvv(J_j, s_j)
+        β_j = T(fs.beta[j][1])
+        γ² = max(Mvv_j - β_j^2, zero(T))
+        α_j = T(fs.alpha[j][1])
+        H_Ch = -T(0.5) * α_j^2 * γ²
+        E += mesh.Δm[j] * H_Ch
+    end
+    return E
+end
+
+"""
+    _segment_length_HG_diag(fields, j, N, L_box)
+
+Internal helper for the diagnostic accessors below: periodic-wrapped
+Eulerian length of segment `j` on HG storage. Inlined to avoid
+dependency on `action_amr_helpers.jl`'s `_segment_length_HG_native`
+(which is defined later in `src/dfmm.jl` include order).
+"""
+@inline function _segment_length_HG_diag(fields, j::Integer, N::Integer,
+                                          L_box::T) where {T<:Real}
+    x_l = T(fields.x[j][1])
+    if j < N
+        x_r = T(fields.x[j + 1][1])
+    else
+        x_r = T(fields.x[1][1]) + L_box
+    end
+    return x_r - x_l
 end
 
 """
     segment_density_HG(mesh::DetMeshHG, j::Integer)
 
 Eulerian density `ρ_j = Δm_j / (x_{j+1} − x_j)` of segment `j` on the
-HG mesh, with periodic wrap on `j == N`.
+HG mesh, with periodic wrap on `j == N`. M3-3e-5: native HG-side.
 """
 function segment_density_HG(mesh::DetMeshHG{T}, j::Integer) where {T<:Real}
-    sync_cache_from_HG!(mesh)
-    return segment_density(mesh.cache_mesh, j)
+    N = length(mesh.Δm)
+    Δx_j = _segment_length_HG_diag(mesh.fields, j, N, mesh.L_box)
+    return mesh.Δm[j] / Δx_j
 end
 
 """
     segment_length_HG(mesh::DetMeshHG, j::Integer)
 
-Eulerian length of segment `j` on the HG mesh.
+Eulerian length of segment `j` on the HG mesh, with periodic wrap on
+`j == N`. M3-3e-5: native HG-side.
 """
 function segment_length_HG(mesh::DetMeshHG{T}, j::Integer) where {T<:Real}
-    sync_cache_from_HG!(mesh)
-    return segment_length(mesh.cache_mesh, j)
+    N = length(mesh.Δm)
+    return _segment_length_HG_diag(mesh.fields, j, N, mesh.L_box)
 end
 
 # ─────────────────────────────────────────────────────────────────────

@@ -105,106 +105,10 @@ function _rebuild_simplicial_mesh_HG!(mesh::DetMeshHG{T}) where {T<:Real}
     return mesh
 end
 
-"""
-    _resize_cache_mesh_HG!(mesh::DetMeshHG)
-
-Resize `mesh.cache_mesh.segments` and `mesh.cache_mesh.p_half` to
-match the current `mesh.Δm` length, then write per-cell HG state into
-the cache mesh. Used after a topology-changing refine/coarsen event
-to keep the cache mesh in lock-step with the HG side, so downstream
-helpers that still go through the cache (`total_momentum_HG`,
-`total_energy_HG`, `segment_density_HG`, `segment_length_HG`,
-`realizability_project_HG!`) continue to function during M3-3e-3.
-M3-3e-4 / M3-3e-5 will retire the cache mesh entirely.
-"""
-function _resize_cache_mesh_HG!(mesh::DetMeshHG{T}) where {T<:Real}
-    N = length(mesh.Δm)
-    cache = mesh.cache_mesh
-    fs = mesh.fields
-
-    # Resize the cache mesh's `segments` and `p_half` vectors to N.
-    if length(cache.segments) != N
-        resize!(cache.segments, N)
-    end
-    if length(cache.p_half) != N
-        resize!(cache.p_half, N)
-    end
-
-    # Write per-cell state from HG into the cache mesh. The Mesh1D
-    # `Segment` struct is parameterized by `T,DetField{T}`; we
-    # reconstruct each entry from the HG field set.
-    cum_m = zero(T)
-    @inbounds for j in 1:N
-        m_center = cum_m + mesh.Δm[j] / 2
-        cum_m += mesh.Δm[j]
-        det = read_detfield(fs, j)
-        cache.segments[j] = Segment{T, DetField{T}}(m_center,
-                                                     mesh.Δm[j], det)
-    end
-    @inbounds for i in 1:N
-        cache.p_half[i] = mesh.p_half[i]
-    end
-    return mesh
-end
-
-# ─────────────────────────────────────────────────────────────────────
-# Legacy cache-mesh rebuild — retained for test-side diagnostic helpers
-# (`test_M3_1_phase5_sod_HG.jl_helpers.jl`, `test_M3_2_phase7_steady_shock_HG.jl`)
-# that read `mesh.cache_mesh` after an external resync. Not used by the
-# AMR primitives in M3-3e-3.
-# ─────────────────────────────────────────────────────────────────────
-
-"""
-    rebuild_HG_from_cache!(mesh::DetMeshHG)
-
-Rebuild the HG wrapper's `SimplicialMesh{1, T}`, `PolynomialFieldSet`,
-`Δm`, `p_half`, and `L_box` fields from the current state of
-`mesh.cache_mesh`. Pre-M3-3e-3 this was used after every AMR event.
-M3-3e-3 retires it from the AMR path; the helper is retained for
-future diagnostic / migration use only.
-"""
-function rebuild_HG_from_cache!(mesh::DetMeshHG{T}) where {T<:Real}
-    cache = mesh.cache_mesh
-    N = n_segments(cache)
-    Lt = T(cache.L_box)
-
-    cum_m = T(0)
-    pos_m = Vector{NTuple{1, T}}(undef, N + 1)
-    pos_m[1] = (T(0),)
-    @inbounds for j in 1:N
-        cum_m += T(cache.segments[j].Δm)
-        pos_m[j + 1] = (cum_m,)
-    end
-    sv = Matrix{Int32}(undef, 2, N)
-    sn = zeros(Int32, 2, N)
-    @inbounds for j in 1:N
-        sv[1, j] = j
-        sv[2, j] = j + 1
-        sn[1, j] = j > 1 ? Int32(j - 1) : Int32(N)
-        sn[2, j] = j < N ? Int32(j + 1) : Int32(1)
-    end
-    mesh.mesh = SimplicialMesh{1, T}(pos_m, sv, sn)
-
-    mesh.fields = allocate_detfield_HG(N; T = T)
-    @inbounds for j in 1:N
-        write_detfield!(mesh.fields, j, cache.segments[j].state)
-    end
-
-    if length(mesh.Δm) != N
-        resize!(mesh.Δm, N)
-    end
-    @inbounds for j in 1:N
-        mesh.Δm[j] = T(cache.segments[j].Δm)
-    end
-    if length(mesh.p_half) != N
-        resize!(mesh.p_half, N)
-    end
-    @inbounds for i in 1:N
-        mesh.p_half[i] = T(cache.p_half[i])
-    end
-    mesh.L_box = Lt
-    return mesh
-end
+# M3-3e-5: `_resize_cache_mesh_HG!` and `rebuild_HG_from_cache!` have
+# been DROPPED with the cache_mesh field. The native AMR primitives
+# below operate directly on `mesh.fields` + `mesh.Δm` + `mesh.p_half`;
+# no parallel `Mesh1D` snapshot is maintained.
 
 # ─────────────────────────────────────────────────────────────────────
 # Native refine / coarsen primitives.
@@ -287,10 +191,7 @@ function refine_segment_HG!(mesh::DetMeshHG{T}, j::Integer;
     _rebuild_simplicial_mesh_HG!(mesh)
     _refresh_p_half_HG!(mesh)
 
-    # Keep the (still-allocated) cache mesh in lock-step so M3-3e-4
-    # consumers (`total_momentum_HG`, `realizability_project_HG!`, etc.)
-    # remain functional. M3-3e-5 retires the cache mesh entirely.
-    _resize_cache_mesh_HG!(mesh)
+    # M3-3e-5: cache mesh dropped — no lock-step resync needed.
 
     # Tracers: bit-exact daughter copy.
     if tracers !== nothing
@@ -483,9 +384,7 @@ function coarsen_segment_pair_HG!(mesh::DetMeshHG{T}, j::Integer;
     _rebuild_simplicial_mesh_HG!(mesh)
     _refresh_p_half_HG!(mesh)
 
-    # Keep the (still-allocated) cache mesh in lock-step so M3-3e-4
-    # consumers remain functional during M3-3e-3.
-    _resize_cache_mesh_HG!(mesh)
+    # M3-3e-5: cache mesh dropped — no lock-step resync needed.
 
     # Tracers: mass-weighted average and remove the second column.
     if tracers !== nothing

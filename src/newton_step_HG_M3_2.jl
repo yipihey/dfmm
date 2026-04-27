@@ -1,18 +1,21 @@
-# newton_step_HG_M3_2.jl — HG-side wrappers for M1 Phase 7 / 8 / 11
-# and M2-1 / M2-3 sub-phases (Phase M3-2).
+# newton_step_HG_M3_2.jl — HG-side native implementations for Phase 7 / 8
+# / 11 and M2-1 / M2-3 sub-phases (Phase M3-2).
 #
-# These wrappers all delegate to their M1 counterparts through the
-# `DetMeshHG{T}` cache_mesh shim. The wrappers therefore inherit
-# byte-identical behaviour from M1 and the bit-exact-parity test gate
-# is automatic.
+# **M3-3e final state.** As of M3-3e-1/2/3/4/5 these implementations
+# are native HG-side: stochastic VG injection, deterministic
+# stochastic driver, passive tracers (`TracerMeshHG`), and
+# realizability projection all operate directly on the
+# `DetMeshHG.fields::PolynomialFieldSet` SoA storage with no parallel
+# `cache_mesh::Mesh1D` snapshot.
 #
 # This file is included by `src/dfmm.jl` after the M1/M2 files
 # (`tracers.jl`, `stochastic_injection.jl`, `amr_1d.jl`) that define
-# the M1-side primitives the wrappers delegate to.
+# the M1-side primitives whose physics formulae the native lifts
+# reproduce byte-equally.
 #
-# See `reference/notes_M3_2_phase7811_m2_port.md` for the design
-# write-up and `reference/MILESTONE_3_PLAN.md` Phase M3-2 for the
-# milestone plan.
+# See `reference/notes_M3_2_phase7811_m2_port.md` for the original
+# design write-up and `reference/notes_M3_3e_5_cache_mesh_dropped.md`
+# for the M3-3e retirement summary.
 
 # ─────────────────────────────────────────────────────────────────────
 # Phase 8 — variance-gamma stochastic injection (M3-2 Block 2).
@@ -30,8 +33,8 @@ algorithm mirrors M1's `inject_vg_noise!` line-for-line on the physics:
 RNG draws are taken in `1:N` segment order (byte-identical sequence);
 per-cell drift / noise / amplitude-limiter / KE-debit / entropy
 re-anchor; vertex-velocity update via mass-lumped half-each
-distribution; post-injection `realizability_project_HG!` (still on
-cache_mesh until M3-3e-4).
+distribution; post-injection `realizability_project_HG!` (native
+HG-side, M3-3e-4).
 
 Returns `(mesh, diag)` so the caller can inspect the per-cell
 diagnostics. The `proj_stats` accumulator (if supplied) tracks
@@ -71,8 +74,8 @@ Per-step recipe (mirrors `inject_vg_noise!` exactly):
      `(P_xx, P_⊥)`, entropy re-anchor; mutate `fs.{s, Pp}[j]`.
   4. Distribute cell momentum half-each to the two adjacent vertices,
      mutating `fs.u[i]` and `mesh.p_half[i]`.
-  5. Post-injection `realizability_project_HG!` (delegates through
-     cache_mesh until M3-3e-4 lifts it).
+  5. Post-injection `realizability_project_HG!` (native HG-side as of
+     M3-3e-4).
 
 The RNG sequencing is identical to M1's path: `rand_variance_gamma!`
 draws N samples in the same `1:N` order, then per-cell scalar
@@ -222,15 +225,12 @@ function inject_vg_noise_HG_native!(mesh::DetMeshHG{T}, dt::Real;
     end
 
     # ── (5) Realizability projection (M2-3 / Phase 8.5). ──────────────
-    # Still on cache_mesh until M3-3e-4 lifts it. Bit-exact equal to
-    # M1's `realizability_project!` on a parallel `Mesh1D`.
+    # Native HG-side (M3-3e-4). Bit-exact equal to M1's
+    # `realizability_project!` on a parallel `Mesh1D`.
     #
     # Fast-path: with `project_kind = :none` the projection itself is a
     # no-op (M1's `realizability_project!` short-circuits) and the only
-    # observable mutation is `proj_stats.n_steps += 1`. Skip the
-    # cache_mesh round-trip so the M3-3e-2 wall-time win is realized on
-    # the most-common configuration. M3-3e-4 will retire this branch
-    # by lifting the projection itself onto the field set.
+    # observable mutation is `proj_stats.n_steps += 1`.
     if params.project_kind === :none
         if proj_stats !== nothing
             proj_stats.n_steps += 1
@@ -256,10 +256,9 @@ end
                             kwargs...)
         -> mesh
 
-HG-side native operator-split driver (M3-3e-2). Composes:
+HG-side native operator-split driver. Composes:
 
-  1. Pre-Newton `realizability_project_HG!` (still on cache_mesh until
-     M3-3e-4).
+  1. Pre-Newton `realizability_project_HG!` (native HG-side, M3-3e-4).
   2. `det_step_HG!` — the M3-3e-1 native deterministic Newton step.
   3. `inject_vg_noise_HG!` — the M3-3e-2 native VG injection (which
      itself calls a post-injection projection).
@@ -331,8 +330,8 @@ function det_run_stochastic_HG_native!(mesh::DetMeshHG{T}, dt::Real,
     diag = InjectionDiagnostics(N)
     for n in 1:n_steps
         # Pre-Newton projection (M2-3 long-time stability fix).
-        # Fast-path `:none` to skip the cache_mesh round-trip (the
-        # projection itself is a no-op; only `n_steps` is incremented).
+        # Fast-path `:none` skips the per-cell loop (the projection
+        # itself is a no-op; only `n_steps` is incremented).
         if params.project_kind === :none
             if proj_stats !== nothing
                 proj_stats.n_steps += 1

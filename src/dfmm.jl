@@ -278,11 +278,12 @@ export kinetic_offdiag_coeffs_2d, kinetic_offdiag_2d
 # Ports the M1 Phase 7 (heat-flux Q via det_step!), Phase 8 (variance-
 # gamma stochastic injection), Phase 11 (passive tracers), the M2-1
 # action-based AMR primitives (refine/coarsen + indicators + driver),
-# and the M2-3 realizability projection onto the HG substrate. All
-# wrappers delegate to their M1 counterparts through the cache_mesh
-# shim for bit-exact parity. See
-# `reference/notes_M3_2_phase7811_m2_port.md` and
-# `reference/MILESTONE_3_PLAN.md` Phase M3-2.
+# and the M2-3 realizability projection onto the HG substrate.
+# **M3-3e-5:** all wrappers run natively on the HG `PolynomialFieldSet`
+# substrate; the legacy `cache_mesh::Mesh1D` shim has been retired.
+# See `reference/notes_M3_2_phase7811_m2_port.md`,
+# `reference/notes_M3_3e_5_cache_mesh_dropped.md`, and
+# `reference/MILESTONE_3_PLAN.md` Phase M3-2 / M3-3.
 include("newton_step_HG_M3_2.jl")
 include("action_amr_helpers.jl")
 export inject_vg_noise_HG!, det_run_stochastic_HG!

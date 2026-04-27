@@ -30,6 +30,8 @@ function build_sod_mesh_HG(ic; mirror::Bool = true)
 end
 
 function extract_eulerian_profiles_HG(mesh_HG::DetMeshHG)
-    dfmm.sync_cache_from_HG!(mesh_HG)
-    return extract_eulerian_profiles(mesh_HG.cache_mesh)
+    # M3-3e-5: the persistent cache_mesh field has been dropped; build
+    # a transient Mesh1D snapshot from HG state for the diagnostic
+    # extractor.
+    return extract_eulerian_profiles(dfmm.mesh1d_from_HG(mesh_HG))
 end

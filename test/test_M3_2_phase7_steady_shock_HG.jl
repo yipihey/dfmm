@@ -199,10 +199,10 @@ end
                      c_q_quad = 2.0, c_q_lin = 1.0)
     end
 
-    # Sample profiles via the cache mesh (same physics used by M1
-    # extract_eulerian_profiles_ss).
-    dfmm.sync_cache_from_HG!(mesh_HG)
-    prof = extract_eulerian_profiles_ss(mesh_HG.cache_mesh)
+    # M3-3e-5: build a transient Mesh1D snapshot for the M1
+    # `extract_eulerian_profiles_ss` extractor (the persistent
+    # cache_mesh field was dropped in M3-3e-5).
+    prof = extract_eulerian_profiles_ss(dfmm.mesh1d_from_HG(mesh_HG))
 
     @test all(isfinite, prof.rho)
     @test all(isfinite, prof.u)
