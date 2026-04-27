@@ -23,7 +23,12 @@
 
 using StaticArrays: SVector
 using HierarchicalGrids: SimplicialMesh, PolynomialFieldSet,
-    n_simplices, n_elements, parallel_for_cells
+    n_simplices, n_elements, parallel_for_cells,
+    FrameBoundaries, BCKind, PERIODIC, INFLOW, OUTFLOW, REFLECTING, DIRICHLET,
+    simplex_neighbor
+using HierarchicalGrids.BoundaryConditions: is_periodic_axis
+import SparseArrays as _SA
+using SparseArrays: SparseMatrixCSC
 
 """
     cholesky_step_HG!(mesh::SimplicialMesh{1, T},
@@ -223,6 +228,22 @@ mutable struct DetMeshHG{T<:Real}
     # re-allocating the segment array; refreshed in-place from the HG
     # field set at the start of each step.
     cache_mesh::Mesh1D{T,DetField{T}}
+    # M3-2b Swap 8: HG-native boundary-condition spec, mirroring `bc`
+    # via the `BCKind` / `FrameBoundaries` framework. For 1D this is a
+    # single `FrameBoundaries{1}` whose lone axis carries `(BCKind, BCKind)`
+    # for the lo / hi sides. We retain `bc::Symbol` for legacy callers
+    # and translate between the two representations at the boundaries
+    # of `det_step_HG!`.
+    bc_spec::FrameBoundaries{1}
+    # M3-2b Swap 8: optional inflow / outflow state literals. Required
+    # by Phase-7 steady-shock pinning when `bc_spec` declares an
+    # `INFLOW` lo side and an `OUTFLOW` hi side. `BCKind` itself does
+    # not carry the post-shock primitive vector (BCKind is a tag only),
+    # so the literals live here on the wrapper. `n_pin` matches M1's
+    # Phase-7 convention.
+    inflow_state::Union{NamedTuple,Nothing}
+    outflow_state::Union{NamedTuple,Nothing}
+    n_pin::Int
 end
 
 """
@@ -277,6 +298,10 @@ function DetMeshHG_from_arrays(
     Pps::Union{AbstractVector,Nothing} = nothing,
     Qs::Union{AbstractVector,Nothing}  = nothing,
     bc::Symbol = :periodic,
+    bc_spec::Union{FrameBoundaries{1},Nothing} = nothing,
+    inflow_state::Union{NamedTuple,Nothing} = nothing,
+    outflow_state::Union{NamedTuple,Nothing} = nothing,
+    n_pin::Integer = 2,
     T::Type = Float64,
 )
     # Build the M1 Mesh1D first; this enforces the same sanity checks
@@ -327,7 +352,28 @@ function DetMeshHG_from_arrays(
     Δm_vec = T[seg.Δm for seg in cache_mesh.segments]
     p_half = copy(cache_mesh.p_half)
 
-    return DetMeshHG{T}(hg_mesh, fields, Δm_vec, Lt, p_half, bc, cache_mesh)
+    # M3-2b Swap 8: build a `FrameBoundaries{1}` reflecting the
+    # symbolic `bc` if no explicit `bc_spec` was supplied. The mapping:
+    #   :periodic         → (PERIODIC, PERIODIC)
+    #   :inflow_outflow   → (INFLOW,   OUTFLOW)
+    # If callers want a different combination they can pass `bc_spec`
+    # directly (e.g. mixed BCs in 2D/3D phases that won't reach this
+    # 1D constructor).
+    bc_spec_resolved = if bc_spec !== nothing
+        bc_spec
+    else
+        if bc == :periodic
+            FrameBoundaries{1}(((PERIODIC, PERIODIC),))
+        elseif bc == :inflow_outflow
+            FrameBoundaries{1}(((INFLOW, OUTFLOW),))
+        else
+            # Conservative default for unrecognised `bc`: REFLECTING/REFLECTING.
+            FrameBoundaries{1}(((REFLECTING, REFLECTING),))
+        end
+    end
+
+    return DetMeshHG{T}(hg_mesh, fields, Δm_vec, Lt, p_half, bc, cache_mesh,
+                         bc_spec_resolved, inflow_state, outflow_state, Int(n_pin))
 end
 
 """
@@ -375,25 +421,54 @@ copies the `p_half` cache vector.
 end
 
 """
+    bc_symbol_from_spec(spec::FrameBoundaries{1}) -> Symbol
+
+Translate a 1D `FrameBoundaries{1}` into the legacy dfmm `bc::Symbol`
+tag consumed by M1's `det_step!`. Mapping:
+
+- `(PERIODIC, PERIODIC)` → `:periodic`
+- `(INFLOW,   OUTFLOW)`  → `:inflow_outflow`
+- otherwise              → `:periodic` fallback (REFLECTING and
+                            DIRICHLET don't have M1 1D handlers yet)
+
+Used by `det_step_HG!` when the cache-mesh delegate still consumes
+the legacy `bc` kwarg (this thin translation layer goes away when
+M3-3 retires the cache mesh).
+"""
+@inline function bc_symbol_from_spec(spec::FrameBoundaries{1})
+    lo, hi = spec.spec[1]
+    if lo === PERIODIC && hi === PERIODIC
+        return :periodic
+    elseif lo === INFLOW && hi === OUTFLOW
+        return :inflow_outflow
+    else
+        return :periodic
+    end
+end
+
+"""
     det_step_HG!(mesh::DetMeshHG, dt; tau=nothing, sparse_jac=true,
                  q_kind=:none, c_q_quad=1.0, c_q_lin=0.5,
-                 bc = mesh.bc, inflow_state = nothing,
-                 outflow_state = nothing, n_pin = 2,
                  abstol=1e-13, reltol=1e-13, maxiters=50)
 
 Advance the HG-substrate Phase-2/5/5b/7 mesh by one timestep `dt`.
 Bit-exact delegate to M1's `det_step!`: the cached `Mesh1D` is
 refreshed from the HG field set, M1's `det_step!` is called with
 identical kwargs, and the result is written back. The `tau` /
-`q_kind` / `bc` / inflow / outflow / etc. semantics are identical
-to M1.
+`q_kind` / etc. semantics are identical to M1.
 
-The Phase-7 inflow_outflow path is supported: passing
-`bc = :inflow_outflow` together with `inflow_state`, `outflow_state`,
-and `n_pin` forwards the boundary-pinning convention to the cache
-mesh. `Q` (heat-flux) is automatically advanced by `det_step!`'s
-post-Newton operator-split step regardless of `bc`, so Phase-7 BGK
-relaxation is bit-exact-equal to M1 by construction.
+**M3-2b Swap 8:** boundary-condition data (`bc`, `inflow_state`,
+`outflow_state`, `n_pin`) are read from the wrapper struct, not from
+kwargs. Use `DetMeshHG_from_arrays(...; bc, inflow_state, outflow_state,
+n_pin, bc_spec=...)` to attach them at construction. The 1D
+`FrameBoundaries{1}` lives on `mesh.bc_spec`; we translate it to the
+legacy symbol-tag for the cache-mesh delegate via `bc_symbol_from_spec`.
+
+The Phase-7 inflow_outflow path is honoured automatically when
+`mesh.bc_spec` carries `(INFLOW, OUTFLOW)` and `mesh.inflow_state` is
+populated. `Q` (heat-flux) is advanced by `det_step!`'s post-Newton
+operator-split step regardless of BC, so Phase-7 BGK relaxation is
+bit-exact-equal to M1 by construction.
 
 Mutates the HG field set in-place; returns `mesh`.
 """
@@ -403,23 +478,20 @@ function det_step_HG!(mesh::DetMeshHG{T}, dt::Real;
                        q_kind::Symbol = Q_KIND_NONE,
                        c_q_quad::Real = 1.0,
                        c_q_lin::Real  = 0.5,
-                       bc::Symbol = mesh.bc,
-                       inflow_state::Union{NamedTuple,Nothing} = nothing,
-                       outflow_state::Union{NamedTuple,Nothing} = nothing,
-                       n_pin::Int = 2,
                        abstol::Real = 1e-13, reltol::Real = 1e-13,
                        maxiters::Int = 50) where {T<:Real}
     sync_cache_from_HG!(mesh)
+    bc_legacy = bc_symbol_from_spec(mesh.bc_spec)
     det_step!(mesh.cache_mesh, dt;
               tau = tau,
               sparse_jac = sparse_jac,
               q_kind = q_kind,
               c_q_quad = c_q_quad,
               c_q_lin  = c_q_lin,
-              bc = bc,
-              inflow_state = inflow_state,
-              outflow_state = outflow_state,
-              n_pin = n_pin,
+              bc = bc_legacy,
+              inflow_state = mesh.inflow_state,
+              outflow_state = mesh.outflow_state,
+              n_pin = mesh.n_pin,
               abstol = abstol, reltol = reltol,
               maxiters = maxiters)
     sync_HG_from_cache!(mesh)
@@ -496,6 +568,107 @@ function segment_length_HG(mesh::DetMeshHG{T}, j::Integer) where {T<:Real}
     sync_cache_from_HG!(mesh)
     return segment_length(mesh.cache_mesh, j)
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-2b Swap 6: HG-aware Newton-Jacobian sparsity for the EL residual
+# ─────────────────────────────────────────────────────────────────────
+#
+# `det_jac_sparsity_HG` produces the same `SparseMatrixCSC{Bool}` shape
+# that the M1 hand-rolled `det_jac_sparsity(N)` builds — a 4N × 4N
+# Boolean tri-block-banded sparsity matching the periodic-cyclic
+# `(j-1, j, j+1)` connectivity per residual block.
+#
+# Two backends:
+#
+#  - For a periodic 1D `SimplicialMesh{1, T}` (the M3-1 / M3-2 case),
+#    the HG-native mesh-level neighbor information is the simplex-
+#    neighbor matrix `mesh.simplex_neighbors`: face `k` of simplex `s`
+#    points to the simplex sharing that face (or 0 for a domain
+#    boundary). On a periodic 1D mesh the lo / hi neighbours yield
+#    the cyclic `(j-1, j, j+1)` triple and the sparsity matches M1
+#    bit-exactly.
+#
+#  - The same helper accepts an explicit `n` and depth-1 connectivity
+#    iterator, so future M3-3 callers can drive it from a
+#    `cell_adjacency_sparsity` extracted off a `HierarchicalMesh{D}`
+#    in 2D/3D with no algorithmic divergence.
+#
+# Why not call HG's `cell_adjacency_sparsity` directly? That API
+# operates on `HierarchicalMesh{D, M}` (the cartesian-tree mesh), not
+# on `SimplicialMesh{1, T}` (our Lagrangian-segment mesh). The 1D
+# Lagrangian path therefore takes the `simplex_neighbors`-driven
+# code path here. M3-3's native 2D Newton residual will use the
+# `HierarchicalMesh`-side path on the Eulerian remap target.
+
+"""
+    det_jac_sparsity_HG(mesh::SimplicialMesh{1, T}; depth::Int = 1)
+        -> SparseMatrixCSC{Bool, Int}
+
+HG-aware Boolean sparsity prototype for the Phase-2 Euler-Lagrange
+Jacobian. For each residual segment `i`, marks nonzero column entries
+in segments `i_left`, `i`, `i_right`, where `(i_left, i_right) =
+simplex_neighbor(mesh, i, k)` for `k = 1, 2`. The result is a
+`4N × 4N` sparsity pattern, bit-equal to M1's hand-rolled
+`det_jac_sparsity(N)` on a periodic 1D mesh. `depth` is forwarded to
+match the HG `cell_adjacency_sparsity` API but only `depth = 1` is
+exercised in M3-2b (the 1D Phase-2 EL stencil is tridiagonal-block).
+
+This is a future hook for M3-3's native HG-side EL residual; in
+M3-2b the cache-mesh-driven Newton solve continues to use the
+M1 sparsity. Verified bit-exact equality on N = 16 periodic
+`DetMeshHG` is the parity gate (see `test_M3_2b_swap6_sparsity_HG.jl`).
+"""
+function det_jac_sparsity_HG(mesh::SimplicialMesh{1, T};
+                              depth::Int = 1) where {T<:Real}
+    depth >= 1 || throw(ArgumentError("depth must be ≥ 1"))
+    N = Int(n_simplices(mesh))
+    rows = Int[]
+    cols = Int[]
+    @inbounds for i in 1:N
+        # Per the post-Swap-1 layout in `DetMeshHG_from_arrays`:
+        #   sv[1, j] = j      (lo-mass vertex)
+        #   sv[2, j] = j+1    (hi-mass vertex)
+        # ⇒ face 1 (opposite vertex 1) is the *hi*-side face (right
+        #   neighbour), and face 2 (opposite vertex 2) is the *lo*-side
+        #   face (left neighbour). HG's `periodic!` wires the boundary
+        #   `0` entries through the wrap-around. The sparsity itself is
+        #   symmetric in `(i_lo, i_hi)`, so the relabeling doesn't
+        #   affect the resulting `(row, col)` pattern — but we honour
+        #   the convention for clarity and to keep the M3-3 native
+        #   path consistent.
+        i_hi_raw = simplex_neighbor(mesh, i, 1)
+        i_lo_raw = simplex_neighbor(mesh, i, 2)
+        # Translate boundary `0` → cyclic wrap-around for parity with
+        # M1's `det_jac_sparsity(N)`, which always wraps. M3-3 will
+        # refine this for genuine non-periodic boundaries by consulting
+        # `mesh.bc_spec` / `face_neighbors_with_bcs`.
+        i_lo = i_lo_raw == 0 ? (i == 1 ? N : i - 1) : i_lo_raw
+        i_hi = i_hi_raw == 0 ? (i == N ? 1 : i + 1) : i_hi_raw
+        for k in 1:4
+            r = 4 * (i - 1) + k
+            for j in (i_lo, i, i_hi)
+                for ℓ in 1:4
+                    push!(rows, r)
+                    push!(cols, 4 * (j - 1) + ℓ)
+                end
+            end
+        end
+    end
+    # Use SparseArrays.sparse with combine=max to dedupe overlapping
+    # (rows, cols) entries that arise when N=2 or i_lo == i_hi.
+    return _SA.sparse(rows, cols, ones(Float64, length(rows)),
+                      4N, 4N, max)
+end
+
+"""
+    det_jac_sparsity_HG(mesh::DetMeshHG; depth::Int = 1)
+        -> SparseMatrixCSC{Bool, Int}
+
+Convenience overload that pulls the underlying `SimplicialMesh{1, T}`
+out of a `DetMeshHG` wrapper.
+"""
+det_jac_sparsity_HG(mesh::DetMeshHG{T}; depth::Int = 1) where {T<:Real} =
+    det_jac_sparsity_HG(mesh.mesh; depth = depth)
 
 # Phase M3-2 wrappers (Phase 7/8/11 + M2-1 + M2-3) live in
 # `src/newton_step_HG_M3_2.jl`, included from `dfmm.jl` after the

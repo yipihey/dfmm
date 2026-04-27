@@ -257,4 +257,14 @@ using Test
             include("test_M3_2_M2_3_realizability_HG.jl")
         end
     end
+    @testset verbose = true "Phase M3-2b: HG swap-in (sparsity + BCKind)" begin
+        # M3-2b Swap 6 — `det_jac_sparsity_HG` against M1's hand-rolled
+        # sparsity (parity gate on N = 16 periodic mesh).
+        # M3-2b Swap 8 — `BCKind` + `FrameBoundaries{1}` attached to
+        # `DetMeshHG`, retiring the `bc, inflow_state, outflow_state, n_pin`
+        # kwargs on `det_step_HG!`. See
+        # `reference/notes_M3_2b_swaps68_sparsity_bc.md`.
+        include("test_M3_2b_swap6_sparsity_HG.jl")
+        include("test_M3_2b_swap8_bckind_HG.jl")
+    end
 end

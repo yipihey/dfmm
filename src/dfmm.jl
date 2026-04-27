@@ -89,6 +89,10 @@ export read_detfield, write_detfield!
 export det_step_HG!, det_run_HG!
 export total_mass_HG, total_momentum_HG, total_energy_HG
 export segment_density_HG, segment_length_HG
+# M3-2b Swap 6: HG-aware Newton-Jacobian sparsity helper.
+export det_jac_sparsity_HG
+# M3-2b Swap 8: BC translation helper for the cache-mesh delegate path.
+export bc_symbol_from_spec
 # Note: `n_cells(::DetMeshHG)` is intentionally NOT exported —
 # `HierarchicalGrids` already exports an `n_cells` method on its own
 # mesh types. Call via `dfmm.n_cells(...)` if needed; the regular

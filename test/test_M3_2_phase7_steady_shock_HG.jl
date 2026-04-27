@@ -44,13 +44,19 @@ function build_steady_shock_mesh_HG(ic; gamma_eos::Real = GAMMA_LAW)
     βs = copy(ic.beta_init)
     Pps = copy(ic.Pp)
     Qs = copy(ic.Q)
-    mesh_HG = DetMeshHG_from_arrays(positions, velocities, αs, βs, ss;
-                                     Δm = Δm, Pps = Pps, Qs = Qs,
-                                     L_box = 1.0, bc = :inflow_outflow)
     inflow = primitives_to_inflow(ic.rho1, ic.u1, ic.P1;
                                   sigma_x0 = αs[1], gamma_eos = Γ)
     outflow = primitives_to_inflow(ic.rho2, ic.u2, ic.P2;
                                    sigma_x0 = αs[1], gamma_eos = Γ)
+    # M3-2b Swap 8: BC + inflow / outflow / n_pin live on the wrapper
+    # struct, populated from the IC factory. `det_step_HG!` no longer
+    # accepts these as kwargs.
+    mesh_HG = DetMeshHG_from_arrays(positions, velocities, αs, βs, ss;
+                                     Δm = Δm, Pps = Pps, Qs = Qs,
+                                     L_box = 1.0, bc = :inflow_outflow,
+                                     inflow_state = inflow,
+                                     outflow_state = outflow,
+                                     n_pin = 2)
     return mesh_HG, inflow, outflow
 end
 
@@ -132,9 +138,7 @@ end
                        q_kind = :vNR_linear_quadratic,
                        c_q_quad = 2.0, c_q_lin = 1.0)
         det_step_HG!(mesh_HG, dt;
-                     tau = tau, bc = :inflow_outflow,
-                     inflow_state = inflow_HG, outflow_state = outflow_HG,
-                     n_pin = 2,
+                     tau = tau,
                      q_kind = :vNR_linear_quadratic,
                      c_q_quad = 2.0, c_q_lin = 1.0)
         # Bit-exact parity at every step.
@@ -190,9 +194,7 @@ end
 
     for n in 1:n_steps
         det_step_HG!(mesh_HG, dt;
-                     tau = tau, bc = :inflow_outflow,
-                     inflow_state = inflow_HG, outflow_state = outflow_HG,
-                     n_pin = 2,
+                     tau = tau,
                      q_kind = :vNR_linear_quadratic,
                      c_q_quad = 2.0, c_q_lin = 1.0)
     end
