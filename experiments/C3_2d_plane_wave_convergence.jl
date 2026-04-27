@@ -183,8 +183,10 @@ function plot_C3_plane_wave_convergence(result;
         Base.require(Main, :CairoMakie)
         CM = getfield(Main, :CairoMakie)
 
-        slope_inf_θ0 = fit_loglog_slope(result.dx, result.err_inf[:, 1])
-        slope_l2_θ0 = fit_loglog_slope(result.dx, result.err_l2[:, 1])
+        # The plot x-axis is N = 1/Δx, so the fitted slope vs N is the
+        # negative of the slope vs Δx (which is +2 for the midpoint rule).
+        slope_inf_θ0 = -fit_loglog_slope(result.dx, result.err_inf[:, 1])
+        slope_l2_θ0 = -fit_loglog_slope(result.dx, result.err_l2[:, 1])
 
         fig = CM.Figure(size = (760, 560))
         ax = CM.Axis(fig[1, 1];
