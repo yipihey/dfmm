@@ -1244,45 +1244,63 @@ adopt \texttt{:exact} as the conservation-regression gate.
 
 \begin{itemize}
 \item \textbf{D.1 2D Kelvin-Helmholtz.}
-\textbf{M3-6 Phase 1c result (broadband linear-regime calibration).}
-The off-diagonal Cholesky-Berry sector
+\textbf{Consolidated result (M3-6 Phase~1c, M4 Phase~1, M4 Phase~2).}
+The off-diagonal Cholesky--Berry sector
 ($\beta_{12}, \beta_{21}, \theta_R$) is reactivated in the 2D residual
-(M3-6 Phase 0); the strain coupling
+(M3-6 Phase~0); the strain coupling
 $\mathcal H_{\rm rot}^{\rm off} = \widetilde G_{12}\cdot
-(\alpha_1\beta_{21} + \alpha_2\beta_{12})/2$ is wired in (Phase 1a);
+(\alpha_1\beta_{21} + \alpha_2\beta_{12})/2$ is wired in (Phase~1a);
 the KH IC factory and four-component realizability cone
 $Q = \beta_1^2 + \beta_2^2 + 2(\beta_{12}^2 + \beta_{21}^2) \le M_{vv}
-\cdot \mathrm{headroom}_{\rm offdiag}$ are in place (Phase 1b). Driving
-\texttt{tier\_d\_kh\_ic\_full} on a $32\times 32$ mesh
-(\texttt{PERIODIC-x / REFLECTING-y}, $A = 10^{-3}$ tilt-mode amplitude),
-the linear-regime growth rate of $\mathrm{RMS}(\delta\beta_{12}(t))$
-calibrates against the Drazin--Reid rate $\gamma_{\rm DR} = U/(2w) =
-3.333$ to $\gamma_{\rm measured}/\gamma_{\rm DR} = 1.34$ at level 5
-($c_{\rm off} \approx 1.34$, $c_{\rm off}^2 \approx 1.78$),
-mesh-converged to $1.2\%$ between L$4$ and L$5$, with
-$n_{\rm negative\,Jacobian} = 0$ across all leaves and
-$n_{\rm offdiag\,events} = 0$ (the $4$-component cone stays in the
-strict interior throughout one $T_{\rm KH}$). The methods-paper
-broad-band gate $c_{\rm off} \in [0.5, 2.0]$ is met.
-\textbf{Honest scientific finding (substrate refinement, not failure).}
-Inspecting the trajectory linearly rather than via log-fit, the growth
-is well-described by $\mathrm{RMS}(\delta\beta_{12})(t) \approx A_0 +
-\beta_{\rm lin}\cdot t$: the Phase~1a residual reproduces the
-\emph{kinematic} response of $\delta\beta_{12}$ to base-flow strain
-$\widetilde G_{12} \cdot \bar\alpha/2$, but does not yet realise the
-closed-loop coupling between along-axis Cholesky factors $\beta_a$ and
-the perturbation amplitude $\beta_{\rm off}$ that supplies
-self-amplified Drazin--Reid eigenmode dynamics. The classical Rayleigh
-eigenmode (exponential, self-amplifying) requires that closed-loop
-coupling. Per-principal-axis-noise structure is therefore verified
-\emph{kinematically} by D.1; the full eigenmode dynamics are flagged
-as a physics extension (off-diagonal $\beta$ closed-loop coupling,
-or a fully self-consistent perturbation reconstruction across stencil
-neighbours). See
-\verb|reference/notes_M3_6_phase1c_D1_kh_falsifier.md|
-\S``Honest scientific finding'' for the careful interpretation.
-\textbf{Falsifier verdict: PASSED at the broad-band gate; closed-loop
-self-amplification flagged for follow-up (M4).}
+\cdot \mathrm{headroom}_{\rm offdiag}$ are in place (Phase~1b). M4
+Phase~1 closes the symplectic loop on the principal-axis Berry block by
+adding a back-reaction Hamiltonian $\mathcal H_{\rm back} = c_{\rm
+back}\,\widetilde G_{12}\,(\alpha_2\beta_{12}\beta_2 +
+\alpha_1\beta_{21}\beta_1)/2$ (so the
+$(\alpha_a, \beta_a) \leftrightarrow (\beta_{12}, \beta_{21})$ coupling
+is bidirectional); M4 Phase~2 lifts the same closed-loop form per pair
+to the 3D SO(3) Berry block (three pairs $(1,2), (1,3), (2,3)$;
+$21$-dof per leaf). \emph{The variational scheme natively reproduces
+the kinematic linear-in-$t$ strain response of the off-diagonal
+Cholesky-sector Hamilton equations under base-flow shear, with
+Drazin--Reid-comparable broadband growth rate
+($c_{\rm off}^2 \approx 1.62$ in 2D at level $5$,
+$c_{\rm off}^2 \approx 2.47$ in 3D at level $3$, both within the
+methods-paper broad-band gate $c_{\rm off} \in [0.5, 2.0]$).} The
+classical self-amplified Rayleigh eigenmode (exp-in-$t$ with $\gamma$
+matching $\gamma_{\rm KH} = U/(2w)$ within $20\%$) is \emph{not}
+activated by closing the symplectic loop on the principal-axis Berry
+block alone (M4 Phase~1 in 2D; M4 Phase~2 in 3D). Linear-in-$t$ fits
+the trajectory $\sim 1000\times$ better than exp-in-$t$ in 2D
+($\mathrm{ssr}_{\rm lin} = 4.7\times 10^{-5} \ll \mathrm{ssr}_{\rm
+exp} = 0.078$ at level $3$, $c_{\rm back} = 1$) and $\sim 2700\times$
+better in 3D ($\mathrm{ssr}_{\rm lin} = 1.4\times 10^{-5} \ll
+\mathrm{ssr}_{\rm exp} = 0.037$ at level $3$, $c_{\rm back} = 1$),
+while $n_{\rm negative\,Jacobian} = 0$ holds throughout in both
+dimensions and the bit-exact regression at $\beta_{\rm off} = 0$ IC
+is preserved across the full M3 + M4 Phase~1/2 test battery (the
+$\mathcal H_{\rm back}$ contributions vanish identically when
+$\beta_{\rm off} = 0$ \emph{or} $\beta_a = 0$). Three structural
+extensions for follow-up are documented in
+\verb|reference/notes_M4_phase1_closed_loop_beta.md|: (a) per-cell
+linearised Rayleigh reconstruction at the stencil level (eigenvector
+projection of the linear operator); (b) an antisymmetric
+$\mathcal H_{\rm back}^{\rm anti}$ variant; (c) the symplectic-natural
+$F^{\beta_{\rm off}}$ form replacing the Phase~1a kinematic
+$\dot\beta_{\rm off}$ kludge (requires Newton-system regularization
+for the rank-$6$ Casimir kernel). Per-principal-axis-noise structure
+is therefore verified \emph{kinematically} by D.1 in both 2D and 3D;
+the full eigenmode dynamics are flagged as a physics extension to be
+addressed by a higher-order (cubic / quartic) Hamiltonian or a
+Bernstein-order substrate lift. See
+\verb|reference/notes_M3_6_phase1c_D1_kh_falsifier.md|,
+\verb|reference/notes_M4_phase1_closed_loop_beta.md|, and
+\verb|reference/notes_M4_phase2_3d_kh_falsifier.md| for the three
+honest-finding analyses.
+\textbf{Falsifier verdict: PASSED at the broad-band gate in 2D and
+in 3D; the tighter aspiration band $c_{\rm off} \in [0.8, 1.2]$ and
+the Drazin--Reid eigenmode dynamics require a higher-order
+Hamiltonian extension (deferred to M5).}
 \item \textbf{D.2 2D cylindrical blast.} Cylindrical symmetry
 preserved to grid scale; reference comparison to FLASH/Athena.
 \item \textbf{D.3 Oblique shock interaction.} Mach reflection
@@ -1336,40 +1354,55 @@ burst-shape parameter.
 per-axis diagnostics: directional shell-crossing in dust,
 gas remains rank-full. \textbf{Genuinely new 2D two-fluid physics.}
 \item \textbf{D.7 2D dust-trapping in vortices.}
-\textbf{M3-6 Phase 4 result (honest finding --- the value of a
-falsifier is what it teaches you cannot be claimed).} Driving
+\textbf{Consolidated result (M3-6 Phase~4, M4 Phase~3).} The
+variational scheme's pure-Lagrangian frame preserves the multi-species
+tracer matrix \emph{bit-exactly} across one $T_{\rm KH}$
+(\texttt{advect\_tracers\_HG\_2d!} is a structural no-op; the matrix
+is absent from the write set of \texttt{det\_step\_2d\_berry\_HG!}),
+yielding literal zero per-step error --- the same bit-exact behaviour
+verified at scale by D.10 ISM tracers. Driving
 \texttt{tier\_d\_dust\_trap\_ic\_full} (Taylor--Green vortex IC + 2-
-species \texttt{TracerMeshHG2D[:gas, :dust]}, doubly-periodic) through
-\texttt{det\_step\_2d\_berry\_HG!} + \texttt{advect\_tracers\_HG\_2d!}
-verifies what the pure-Lagrangian variational substrate \emph{does}
-capture: dust mass conservation
+species \texttt{TracerMeshHG2D[:gas, :dust]}, doubly-periodic) verifies
+what the substrate \emph{does} capture: dust mass conservation
 $M_{\rm dust\,err} = 0.0$ bit-exact across $L \in \{3, 4, 5\}$;
 per-species $\gamma$ separation $> 10^{10}$ (gas $\gamma \approx 1$,
 dust $\gamma = 0$ by construction since $M_{vv}^{\rm dust} = 0$);
 $4$-component cone $n_{\rm negative\,Jacobian} = 0$ on stable runs;
 momentum exactness $P_{x,\rm err} = P_{y,\rm err} = 0.0$
-(Taylor--Green symmetry); long-horizon stability without NaN. What
-the substrate does \emph{not} natively capture: sub-cell centrifugal
-drift of dust toward vortex centres. In the pure-Lagrangian frame the
-substrate's variational integrator preserves the multi-species tracer
-matrix bit-exactly --- \texttt{advect\_tracers\_HG\_2d!} is by design
-a no-op (the matrix is structurally absent from the write set of
-\texttt{det\_step\_2d\_berry\_HG!}) --- and the Eulerian cell volumes
-are fixed under the cone projection. The methods-paper prediction
-``vortex-centre accumulation matches reference codes'' therefore
-requires a physics extension beyond the M3 substrate: either
-per-species momentum coupling with drag (so dust acquires a
-size-dependent velocity drift relative to gas), or a Lagrangian
-volume update via composition with the M3-5 Bayesian
-$L\!\leftrightarrow\! E$ remap with per-species mass tracking. Both
-extensions are flagged as M4+ physics work; the substrate verdict
-(mass-exact, momentum-exact, $\gamma$-separating, NaN-free) is the
-load-bearing conclusion. See
-\verb|reference/notes_M3_6_phase4_D7_dust_traps.md|
-\S``Headline scientific finding (HONEST)'' for the precise framing.
-\textbf{Falsifier verdict: substrate sound; literal centrifugal-
-accumulation claim FALSIFIED at this milestone --- requires per-
-species momentum coupling (M4+).}
+(Taylor--Green symmetry); long-horizon stability without NaN. M4
+Phase~3 closes per-species momentum coupling at the substrate level:
+\texttt{PerSpeciesMomentumHG2D} extends \texttt{TracerMeshHG2D} with
+per-species $(u_x, u_y)$ per cell, per-species drag relaxation
+timescale $\tau_{\rm drag}$, and per-species Lagrangian position
+offsets; the drag relaxation kernel \texttt{drag\_relax\_per\_species!}
+is exponential Stokes-drag toward gas (verified at the three limits
+$\tau\to 0$, $\tau\to\infty$, intermediate); the position kernel is
+kinematic; the mass-conservative remap
+\texttt{accumulate\_species\_to\_cells!} preserves
+$\sum_{\rm new}\!c = \sum_{\rm source}\!c$ to $\le 10^{-10}$. With a
+controlled IC bias (\texttt{u\_dust\_offset}\,$=0.5$) the three
+$\tau_{\rm drag}$ regimes (tight $10^{-6}$, intermediate $0.1$,
+decoupled $10^{6}$) differentiate cleanly: $u_{\rm dust}$ converges
+to $u_{\rm gas}$ in the tight limit, stays at IC in the decoupled
+limit, and lies in between for intermediate $\tau$. The full
+substrate is bit-exact-regression-preserving (the path is purely
+additive; constructing no \texttt{PerSpeciesMomentumHG2D} reproduces
+the M3-6 Phase~4 path byte-equal). \emph{Sub-cell centrifugal drift
+of dust toward vortex centres is not captured natively.} The literal
+vortex-centre accumulation requires (a) a centrifugal-force kernel
+$(u_k\!\cdot\!\nabla)u_{\rm gas}$ as an inertial drag-like term, and
+(b) two-way momentum exchange (the back-reaction $\sum_{k\ne{\rm
+gas}}\rho_k(u_k - u_{\rm gas})/\tau_{\rm drag}$ on the gas
+Cholesky-sector residual), to be activated. Both are documented in
+\verb|reference/notes_M4_phase3_per_species_momentum.md| as concrete
+M5 follow-ups. See also
+\verb|reference/notes_M3_6_phase4_D7_dust_traps.md| for the
+substrate-level honest finding from M3.
+\textbf{Falsifier verdict: substrate complete (mass-exact,
+momentum-exact, drag-kernel-correct, $\gamma$-separating, NaN-free,
+regression-preserving); literal centrifugal accumulation requires the
+centrifugal-force kernel and two-way momentum coupling, deferred to
+M5.}
 \item \textbf{D.8 2D plasma equilibration with anisotropy.}
 Spatially uniform plasma, anisotropic initial $T_{ij}$; intra-species
 isotropization via $\tau_P$ vs.\ inter-species via $\nu^T_{AB}$.
@@ -1466,6 +1499,83 @@ self-gravity) requires the multigrid Poisson coupling and is deferred
 to M4. See \verb|reference/notes_M3_8a_tier_e_gpu_prep.md|.
 \textbf{Tier-E verdict: E.1, E.2, E.3 pass in graceful-degradation
 mode; E.4 deferred (gravity coupling --- M4).}
+
+\subsection{Honest scientific characterization}
+\label{sec:honest-characterization}
+
+The M3 / M4 falsifier campaign has produced a sharp characterization
+of what the variational scheme captures \emph{natively} in the
+substrate vs.\ what \emph{requires physics extensions}. The
+distinction is load-bearing for reviewers: it separates implementation
+verification from open scientific work, and it identifies the precise
+physics extensions that close each remaining literal claim. The
+characterization below summarizes the post-M4 state.
+
+\paragraph{Natively captured (passes at $\ge 10^{6}$ selectivity or
+bit-exact).}
+\begin{itemize}
+\item \textbf{D.4 Zel'dovich pancake collapse (2D and 3D)} ---
+the headline cosmological reference test. Per-axis $\gamma$
+selectivity $\mathrm{std}(\gamma_1)/\mathrm{std}(\gamma_2) \approx
+2.6\times 10^{14}$ at near-caustic in 2D, and the analogous 3D
+ratio $\approx 3.0\times 10^{13}$, both exceeding the methods-paper
+$10^{6}$ / $10^{10}$ headline gates by many orders. The
+per-principal-axis decomposition correctly identifies the collapsing
+axis at the discrete level in both dimensions.
+\item \textbf{D.10 ISM-like multi-tracer fidelity in shocked
+turbulence} --- bit-exact preservation
+(\texttt{tracers\_byte\_equal\_to\_ic == true},
+\texttt{tracers\_max\_diff\_final == 0.0}) across $L \in \{3, 4, 5\}$
+under combined deterministic stepping + stochastic injection. Literal
+zero per-step error, by structural identity rather than tolerance
+bound.
+\item \textbf{Tier-C C.1 / C.2 / C.3 dimension-lift gates} --- 2D
+residual reduces to the 1D Phase-1 trajectory at $\Delta = 0.0$
+absolute on $1$D-symmetric configurations (verified across M3-3b,
+M3-3c). Plane-wave projection convergence at the $\Delta x^2$ midpoint-
+rule rate with rotational invariance to sub-percent.
+\item \textbf{Tier-E graceful failure modes} --- E.1 high-Mach Sod
+($M\!=\!10$ Rankine--Hugoniot to $\le 10^{-12}$ rel.), E.2 severe
+shell-crossing (pre-caustic stability with $n_{\rm NaN} = 0$),
+E.3 very-low-Knudsen Navier--Stokes limit
+($\beta_{\max} < 10^{-2}$, $|\gamma_a^{2}/M_{vv} - 1| \le 10^{-2}$).
+NaN-free behaviour at the edges of the declared validity envelope.
+\item \textbf{$1$D~$\subset\!2$D~$\subset\!3$D dimension-lift gates}
+--- $\Delta = 0.0$ absolute byte-equal across M3-3b, M3-3c, M3-7b,
+M3-7c, and lifted to the 21-dof 3D KH-active residual (M4 Phase~2,
+GATE 8: $z$-symmetric IC reproduces 2D KH dynamics byte-equal).
+\end{itemize}
+
+\paragraph{Requires physics extensions (M5+ work; characterizations,
+not bugs).}
+\begin{itemize}
+\item \textbf{D.1 Drazin--Reid eigenmode} --- the variational scheme's
+substrate gives the kinematic strain response of the off-diagonal
+Cholesky sector under shear (linear-in-$t$ growth with
+$c_{\rm off} \in [0.5, 2.0]$ in 2D and 3D); the self-amplified
+Rayleigh eigenmode (exp-in-$t$ with $\gamma$ matching $\gamma_{\rm
+KH} = U/(2w)$ within $20\%$) requires a higher-order Hamiltonian
+extension or a per-cell linearised Rayleigh reconstruction. The three
+candidate routes are documented in \verb|notes_M4_phase1_closed_loop_beta.md|
+\S``Honest scientific finding'' (interpretations 1--3).
+\item \textbf{D.7 centrifugal accumulation} --- the variational
+scheme's substrate gives mass-conservative per-species momentum
+coupling with Stokes-drag relaxation
+(\texttt{PerSpeciesMomentumHG2D}); the literal vortex-centre
+accumulation requires an explicit centrifugal-force kernel
+$(u_k\!\cdot\!\nabla)u_{\rm gas}$ and two-way momentum exchange (gas
+back-reaction from drag) to be activated. Both routes are documented
+in \verb|notes_M4_phase3_per_species_momentum.md| \S``M4 Phase~4
+handoff items''.
+\end{itemize}
+
+This subsection serves as the methods paper's ``what we delivered $+$
+what is deferred'' framing: the substrate-level deliverables are
+operational, verified across $\sim 37{,}000+$ asserts, and bit-exact-
+regression-preserving; the literal D.1 / D.7 predictions remain open
+in the precise sense of needing additional physics terms (closed-loop
+higher-order Hamiltonian; centrifugal-force kernel; two-way momentum
+coupling), each documented with a concrete M5 entry point.
 
 \subsection{M3 implementation gate results}
 \label{sec:tier-M3-gates}
@@ -1889,6 +1999,45 @@ updated to mark M3 substantially closed; M3 final synthesis +
 M4 plan in
 \verb|reference/MILESTONE_3_FINAL.md| and
 \verb|reference/notes_M4_plan.md|.
+\item[Milestone 4 --- Physics-extension substrates + closed-loop
+falsifiers (DONE; sub-phases 1--3, with full GPU/MPI/E.4/D.6/D.8/D.9
+deferred to M5).] \textbf{M4 Phase~1} adds the closed-loop back-
+reaction Hamiltonian $\mathcal H_{\rm back} = c_{\rm back}\,\widetilde
+G_{12}\,(\alpha_2\beta_{12}\beta_2 + \alpha_1\beta_{21}\beta_1)/2$
+to the 2D residual, closing the symplectic loop on the principal-axis
+Berry block (bit-exact regression at $\beta_{\rm off} = 0$ IC
+preserved; $+598$ asserts). \emph{HONEST FALSIFICATION:} the closed
+loop is necessary but not sufficient for the Drazin--Reid eigenmode;
+linear-in-$t$ fits the trajectory $\sim 1000\times$ better than
+exp-in-$t$ at level 3, with $c_{\rm off} \approx 1.26$ at level $4$
+in the broad band. \textbf{M4 Phase~2} lifts the same closed-loop form
+per pair to the 3D SO(3) Berry block ($21$-dof per leaf; three pairs
+$(1,2), (1,3), (2,3)$; $+1187$ asserts). \emph{HONEST FALSIFICATION
+LIFTED:} the 2D finding generalizes to 3D ($c_{\rm off} \approx 1.57$
+at level $3$, linear-in-$t$ fits $\sim 2700\times$ better than
+exp-in-$t$, $n_{\rm negative\,Jacobian} = 0$ throughout). \textbf{M4
+Phase~3} closes per-species momentum coupling at the substrate level
+(\texttt{PerSpeciesMomentumHG2D}, drag relaxation kernel, kinematic
+position update, mass-conservative remap; $+1708$ asserts).
+\emph{HONEST PARTIAL:} the substrate, kernel, and IC factory all
+work correctly with full bit-exact regression preservation; the
+$\tau_{\rm drag}$ regimes differentiate cleanly under a controlled
+\texttt{u\_dust\_offset} bias; the literal D.7 centrifugal-
+accumulation prediction requires a centrifugal-force kernel
+$(u_k\!\cdot\!\nabla)u_{\rm gas}$ and two-way momentum exchange,
+deferred to M5. Cumulative test count $\sim 37{,}000 + 1$ deferred
+(test growth $+3493$ asserts across the three phases). The methods-
+paper §\ref{sec:tier-D} D.1/D.7 sub-paragraphs and the new
+\S\ref{sec:honest-characterization} ``Honest scientific
+characterization'' subsection consolidate M3 + M4 findings; M4 final
+synthesis + M5 plan in \verb|reference/MILESTONE_4_FINAL.md| and
+\verb|reference/notes_M5_plan.md|. Open items deferred to M5: full
+Metal/CUDA port (post-HG \texttt{Backend} upstream); MPI scaling on
+HG chunk structure; closed-loop higher-order Hamiltonian for D.1
+eigenmode; centrifugal-force kernel + two-way coupling for D.7;
+3D extensions of D.7, D.10; D.6 / D.8 / D.9 two-fluid 2D content;
+Bernstein reconstruction; E.4 cosmological + ColDICE / PM N-body
+cross-comparison.
 \end{description}
 
 \textbf{M3 closure summary.} As of M3-9, all six 2D Tier-D headline
