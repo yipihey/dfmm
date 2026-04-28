@@ -838,4 +838,30 @@ using Test
         include("test_M3_8a_E2_shell_crossing.jl")
         include("test_M3_8a_E3_low_knudsen.jl")
     end
+    @testset verbose = true "Phase M3-8b: matrix-free Newton-Krylov + Metal kernel exploration" begin
+        # M3-8 Phase b. Two deliverables under the actual GPU port phase:
+        #
+        #   • Matrix-free Newton-Krylov (`test_M3_8b_matrix_free_newton_krylov.jl`):
+        #     bit-exact regression vs the existing dense / sparse-Jacobian
+        #     `det_step_2d_berry_HG!` + `det_step_3d_berry_HG!` baseline on
+        #     M3-3c zero-strain configs and M3-4 C.1/C.2 active-strain
+        #     configs. Drops `SparseMatrixCSC` Jacobian construction +
+        #     ForwardDiff coloring (M3-8a audit blockers #1+#2). The
+        #     algorithm-side prerequisite for the M3-8c Metal port: once
+        #     HG ships `PolynomialFieldSet{<:KA.Backend}` storage, the
+        #     same Newton-Krylov outer loop runs on `MtlArray` /
+        #     `CuArray` / `ROCArray` with no algorithm refactor.
+        #
+        #   • Metal kernel exploration (`test_M3_8b_metal_kernel.jl`):
+        #     deferred to M3-8c. Without HG-side `Backend` parameterization
+        #     there is no clean GPU lift for the residual function. The
+        #     fixture detects `Metal.functional()` and runs an elementwise-
+        #     add smoke kernel; the per-leaf residual kernel is `@test_skip`
+        #     guarded until M3-8c lands the upstream HG storage substrate.
+        #
+        # See `reference/notes_M3_8b_metal_gpu_port.md` for the phase
+        # status note + handoff items to M3-8c.
+        include("test_M3_8b_matrix_free_newton_krylov.jl")
+        include("test_M3_8b_metal_kernel.jl")
+    end
 end

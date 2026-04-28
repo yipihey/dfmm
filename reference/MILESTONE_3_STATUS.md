@@ -1,4 +1,4 @@
-# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 ENTIRE CLOSED; M3-8 Phase a CLOSED — Tier E + GPU audit; M3-8b/c next)
+# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 ENTIRE CLOSED; M3-8 Phase a CLOSED — Tier E + GPU audit; M3-8 Phase b CLOSED — matrix-free Newton-Krylov, full Metal port deferred to M3-8c)
 
 **Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26;
 M3-6 Phase 1a/1b/1c closed 2026-04-26 (the D.1 KH falsifier — methods
@@ -122,6 +122,10 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-8a (a)** | Tier-E IC factories — `tier_e_high_mach_shock_ic_full` (M5/M10 Sod, RH downstream from analytical formulas), `tier_e_severe_shell_crossing_ic_full` (2-axis Zel'dovich superposition at A=0.7), `tier_e_low_knudsen_ic_full` (smooth strain mode at τ=1e-6 ≪ τ_dyn) — append-only to `src/setups_2d.jl` (~310 LOC); 3 new exports in `src/dfmm.jl` | done | (covered jointly with (b)/(c)) | M=10 RH: pR/pL=124.75, ρR/ρL=3.88; E.2 t_cross=0.227; E.3 Kn≈1.3e-6 |
 | **M3-8a (b)** | Tier-E drivers + acceptance gates: `experiments/E1_high_mach_shock.jl` (~190 LOC), `experiments/E2_severe_shell_crossing.jl` (~210 LOC), `experiments/E3_low_knudsen.jl` (~190 LOC); test files `test/test_M3_8a_E*.jl` (3 files, ~440 LOC) | done | +315 (101+119+95) | **E.1**: NaN=0 at M=5/10, KE bounded ≤ 5× IC, transverse-indep ≤ 1e-10; **E.2**: NaN=0 pre-caustic (T_factor ≤ 0.25), γ_min > 0.5, projection events ≥ 0 with `:reanchor`; **E.3**: NaN=0, β_max < 1e-2, γ²/Mvv deviation ≤ 1e-2 (Navier-Stokes limit) |
 | **M3-8a (c)** | GPU readiness audit + Apple Metal probe — `reference/notes_M3_8a_gpu_readiness_audit.md` (per-file GPU portability assessment + Metal probe results + M3-8b sub-phase brief); `Metal.jl` confirmed working on M2 Max but **NOT** added as a hard dep (kept opt-in) | done | (audit-only, no asserts) | Metal load 1.66 s; warm broadcast 0.83 ms (N=1024); 5× elementwise add 8.8 ms (N=1e6); top blockers: NonlinearSolve+ForwardDiff CPU-only, sparse-Jac construction CPU-only, PolynomialFieldSet needs Backend param |
+| **M3-8b (a)** | Matrix-free Newton-Krylov drivers — `src/newton_step_matrix_free.jl` adds `det_step_2d_HG_matrix_free!` / `det_step_2d_berry_HG_matrix_free!` / `det_step_3d_berry_HG_matrix_free!` using `NonlinearSolve.NewtonRaphson(linsolve = KrylovJL_GMRES(), concrete_jac = false, jvp_autodiff = AutoForwardDiff())`. Drops `SparseMatrixCSC` Jacobian construction (audit blocker #2) and ForwardDiff-Dual coloring (audit blocker #1). Algorithm-side prerequisite for the M3-8c Metal port. | done | (covered jointly with (b)/(c)) | +320 LOC (`src/newton_step_matrix_free.jl`); 3 new exports |
+| **M3-8b (b)** | Bit-exact regression vs dense Newton — `test/test_M3_8b_matrix_free_newton_krylov.jl`. Zero-strain 2D Sod IC: max abs diff = 0.0 (bit-exact). Zero-strain 3D Sod IC: max abs diff = 0.0 (bit-exact). Active-strain cold-sinusoid (k=(1,0)): max abs diff ≤ 1e-19, max rel diff ≤ 1e-15 (effectively bit-equal — well below the 1e-10 contract documented in `notes_M3_8b_metal_gpu_port.md`). | done | +14 | Matrix-free Newton-Krylov **bit-equal to round-off** vs dense ForwardDiff path on every tested IC |
+| **M3-8b wall-time** | Wall-time benchmark dense vs matrix-free at level 3/4/5 (cold-sinusoid k=(1,0), A=0.3, dt=1e-3, 3 steps, M_vv_override=(1,1)) on M2 Max | done | (timing only) | L3 (64 cells): matrix-free = **53% of dense** (1.9× speedup); L4 (256 cells): **66%** (1.5×); L5 (1024 cells): **85%** (1.18×). Dense L5 = 30 s / 3 steps (sparse-Jacobian + ForwardDiff coloring overhead dominates); matrix-free L5 = 26 s / 3 steps. The 5× / 3× headline targets are GPU-port targets (M3-8c) — on CPU the matrix-free approach already removes the dominant sparse-Jacobian construction overhead |
+| **M3-8b (c)** | Metal kernel exploration — `test/test_M3_8b_metal_kernel.jl` is `@test_skip`-guarded by `Metal.functional()` (smoke kernel) AND a manual `hg_backend_available = false` flag (per-leaf residual kernel). **Honest finding:** HG-side `Backend`-parameterized `PolynomialFieldSet` is NOT available as of HG `81914c2` — no `KernelContext`, no `@kernel`, no GPU-aware Backend type. Without this upstream prerequisite, the per-leaf residual kernel cannot be ported cleanly. Matrix-free Newton-Krylov ships as the algorithm-side prerequisite; full Metal port deferred to M3-8c after HG ships `PolynomialFieldSet{<:KA.Backend}`. | done (deferred) | +2 broken (intentional `@test_skip`) | Metal probe runs on M2 Max if loadable; per-leaf residual kernel deferred to M3-8c |
 
 ## Test summary
 
@@ -158,7 +162,8 @@ L↔E remap substrate per §6 / §6.6.
 | M3-7d (per-axis γ + AMR/realizability per-axis 3D + selectivity gate) | 418 |
 | M3-7e (3D Tier-C/D drivers + D.4 3D Zel'dovich pancake headline) | 1182 |
 | M3-8a (Tier-E stress tests: E.1 high-Mach + E.2 shell-crossing + E.3 low-Knudsen) | 315 |
-| **Total** | **~33926 + 1 deferred** (= 33611 + 315 from M3-8a) |
+| M3-8b (matrix-free Newton-Krylov regression + Metal kernel exploration stub) | 14 (+ 2 intentional @test_skip) |
+| **Total** | **~33940 + 3 deferred** (= 33611 + 315 from M3-8a + 14 from M3-8b) |
 
 ## M3-3 headline scientific findings
 
