@@ -1353,14 +1353,16 @@ function det_step_2d_berry_HG!(fields::PolynomialFieldSet,
                                  realizability_headroom::Real = 1.05,
                                  Mvv_floor::Real = 1e-2,
                                  pressure_floor::Real = 1e-8,
-                                 proj_stats = nothing) where {T<:Real}
+                                 proj_stats = nothing,
+                                 c_back::Real = 1.0) where {T<:Real}
     @assert mesh.balanced == true "det_step_2d_berry_HG! requires mesh.balanced == true"
     N = length(leaves)
     @assert N >= 1 "leaves vector must be non-empty"
 
     aux = build_residual_aux_2D(fields, mesh, frame, leaves, bc_spec;
                                  M_vv_override = M_vv_override,
-                                 ρ_ref = ρ_ref)
+                                 ρ_ref = ρ_ref,
+                                 c_back = c_back)
     y_n = pack_state_2d_berry(fields, leaves)
     y0 = copy(y_n)
 

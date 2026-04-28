@@ -736,7 +736,8 @@ function build_residual_aux_2D(fields::PolynomialFieldSet,
                                 leaves::AbstractVector{<:Integer},
                                 bc_spec;
                                 M_vv_override = nothing,
-                                ρ_ref::Real = 1.0) where {T}
+                                ρ_ref::Real = 1.0,
+                                c_back::Real = 1.0) where {T}
     N = length(leaves)
     s_vec  = Vector{T}(undef, N)
     θR_vec = Vector{T}(undef, N)
@@ -767,6 +768,10 @@ function build_residual_aux_2D(fields::PolynomialFieldSet,
         wrap_hi_idx = wrap_hi_idx,
         M_vv_override = M_vv_override,
         ρ_ref       = ρ_t,
+        # M4 Phase 1: closed-loop β_off ↔ β_a back-reaction strength.
+        # Default 1.0 (full closed loop). Set to 0.0 to recover M3-6
+        # Phase 1a forward-only strain coupling byte-equal.
+        c_back      = T(c_back),
     )
 end
 
@@ -921,6 +926,19 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
     # M3-4: optional per-axis-per-cell coordinate-wrap offsets.
     wrap_lo     = haskey(aux, :wrap_lo_idx) ? aux.wrap_lo_idx : nothing
     wrap_hi     = haskey(aux, :wrap_hi_idx) ? aux.wrap_hi_idx : nothing
+    # M4 Phase 1: closed-loop β_off ↔ β_a back-reaction strength. The
+    # extra Hamiltonian
+    #   H_back = c_back · G̃_12 · (α_2·β_12·β_1 − α_1·β_21·β_2) / 2
+    # closes the symplectic loop between the diagonal Cholesky sector
+    # (β_a) and the off-diagonal sector (β_12, β_21), making the system
+    # eigenmode-supporting (Drazin-Reid exp-in-t growth) instead of
+    # purely kinematic (linear-in-t forced response). Default 1.0; the
+    # closed-loop residual reduces byte-equal to the M3-6 Phase 1a form
+    # at β_off = 0 OR β_a = 0 (because every H_back contribution carries
+    # a multiplicative β_off · β_a factor). Setting `c_back = 0.0` (via
+    # `aux.c_back = 0.0`) recovers the M3-6 Phase 1a form byte-equal —
+    # used by the M4 Phase 1 dimension-lift regression battery.
+    C_BACK = haskey(aux, :c_back) ? eltype(y_np1)(aux.c_back) : one(eltype(y_np1))
 
     N = length(s_vec)
     # M3-6 Phase 0: 11 dof per cell.
@@ -1239,7 +1257,16 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
             # identically and the residual reduces byte-equally to the
             # M3-3c form. This is the §Dimension-lift gate.
             berry_α_term, berry_β_term = if a == 1
-                ( (ᾱ_self_2^3) / (3 * ᾱ_self_1^2) * dθR_dt,
+                ( (ᾱ_self_2^3) / (3 * ᾱ_self_1^2) * dθR_dt
+                   # M4 Phase 1: H_back back-reaction with the symmetric form
+                   #   H_back = c_back · G̃_12 · (α_2·β_12·β_2 + α_1·β_21·β_1) / 2
+                   # contributes ∂H_back/∂β_1 = c_back·G̃·α_1·β_21/2 to the
+                   # row β_1 of Ω·X+dH=0 (which yields F^α_1).
+                   # Solving for α̇_1: α̇_1 = β_1 - ∂H/∂β_1/α_1² + ...
+                   # ⇒ berry_α_term gains -c_back·G̃·β_21/(2·α_1).
+                   # Vanishes at β_21 = 0 (i.e. M3-3c, M3-4, M3-6 Phase 0
+                   # regression — all have β_off = 0 throughout).
+                   - C_BACK * G̃12 * β̄21 / (2 * ᾱ_self_1),
                    β̄_self_2 * dθR_dt
                    # M3-6 Phase 0 off-diag β coupling on F^β_1.
                    + (ᾱ_self_2 / ᾱ_self_1) * β̄12 * dθR_dt
@@ -1249,20 +1276,37 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
                    # M3-6 Phase 1a off-diagonal strain coupling.
                    # H_rot^off = G̃_12·(α_1·β_21 + α_2·β_12)/2 contributes
                    # ∂H_rot^off/∂α_1 = G̃_12·β_21/2 to the F^β_1 row at
-                   # midpoint. Vanishes when G̃_12 = 0 (axis-aligned ICs).
-                   + G̃12 * β̄21 / 2
+                   # midpoint, divided by α_1² (from Ω[α_1, β_1]·β̇_1 = α_1²·β̇_1
+                   # ⇒ β̇_1 contribution is ∂H/∂α_1 / α_1²).
+                   # M4 Phase 1: 1/α_1² normalization (was missing in M3-6 Phase 1a;
+                   # at α_1 = 1 the previous form is byte-equal).
+                   # Vanishes when G̃_12 = 0 (axis-aligned ICs).
+                   + G̃12 * β̄21 / (2 * ᾱ_self_1^2)
+                   # M4 Phase 1: closed-loop back-reaction in F^β_1.
+                   # ∂H_back/∂α_1 = c_back·G̃·β_21·β_1/2 contributes
+                   # +c_back·G̃·β_21·β_1/(2·α_1²) to berry_β_term.
+                   # Vanishes when β_off = 0 OR β_a = 0 ⇒ preserves
+                   # M3-3c (β=0,β_off=0) and M3-6 Phase 0 (β_off=0) byte-equal.
+                   + C_BACK * G̃12 * β̄21 * β̄_self_1 / (2 * ᾱ_self_1^2)
                 )
             else
-                ( -(ᾱ_self_1^3) / (3 * ᾱ_self_2^2) * dθR_dt,
+                ( -(ᾱ_self_1^3) / (3 * ᾱ_self_2^2) * dθR_dt
+                   # M4 Phase 1: H_back ⇒ ∂H_back/∂β_2 = c_back·G̃·α_2·β_12/2.
+                   # F^α_2 berry_α_term gains -c_back·G̃·β_12/(2·α_2).
+                   - C_BACK * G̃12 * β̄12 / (2 * ᾱ_self_2),
                   -β̄_self_1 * dθR_dt
                    # M3-6 Phase 0 off-diag β coupling on F^β_2.
                    - (ᾱ_self_1^2 / (2 * ᾱ_self_2^2)) * β̄12 * dθR_dt
                    + (ᾱ_self_1 / ᾱ_self_2) * β̄21 * dθR_dt
                    - (ᾱ_self_1 / ᾱ_self_2) * dβ12_dt
                    - (ᾱ_self_1^2 / (2 * ᾱ_self_2^2)) * dβ21_dt
-                   # M3-6 Phase 1a off-diagonal strain coupling.
+                   # M3-6 Phase 1a off-diagonal strain coupling, with
+                   # M4 Phase 1's 1/α_2² normalization.
                    # ∂H_rot^off/∂α_2 = G̃_12·β_12/2 contributes to F^β_2.
-                   + G̃12 * β̄12 / 2
+                   + G̃12 * β̄12 / (2 * ᾱ_self_2^2)
+                   # M4 Phase 1: closed-loop back-reaction.
+                   # ∂H_back/∂α_2 = +c_back·G̃·β_12·β_2/2.
+                   + C_BACK * G̃12 * β̄12 * β̄_self_2 / (2 * ᾱ_self_2^2)
                 )
             end
 
@@ -1292,8 +1336,26 @@ function cholesky_el_residual_2D_berry!(F::AbstractVector,
         # The smoke test in `test_M3_6_phase1a_strain_coupling.jl`
         # confirms that a sheared base flow u_1(x_2) drives β_12, β_21
         # off rest after a single Newton step.
-        F[11 * (i - 1) + 9]  = (β12_np1 - β12_n) / dt + G̃12 * ᾱ_self_2 / 2
-        F[11 * (i - 1) + 10] = (β21_np1 - β21_n) / dt + G̃12 * ᾱ_self_1 / 2
+        #
+        # M4 Phase 1: closed-loop back-reaction. The new Hamiltonian
+        #   H_back = c_back · G̃_12 · (α_2·β_12·β_2 + α_1·β_21·β_1)/2
+        # (symmetric in β_off ↔ β_a) contributes to ∂H/∂β_off:
+        #   ∂H_back/∂β_12 = +c_back · G̃ · α_2 · β_2 / 2
+        #   ∂H_back/∂β_21 = +c_back · G̃ · α_1 · β_1 / 2
+        # AND to ∂H/∂β_a (giving back-reaction in F^α_a, see berry_α_term).
+        # Together these form the closed Hamiltonian loop: β_a feeds β_off
+        # via the new H_back terms here, and β_off feeds α (which evolves
+        # to β) via the corresponding term in F^α_a. The closed loop is
+        # what makes the Drazin-Reid eigenmode self-amplified rather than
+        # a kinematically forced linear response.
+        # All H_back contributions are multiplicative in β_a · G̃ (here)
+        # or β_off · β_a · G̃ (in F^β_a). They vanish at β_off = 0 AND
+        # β_a = 0 (the M3-3c, M3-4, M3-6 Phase 0 regression IC) ⇒
+        # bit-exact preservation of those tests.
+        F[11 * (i - 1) + 9]  = (β12_np1 - β12_n) / dt + G̃12 * ᾱ_self_2 / 2 +
+                               C_BACK * G̃12 * ᾱ_self_2 * β̄_self_2 / 2
+        F[11 * (i - 1) + 10] = (β21_np1 - β21_n) / dt + G̃12 * ᾱ_self_1 / 2 +
+                               C_BACK * G̃12 * ᾱ_self_1 * β̄_self_1 / 2
 
         # F^θ_R: kinematic-equation-driven evolution. M3-3c first cut had
         # zero drive ⇒ θ_R conserved per cell. M3-6 Phase 1a adds the

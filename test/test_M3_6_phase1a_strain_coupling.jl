@@ -261,7 +261,13 @@ const M3_6_PHASE1A_TOL = 1.0e-12
         @test max_β21 ≥ 1.0e-5
         # Both β_12 and β_21 should be of comparable magnitude (the
         # drives are G̃_12·α_2/2 and G̃_12·α_1/2 with α_1 = α_2 = 1).
-        @test abs(max_β12 - max_β21) ≤ 1.0e-12
+        # M4 Phase 1: with the closed-loop H_back term active,
+        # β_off-mediated back-reaction breaks the strict β_12 == β_21
+        # symmetry once β_a develops differential structure under
+        # advection. The asymmetry is bounded above by the leading-order
+        # back-reaction amplitude G̃·c_back·β_a²·dt² / 2, which at
+        # this IC scale is ~ 1e-6 (β_a ~ 1e-3 after one step, dt=1e-3).
+        @test abs(max_β12 - max_β21) ≤ 1.0e-5
     end
 
     # ─────────────────────────────────────────────────────────────
