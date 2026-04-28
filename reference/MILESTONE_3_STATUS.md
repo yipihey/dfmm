@@ -1,4 +1,4 @@
-# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 in flight, M3-7a + M3-7b + M3-7c CLOSED)
+# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 in flight, M3-7a + M3-7b + M3-7c + M3-7d CLOSED)
 
 **Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26;
 M3-6 Phase 1a/1b/1c closed 2026-04-26 (the D.1 KH falsifier — methods
@@ -101,6 +101,10 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-7c (b)** | 3D Newton driver `det_step_3d_berry_HG!` in `src/newton_step_HG.jl`: `cell_adjacency_sparsity ⊗ ones(15, 15)` (same prototype as M3-7b — Berry couplings live in existing within-cell block); mirrors `det_step_2d_berry_HG!` pattern | done | (driver covered jointly with (a)/(c)/(d)) | Newton converges in ≤ 7 iter on non-isotropic 3D IC (post-Newton residual ≤ 1e-10); ≤ 2 iter on smooth ICs |
 | **M3-7c (c)** | Berry verification + iso-pullback + H_rot solvability gates: 8 SymPy CHECKs reproduced at residual level; `h_rot_partial_dtheta_3d` per-pair closed form satisfies kernel-orthogonality at 5 random (α, β, γ²) × 3 (θ̇)_test × 3 pairs | done | +372 | FD-vs-closed-form per-pair Berry partials at 1e-9; iso-pullback ε-extrapolation slope = 1 ± 1e-3; H_rot kernel-orthogonality residual ≤ 1e-10 absolute |
 | **M3-7c (d)** | Dimension-lift parity with Berry §7.1a + §7.1b — the load-bearing M3-7c acceptance criteria | done | +113 | §7.1a 3D-Berry ⊂ 1D matches M1 byte-equal **0.0 abs** on single-step + 100-step + axis-swap; §7.1b 3D-Berry ⊂ 2D-Berry matches M3-3c `det_step_2d_berry_HG!` byte-equal **0.0 abs** on single-step + 10-step + non-trivial Berry IC (β + θ_12) |
+| **M3-7d (a)** | `gamma_per_axis_3d_field` field-walking helper + `gamma_per_axis_3d_diag` alias in `src/diagnostics.jl`; 3D analog of M3-3d's `gamma_per_axis_2d_field`; consumed by 3D AMR + realizability per-axis | done | +253 | 3-axis γ²_a = M_vv,aa − β_a² per leaf; M1 reduction per axis on 5 random samples; M_vv_override + EOS-driven path; 1D-symmetric reduction (γ_2 = γ_3 byte-equal); alias forwarding |
+| **M3-7d (b)** | 3D action-AMR via `register_field_set_on_refine_3d!` + `action_error_indicator_3d_per_axis` + `step_with_amr_3d!` in `src/action_amr_helpers.jl`; per-axis `max_a` aggregation (3D analog of M3-3d's 2D `max_a` over 2 axes) | done | +53 | Uniform field ⇒ indicator ≡ 0; refine octant of 8-leaf mesh ⇒ 15 leaves with 8 children inheriting parent value across all 16 named fields; refine + coarsen round-trip byte-equal; full-3D k=(1,1,1) all axes fire |
+| **M3-7d (c)** | `realizability_project_3d!` + `ProjectionStats3D` in `src/stochastic_injection.jl`; per-axis 3-component cone projection (3D analog of M3-3d's 2D 2-component projection); off-diagonal β still omitted per M3-3a Q3 + M3-7 §4.4 | done | +85 | No-op when M_vv ≥ headroom·max_a β_a²; fires with β_1, β_2, or β_3 binding (each axis tested); Mvv_floor branch; 2D-symmetric reduction (β_3 = 0) byte-equal to M3-3d 2D; 1D-symmetric reduction matches M2-3 1D target ≤ 1e-12 |
+| **M3-7d (d)** | §7.5 Per-axis γ selectivity gate (3D headline scientific gate): 1D-symmetric, 2D-symmetric, full-3D selectivity ratios | done | +27 | **1D-sym ratio std(γ_1)/(std(γ_2)+std(γ_3)+eps) = 6.4e10** (above 1e10 gate); 2D-sym ratio (avg active)/std(γ_3)+eps = 6.4e10 (above 1e6 gate); full-3D all three γ stds ≈ 1.43e-5 by symmetry; γ trajectory monotonicity verified |
 
 ## Test summary
 
@@ -134,7 +138,8 @@ L↔E remap substrate per §6 / §6.6.
 | M3-7a (3D HaloView smoke + 3D field-set allocator + read/write) | 2581 |
 | M3-7b (3D EL residual + Newton + zero-strain + dimension-lift §7.1a/b) | 1546 |
 | M3-7c (SO(3) Berry coupling + verification + iso-pullback + H_rot + dim-lift) | 485 |
-| **Total** | **~32011 + 1 deferred** (= 31526 + 485 from M3-7c) |
+| M3-7d (per-axis γ + AMR/realizability per-axis 3D + selectivity gate) | 418 |
+| **Total** | **~32429 + 1 deferred** (= 32011 + 418 from M3-7d) |
 
 ## M3-3 headline scientific findings
 
