@@ -465,6 +465,19 @@ export rotation_matrix_3d
 # See `reference/notes_M3_7a_3d_halo_allocator.md`.
 export allocate_cholesky_3d_fields, read_detfield_3d, write_detfield_3d!
 
+# --- Phase M3-7b API: native HG-side 3D EL residual + Newton driver --------
+# 3D analog of M3-3b's `cholesky_el_residual_2D!` + `det_step_2d_HG!`.
+# 15-dof per leaf cell `(x_a, u_a, α_a, β_a)_{a=1,2,3} + (θ_12, θ_13, θ_23)`;
+# face-neighbor stencil expanded to 6 faces; periodic-coordinate wrap
+# generalised to 3 axes; θ-rows trivial-driven (Berry coupling lands in
+# M3-7c). Newton sparsity is `cell_adjacency_sparsity ⊗ ones(15, 15)`.
+# See `reference/notes_M3_7_3d_extension.md` §3 + `reference/notes_M3_7b_native_3d_residual.md`.
+export cholesky_el_residual_3D!, cholesky_el_residual_3D
+export pack_state_3d, unpack_state_3d!,
+       build_face_neighbor_tables_3d, build_periodic_wrap_tables_3d,
+       build_residual_aux_3D
+export det_step_3d_HG!
+
 # --- Phase M3-6 Phase 3 API: 2D substrate (tracers + stoch + γ-diag) -----
 # Three deliverables, each scoped to extend a 1D substrate to 2D:
 #  (a) `TracerMeshHG2D` — per-species per-cell passive scalars on a

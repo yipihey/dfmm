@@ -1394,3 +1394,553 @@ function unpack_state_2d_berry!(fields::PolynomialFieldSet,
     end
     return fields
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M3-7b: native HG-side 3D EL residual (no Berry; θ_{ab} trivial)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Direct dimension-lift of the M3-3b 2D Cholesky-sector EL residual to
+# `HierarchicalMesh{3}`: per-axis sums over `a ∈ {1, 2, 3}` and the
+# face-neighbor stencil expanded to 6 faces (lo/hi along each of the 3
+# axes). The Newton-driven row count grows from 8 (M3-3b 2D) to 15 per
+# leaf — 3 x_a + 3 u_a + 3 α_a + 3 β_a + 3 θ_{ab} — with a 16th named
+# slot `s` carried as auxiliary frozen entropy.
+#
+# Per the M3-7 design note §3 + §9, M3-7b implements the residual
+# WITHOUT Berry coupling (M3-7c integrates the verified
+# `berry_partials_3d` stencils). The three θ-rows are TRIVIAL-DRIVEN:
+#
+#     F^θ_{ab} = (θ_{ab}_np1 - θ_{ab}_n) / dt
+#
+# i.e., each Euler angle is conserved per cell across the Newton step.
+# When the IC has all three angles at zero (the §7.1 dimension-lift
+# gates), the trivial drive pins them at zero throughout the trajectory
+# and the per-axis Cholesky-sector reduction matches the 2D / 1D
+# residuals byte-equally on the dimension-lifted slices.
+#
+# The pseudo-residual structure mirrors M3-3b's 2D form on each axis:
+#
+#     F^x_a    = (x_a_np1 − x_a_n)/dt − ū_a                          (a = 1, 2, 3)
+#     F^u_a    = (u_a_np1 − u_a_n)/dt + (P̄_a^hi − P̄_a^lo) / m̄_a     (a = 1, 2, 3)
+#     F^α_a    = (α_a_np1 − α_a_n)/dt − β̄_a                          (a = 1, 2, 3)
+#     F^β_a    = (β_a_np1 − β_a_n)/dt + (∂_a u_a) β̄_a − γ̄_a²/ᾱ_a    (a = 1, 2, 3)
+#     F^θ_ab   = (θ_ab_np1 − θ_ab_n) / dt                            (ab ∈ {12,13,23})
+#
+# Off-diagonal `β_{ab}` is intentionally NOT carried on the 3D field set
+# (per M3-3a Q3 default + M3-7 design note §4.4); 3D D.1 KH (M3-9)
+# will lift the field set to 19 dof when off-diagonal coupling is
+# activated.
+
+"""
+    cholesky_el_residual_3D!(F::AbstractVector,
+                             y_np1::AbstractVector,
+                             y_n::AbstractVector,
+                             aux::NamedTuple,
+                             dt::Real)
+
+Native HG-side 3D Cholesky-sector EL residual without Berry coupling
+(M3-7b). Writes the residual `F` for the 15-dof-per-cell flat unknown
+vector `y_np1` against the reference state `y_n`. Both vectors are
+packed leaf-cell-major as
+
+    y[15(i-1) +  1] = x_1
+    y[15(i-1) +  2] = x_2
+    y[15(i-1) +  3] = x_3
+    y[15(i-1) +  4] = u_1
+    y[15(i-1) +  5] = u_2
+    y[15(i-1) +  6] = u_3
+    y[15(i-1) +  7] = α_1
+    y[15(i-1) +  8] = α_2
+    y[15(i-1) +  9] = α_3
+    y[15(i-1) + 10] = β_1
+    y[15(i-1) + 11] = β_2
+    y[15(i-1) + 12] = β_3
+    y[15(i-1) + 13] = θ_12
+    y[15(i-1) + 14] = θ_13
+    y[15(i-1) + 15] = θ_23
+
+for `i ∈ 1:N` (N = number of leaf cells in mesh order).
+
+Auxiliary data carried in `aux::NamedTuple`:
+
+  • `s_vec::AbstractVector{T}`           — frozen entropy per leaf
+  • `Δm_per_axis::NTuple{3, AbstractVector{T}}` — per-axis Lagrangian
+                                            mass step at each leaf
+                                            (= ρ_ref × cell extent
+                                            along axis a)
+  • `face_lo_idx::NTuple{3, Vector{Int}}` — per-axis lo-face neighbor
+                                            cell idx (0 for boundary;
+                                            populated from
+                                            `face_neighbors_with_bcs`
+                                            so periodic wrap-around is
+                                            already resolved)
+  • `face_hi_idx::NTuple{3, Vector{Int}}` — per-axis hi-face neighbor
+                                            cell idx
+  • `wrap_lo_idx::NTuple{3, Vector{T}}`    — per-axis-per-cell additive
+                                            coordinate-wrap offsets for
+                                            periodic axes (M3-4
+                                            generalisation)
+  • `wrap_hi_idx::NTuple{3, Vector{T}}`    — likewise for hi-faces
+  • `M_vv_override::Union{Nothing, NTuple{3, T}}` — when not `nothing`,
+                                            override `M_vv(J, s)` per
+                                            axis with the supplied
+                                            constants
+  • `ρ_ref::T`                             — reference density used by
+                                            the per-axis pressure
+                                            stencil
+
+Boundary handling: when `face_lo_idx[a][i] == 0`, the residual treats
+the lo-face as a wall (mirror) — pressure equal to the cell's own,
+velocity equal to the cell's own — so no spurious gradient at the
+boundary. Periodic wrap is already resolved upstream by
+`face_neighbors_with_bcs`; this `0`-as-wall fallback only fires for
+genuinely closed boundaries (REFLECTING / DIRICHLET-pinned).
+
+# Verification
+
+  • For the cold-limit fixed point (`M_vv = 0` on every axis,
+    `β = 0`, `u = 0`, uniform cells, all θ_{ab} = 0), the residual
+    evaluates to the machine-precision zero vector when
+    `y_n == y_np1`.
+  • In a 1D-symmetric configuration (axes 2, 3 trivial / fixed-point;
+    all θ_{ab} = 0), the axis-1 sub-residual reduces bit-for-bit to
+    M1's 1D `det_el_residual` per cell — this is the 3D ⊂ 1D
+    dimension-lift gate (M3-7 design note §7.1a).
+  • In a 2D-symmetric configuration (axis 3 trivial; θ_13 = θ_23 = 0,
+    θ_12 free), the axis-1+axis-2 sub-residual reduces to M3-3b's 2D
+    residual byte-equally — the 3D ⊂ 2D dimension-lift gate
+    (M3-7 design note §7.1b). Note: in M3-7b's no-Berry residual the
+    F^θ_12 row is trivial-driven, so θ_12 stays at IC; this gate
+    therefore exercises the per-axis Cholesky-sector reduction at +1
+    axis only, mirroring M3-3b's 2D path which also pins θ_R fixed.
+"""
+function cholesky_el_residual_3D!(F::AbstractVector,
+                                   y_np1::AbstractVector,
+                                   y_n::AbstractVector,
+                                   aux::NamedTuple,
+                                   dt::Real)
+    s_vec       = aux.s_vec
+    Δm_per_axis = aux.Δm_per_axis
+    face_lo     = aux.face_lo_idx
+    face_hi     = aux.face_hi_idx
+    M_vv_over   = aux.M_vv_override
+    ρ_ref       = aux.ρ_ref
+    wrap_lo     = haskey(aux, :wrap_lo_idx) ? aux.wrap_lo_idx : nothing
+    wrap_hi     = haskey(aux, :wrap_hi_idx) ? aux.wrap_hi_idx : nothing
+
+    N = length(s_vec)
+    @assert length(y_np1) == 15 * N "y_np1 length $(length(y_np1)) does not match 15 * N = $(15 * N)"
+    @assert length(y_n)   == 15 * N
+    @assert length(F)     == 15 * N
+    @assert length(Δm_per_axis[1]) == N
+    @assert length(Δm_per_axis[2]) == N
+    @assert length(Δm_per_axis[3]) == N
+
+    Tres = promote_type(eltype(y_np1), eltype(y_n), eltype(s_vec), typeof(dt))
+
+    # 15-dof per-cell index helpers (closed over y arrays).
+    # a ∈ {1, 2, 3} for per-axis x/u/α/β; ab ∈ {1, 2, 3} maps to
+    # {(1,2), (1,3), (2,3)} in order for θ_{ab}.
+    @inline get_x(y, a, i) = y[15 * (i - 1) + a]              # 1..3
+    @inline get_u(y, a, i) = y[15 * (i - 1) + 3 + a]          # 4..6
+    @inline get_α(y, a, i) = y[15 * (i - 1) + 6 + a]          # 7..9
+    @inline get_β(y, a, i) = y[15 * (i - 1) + 9 + a]          # 10..12
+    @inline get_θ(y, ab, i) = y[15 * (i - 1) + 12 + ab]       # 13..15
+
+    @inbounds for i in 1:N
+        s_i = s_vec[i]
+        for a in 1:3
+            # Self midpoints.
+            x_n   = get_x(y_n,   a, i)
+            x_np1 = get_x(y_np1, a, i)
+            u_n   = get_u(y_n,   a, i)
+            u_np1 = get_u(y_np1, a, i)
+            α_n   = get_α(y_n,   a, i)
+            α_np1 = get_α(y_np1, a, i)
+            β_n   = get_β(y_n,   a, i)
+            β_np1 = get_β(y_np1, a, i)
+
+            x̄ = (x_n   + x_np1)   / 2
+            ū = (u_n   + u_np1)   / 2
+            ᾱ = (α_n   + α_np1)   / 2
+            β̄ = (β_n   + β_np1)   / 2
+
+            # Neighbor along axis a (lo, hi).
+            ilo = face_lo[a][i]
+            ihi = face_hi[a][i]
+
+            # M3-7b periodic-coordinate wrap (3D analog of M3-4 Phase 1).
+            wrap_lo_off = wrap_lo === nothing ? zero(Tres) : Tres(wrap_lo[a][i])
+            wrap_hi_off = wrap_hi === nothing ? zero(Tres) : Tres(wrap_hi[a][i])
+
+            # Lo-face neighbor data; mirror-self when out-of-domain.
+            if ilo == 0
+                x_lo_n   = x_n
+                x_lo_np1 = x_np1
+                u_lo_n   = u_n
+                u_lo_np1 = u_np1
+                s_lo     = s_i
+            else
+                x_lo_n   = get_x(y_n,   a, ilo) + wrap_lo_off
+                x_lo_np1 = get_x(y_np1, a, ilo) + wrap_lo_off
+                u_lo_n   = get_u(y_n,   a, ilo)
+                u_lo_np1 = get_u(y_np1, a, ilo)
+                s_lo     = s_vec[ilo]
+            end
+            x̄_lo = (x_lo_n + x_lo_np1) / 2
+            ū_lo = (u_lo_n + u_lo_np1) / 2
+
+            # Hi-face neighbor data; mirror-self when out-of-domain.
+            if ihi == 0
+                x_hi_n   = x_n
+                x_hi_np1 = x_np1
+                u_hi_n   = u_n
+                u_hi_np1 = u_np1
+                s_hi     = s_i
+            else
+                x_hi_n   = get_x(y_n,   a, ihi) + wrap_hi_off
+                x_hi_np1 = get_x(y_np1, a, ihi) + wrap_hi_off
+                u_hi_n   = get_u(y_n,   a, ihi)
+                u_hi_np1 = get_u(y_np1, a, ihi)
+                s_hi     = s_vec[ihi]
+            end
+            x̄_hi = (x_hi_n + x_hi_np1) / 2
+            ū_hi = (u_hi_n + u_hi_np1) / 2
+
+            # Per-axis Lagrangian mass step.
+            Δm_i = Δm_per_axis[a][i]
+
+            # Per-axis M_vv (override or EOS branch); mirrors M3-3b.
+            M̄vv_a = if M_vv_over !== nothing
+                Tres(M_vv_over[a])
+            else
+                Δx_avg = if ilo == 0 && ihi == 0
+                    zero(Tres)
+                elseif ilo == 0
+                    2 * (x̄_hi - x̄)
+                elseif ihi == 0
+                    2 * (x̄ - x̄_lo)
+                else
+                    x̄_hi - x̄_lo
+                end
+                J̄_self = Δx_avg > 0 ? Δx_avg / (2 * Δm_i) : zero(Tres)
+                J̄_self > 0 ? Mvv(J̄_self, s_i) : zero(Tres)
+            end
+
+            # Pressure per axis. Mirror M3-3b's stencil exactly so the
+            # 3D ⊂ 1D / 3D ⊂ 2D dimension-lift gates carry.
+            P_self = Tres(ρ_ref) * M̄vv_a
+            P_lo_neighbor = if ilo == 0
+                P_self
+            else
+                Mvv_lo = if M_vv_over !== nothing
+                    Tres(M_vv_over[a])
+                else
+                    Tres(ρ_ref) * Mvv(one(Tres) / Tres(ρ_ref), s_lo)
+                end
+                Tres(ρ_ref) * Mvv_lo
+            end
+            P_hi_neighbor = if ihi == 0
+                P_self
+            else
+                Mvv_hi = if M_vv_over !== nothing
+                    Tres(M_vv_over[a])
+                else
+                    Tres(ρ_ref) * Mvv(one(Tres) / Tres(ρ_ref), s_hi)
+                end
+                Tres(ρ_ref) * Mvv_hi
+            end
+            P̄_lo = (P_self + P_lo_neighbor) / 2
+            P̄_hi = (P_self + P_hi_neighbor) / 2
+
+            # Self-cell strain rate along axis a (Eulerian (∂_a u_a)
+            # at the cell midpoint) using the lo↔hi extent.
+            Δx̄_full = x̄_hi - x̄_lo
+            div̄u_a = if Δx̄_full > 0
+                (ū_hi - ū_lo) / Δx̄_full
+            else
+                zero(Tres)
+            end
+
+            m̄_a = Δm_i
+            γ²_a = M̄vv_a - β̄^2
+
+            # Residual rows.
+            base = 15 * (i - 1)
+            F[base + a]      = (x_np1 - x_n) / dt - ū                          # F^x_a
+            F[base + 3 + a]  = (u_np1 - u_n) / dt + (P̄_hi - P̄_lo) / m̄_a       # F^u_a
+            # F^α_a: D_t^{(0)} α = β
+            F[base + 6 + a]  = (α_np1 - α_n) / dt - β̄                          # F^α_a
+            # F^β_a: D_t^{(1)} β = γ²/α
+            F[base + 9 + a]  = (β_np1 - β_n) / dt + div̄u_a * β̄ -
+                               (ᾱ != 0 ? γ²_a / ᾱ : zero(Tres))                # F^β_a
+        end
+
+        # F^θ_{ab}: trivial-drive (M3-7b; M3-7c will activate Berry).
+        # Each Euler angle is conserved across the Newton step.
+        base = 15 * (i - 1)
+        for ab in 1:3
+            θ_n   = get_θ(y_n,   ab, i)
+            θ_np1 = get_θ(y_np1, ab, i)
+            F[base + 12 + ab] = (θ_np1 - θ_n) / dt                              # F^θ_{12,13,23}
+        end
+    end
+    return F
+end
+
+"""
+    cholesky_el_residual_3D(y_np1, y_n, aux, dt)
+
+Allocating wrapper around `cholesky_el_residual_3D!`. Returns a fresh
+residual vector. Used in tests where allocation cost is irrelevant.
+"""
+function cholesky_el_residual_3D(y_np1::AbstractVector,
+                                  y_n::AbstractVector,
+                                  aux::NamedTuple,
+                                  dt::Real)
+    Tres = promote_type(eltype(y_np1), eltype(y_n), eltype(aux.s_vec), typeof(dt))
+    F = similar(y_np1, Tres, length(y_np1))
+    cholesky_el_residual_3D!(F, y_np1, y_n, aux, dt)
+    return F
+end
+
+# ─────────────────────────────────────────────────────────────────────
+# 3D field-set ↔ flat state-vector packing helpers (M3-7b)
+# ─────────────────────────────────────────────────────────────────────
+
+"""
+    pack_state_3d(fields::PolynomialFieldSet, leaves::AbstractVector{<:Integer})
+        -> Vector{Float64}
+
+Pack the per-leaf 15-dof Newton state
+`(x_a, u_a, α_a, β_a)_{a=1,2,3} + (θ_12, θ_13, θ_23)` out of the
+M3-7a 3D Cholesky-sector field set `fields` into a flat length-`15 N`
+vector, where `N = length(leaves)`. Iteration order is `leaves[k]` for
+`k ∈ 1:N`. The frozen-across-Newton entropy `s` is NOT packed — it is
+read directly from the field set as auxiliary data (see
+`cholesky_el_residual_3D!` `aux`).
+"""
+function pack_state_3d(fields::PolynomialFieldSet,
+                        leaves::AbstractVector{<:Integer})
+    N = length(leaves)
+    T = typeof(fields.x_1[leaves[1]][1])
+    y = Vector{T}(undef, 15 * N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        base = 15 * (i - 1)
+        y[base +  1] = fields.x_1[ci][1]
+        y[base +  2] = fields.x_2[ci][1]
+        y[base +  3] = fields.x_3[ci][1]
+        y[base +  4] = fields.u_1[ci][1]
+        y[base +  5] = fields.u_2[ci][1]
+        y[base +  6] = fields.u_3[ci][1]
+        y[base +  7] = fields.α_1[ci][1]
+        y[base +  8] = fields.α_2[ci][1]
+        y[base +  9] = fields.α_3[ci][1]
+        y[base + 10] = fields.β_1[ci][1]
+        y[base + 11] = fields.β_2[ci][1]
+        y[base + 12] = fields.β_3[ci][1]
+        y[base + 13] = fields.θ_12[ci][1]
+        y[base + 14] = fields.θ_13[ci][1]
+        y[base + 15] = fields.θ_23[ci][1]
+    end
+    return y
+end
+
+"""
+    unpack_state_3d!(fields::PolynomialFieldSet,
+                      leaves::AbstractVector{<:Integer},
+                      y::AbstractVector)
+
+Inverse of `pack_state_3d`: write the flat 15-dof per-leaf state back
+into the 3D field set. Leaves the `:s` slot untouched (entropy is
+operator-split, frozen across the Newton step).
+"""
+function unpack_state_3d!(fields::PolynomialFieldSet,
+                           leaves::AbstractVector{<:Integer},
+                           y::AbstractVector)
+    N = length(leaves)
+    @assert length(y) == 15 * N "y length $(length(y)) does not match 15 * N = $(15 * N)"
+    @inbounds for (i, ci) in enumerate(leaves)
+        base = 15 * (i - 1)
+        fields.x_1[ci]  = (y[base +  1],)
+        fields.x_2[ci]  = (y[base +  2],)
+        fields.x_3[ci]  = (y[base +  3],)
+        fields.u_1[ci]  = (y[base +  4],)
+        fields.u_2[ci]  = (y[base +  5],)
+        fields.u_3[ci]  = (y[base +  6],)
+        fields.α_1[ci]  = (y[base +  7],)
+        fields.α_2[ci]  = (y[base +  8],)
+        fields.α_3[ci]  = (y[base +  9],)
+        fields.β_1[ci]  = (y[base + 10],)
+        fields.β_2[ci]  = (y[base + 11],)
+        fields.β_3[ci]  = (y[base + 12],)
+        fields.θ_12[ci] = (y[base + 13],)
+        fields.θ_13[ci] = (y[base + 14],)
+        fields.θ_23[ci] = (y[base + 15],)
+    end
+    return fields
+end
+
+"""
+    build_face_neighbor_tables_3d(mesh::HierarchicalMesh{3},
+                                   leaves::AbstractVector{<:Integer},
+                                   bc_spec)
+        -> (face_lo_idx::NTuple{3, Vector{Int}},
+            face_hi_idx::NTuple{3, Vector{Int}})
+
+3D analog of `build_face_neighbor_tables`. Pre-computes per-leaf
+face-neighbor leaf indices for all three axes. Output is a pair of
+length-`N` `Int` vectors per axis; `face_lo_idx[a][i]` is the
+leaf-major index of the lo-side neighbor of `leaves[i]` along axis
+`a` (or 0 if out-of-domain after BC processing). Periodic wrap is
+already resolved upstream via `face_neighbors_with_bcs(mesh, ci, bc_spec)`.
+
+`face_neighbors_with_bcs` for `HierarchicalMesh{3}` returns an
+`NTuple{6, UInt32}` with face order `(axis1 lo, axis1 hi, axis2 lo,
+axis2 hi, axis3 lo, axis3 hi)`.
+"""
+function build_face_neighbor_tables_3d(mesh::HierarchicalMesh{3},
+                                        leaves::AbstractVector{<:Integer},
+                                        bc_spec)
+    N = length(leaves)
+    pos = zeros(Int, hg_n_cells(mesh))
+    @inbounds for (k, ci) in enumerate(leaves)
+        pos[ci] = k
+    end
+    face_lo_1 = zeros(Int, N); face_hi_1 = zeros(Int, N)
+    face_lo_2 = zeros(Int, N); face_hi_2 = zeros(Int, N)
+    face_lo_3 = zeros(Int, N); face_hi_3 = zeros(Int, N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        fn = face_neighbors_with_bcs(mesh, ci, bc_spec)
+        face_lo_1[i] = fn[1] == 0 ? 0 : pos[Int(fn[1])]
+        face_hi_1[i] = fn[2] == 0 ? 0 : pos[Int(fn[2])]
+        face_lo_2[i] = fn[3] == 0 ? 0 : pos[Int(fn[3])]
+        face_hi_2[i] = fn[4] == 0 ? 0 : pos[Int(fn[4])]
+        face_lo_3[i] = fn[5] == 0 ? 0 : pos[Int(fn[5])]
+        face_hi_3[i] = fn[6] == 0 ? 0 : pos[Int(fn[6])]
+    end
+    return ((face_lo_1, face_lo_2, face_lo_3),
+            (face_hi_1, face_hi_2, face_hi_3))
+end
+
+"""
+    build_periodic_wrap_tables_3d(mesh::HierarchicalMesh{3},
+                                    frame::EulerianFrame{3, T},
+                                    leaves::AbstractVector{<:Integer},
+                                    face_lo_idx::NTuple{3, Vector{Int}},
+                                    face_hi_idx::NTuple{3, Vector{Int}})
+        -> (wrap_lo::NTuple{3, Vector{T}}, wrap_hi::NTuple{3, Vector{T}})
+
+3D analog of `build_periodic_wrap_tables` (M3-4 Phase 1). Pre-computes
+per-leaf-per-axis additive coordinate-wrap offsets for the 3D EL
+residual. For each leaf `i ∈ 1:N` and each axis `a ∈ {1, 2, 3}`,
+returns `wrap_lo[a][i]` and `wrap_hi[a][i]` such that the periodic
+neighbor's `x_a` should be read as
+
+    x_a_lo_neighbor + wrap_lo[a][i],   x_a_hi_neighbor + wrap_hi[a][i]
+
+so the lo→hi extent across a periodic seam stays positive — the 3D
+generalisation of the 1D `+L_box` wrap pattern.
+
+The detection rule per axis is identical to the 2D version: if the
+neighbor's physical box on axis `a` lies on the opposite wall, the
+neighbor is the periodic wrap; the offset is `-L_a` for the lo-face
+and `+L_a` for the hi-face.
+"""
+function build_periodic_wrap_tables_3d(mesh::HierarchicalMesh{3},
+                                         frame::EulerianFrame{3, T},
+                                         leaves::AbstractVector{<:Integer},
+                                         face_lo_idx::NTuple{3, Vector{Int}},
+                                         face_hi_idx::NTuple{3, Vector{Int}}
+                                         ) where {T}
+    N = length(leaves)
+    L = ntuple(a -> T(frame.hi[a] - frame.lo[a]), 3)
+    wrap_lo_1 = zeros(T, N); wrap_hi_1 = zeros(T, N)
+    wrap_lo_2 = zeros(T, N); wrap_hi_2 = zeros(T, N)
+    wrap_lo_3 = zeros(T, N); wrap_hi_3 = zeros(T, N)
+    eps_a = ntuple(a -> T(1e-12) * L[a], 3)
+
+    @inbounds for (i, ci) in enumerate(leaves)
+        lo_self, hi_self = cell_physical_box(frame, ci)
+        for a in 1:3
+            wrap_arr_lo = a == 1 ? wrap_lo_1 : (a == 2 ? wrap_lo_2 : wrap_lo_3)
+            wrap_arr_hi = a == 1 ? wrap_hi_1 : (a == 2 ? wrap_hi_2 : wrap_hi_3)
+            face_lo = face_lo_idx[a]
+            face_hi = face_hi_idx[a]
+
+            # Lo-face wrap detection.
+            ilo = face_lo[i]
+            if ilo != 0
+                ci_lo = leaves[ilo]
+                lo_n, hi_n = cell_physical_box(frame, ci_lo)
+                if lo_n[a] >= hi_self[a] - eps_a[a]
+                    wrap_arr_lo[i] = -L[a]
+                end
+            end
+
+            # Hi-face wrap detection.
+            ihi = face_hi[i]
+            if ihi != 0
+                ci_hi = leaves[ihi]
+                lo_n, hi_n = cell_physical_box(frame, ci_hi)
+                if hi_n[a] <= lo_self[a] + eps_a[a]
+                    wrap_arr_hi[i] = L[a]
+                end
+            end
+        end
+    end
+    return ((wrap_lo_1, wrap_lo_2, wrap_lo_3),
+            (wrap_hi_1, wrap_hi_2, wrap_hi_3))
+end
+
+"""
+    build_residual_aux_3D(fields::PolynomialFieldSet,
+                          mesh::HierarchicalMesh{3},
+                          frame::EulerianFrame{3, T},
+                          leaves::AbstractVector{<:Integer},
+                          bc_spec;
+                          M_vv_override = nothing,
+                          ρ_ref = 1.0) where {T}
+
+Convenience builder for the `aux` NamedTuple consumed by
+`cholesky_el_residual_3D!`. Reads `s` per leaf from `fields`, extracts
+per-axis cell extents from the Eulerian frame, computes per-axis
+Lagrangian mass steps `Δm_a = ρ_ref * extent_a` per cell, and builds
+the 3-axis face-neighbor + periodic-wrap tables. The 3D analog of
+`build_residual_aux_2D`.
+"""
+function build_residual_aux_3D(fields::PolynomialFieldSet,
+                                mesh::HierarchicalMesh{3},
+                                frame::EulerianFrame{3, T},
+                                leaves::AbstractVector{<:Integer},
+                                bc_spec;
+                                M_vv_override = nothing,
+                                ρ_ref::Real = 1.0) where {T}
+    N = length(leaves)
+    s_vec  = Vector{T}(undef, N)
+    Δm_1   = Vector{T}(undef, N)
+    Δm_2   = Vector{T}(undef, N)
+    Δm_3   = Vector{T}(undef, N)
+    ρ_t = T(ρ_ref)
+    @inbounds for (i, ci) in enumerate(leaves)
+        s_vec[i] = fields.s[ci][1]
+        lo, hi = cell_physical_box(frame, ci)
+        Δm_1[i] = ρ_t * (hi[1] - lo[1])
+        Δm_2[i] = ρ_t * (hi[2] - lo[2])
+        Δm_3[i] = ρ_t * (hi[3] - lo[3])
+    end
+    face_lo_idx, face_hi_idx = build_face_neighbor_tables_3d(mesh, leaves, bc_spec)
+    wrap_lo_idx, wrap_hi_idx = build_periodic_wrap_tables_3d(mesh, frame, leaves,
+                                                              face_lo_idx,
+                                                              face_hi_idx)
+    return (
+        s_vec       = s_vec,
+        Δm_per_axis = (Δm_1, Δm_2, Δm_3),
+        face_lo_idx = face_lo_idx,
+        face_hi_idx = face_hi_idx,
+        wrap_lo_idx = wrap_lo_idx,
+        wrap_hi_idx = wrap_hi_idx,
+        M_vv_override = M_vv_override,
+        ρ_ref       = ρ_t,
+    )
+end

@@ -1433,3 +1433,148 @@ function det_step_2d_berry_HG!(fields::PolynomialFieldSet,
 
     return fields
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M3-7b: native HG-side 3D Newton step driver (no Berry; θ_ab
+# trivial-driven). 3D analog of `det_step_2d_HG!` per M3-7 design
+# note §3 + §9. The residual is `cholesky_el_residual_3D!` with 15
+# dof per cell `(x_a, u_a, α_a, β_a)_{a=1,2,3} + (θ_12, θ_13, θ_23)`.
+# Newton sparsity: `cell_adjacency_sparsity ⊗ ones(15, 15)`.
+# ─────────────────────────────────────────────────────────────────────
+
+"""
+    det_step_3d_HG!(fields::PolynomialFieldSet,
+                     mesh::HierarchicalMesh{3},
+                     frame::EulerianFrame{3, T},
+                     leaves::AbstractVector{<:Integer},
+                     bc_spec::FrameBoundaries{3},
+                     dt::Real;
+                     M_vv_override = nothing,
+                     ρ_ref::Real = 1.0,
+                     sparse_jac::Bool = true,
+                     abstol::Real = 1e-13, reltol::Real = 1e-13,
+                     maxiters::Int = 50) where {T<:Real}
+
+Advance the 3D Cholesky-sector field set by one timestep `dt` via an
+implicit-midpoint Newton solve of `cholesky_el_residual_3D!`. Mutates
+the 15 Newton-unknown slots `(x_a, u_a, α_a, β_a, θ_12, θ_13, θ_23)`
+of `fields` in-place; the `s` slot is left untouched (entropy is
+operator-split, frozen across the Newton step).
+
+Arguments mirror the M3-7a allocation contract:
+
+  • `fields` — built by `allocate_cholesky_3d_fields(mesh)`.
+  • `mesh::HierarchicalMesh{3}` — must be balanced (M3-3a Q4 default).
+  • `frame::EulerianFrame{3, T}` — supplies per-cell physical extents
+    via `cell_physical_box`.
+  • `leaves` — leaf-iteration order (`enumerate_leaves(mesh)`).
+  • `bc_spec` — 3D `FrameBoundaries{3}` (e.g. triply-periodic, mixed
+    PERIODIC / REFLECTING).
+
+Keyword arguments:
+
+  • `M_vv_override::Union{Nothing, NTuple{3, Real}}` — when not
+    `nothing`, override the EOS `M_vv(J, s)` per axis. M3-7b's
+    zero-strain regression and dimension-lift gates use this to
+    decouple from EOS specifics.
+  • `ρ_ref::Real` — reference density for the per-axis Lagrangian
+    mass step `Δm_a = ρ_ref · cell_extent_a`. Default 1.0.
+  • `sparse_jac::Bool` — use HG's `cell_adjacency_sparsity` (Kron with
+    15×15 dense block) as the Jacobian sparsity prototype.
+  • `abstol`, `reltol`, `maxiters` — forwarded to NonlinearSolve.
+
+Returns `fields` for convenience.
+
+# Constraints
+
+  • `mesh.balanced == true` (asserted).
+  • The 3D residual is M3-7b scope: NO Berry coupling (M3-7c integrates
+    the verified `berry_partials_3d` stencils); θ_{ab} rows are
+    trivial-driven so all three Euler angles are conserved per cell
+    across the step.
+  • Off-diagonal `β_{ab}` is NOT carried on the field set (per M3-3a
+    Q3 default + M3-7 design note §4.4); 3D D.1 KH (M3-9) will lift
+    to 19-dof.
+"""
+function det_step_3d_HG!(fields::PolynomialFieldSet,
+                          mesh::HierarchicalMesh{3},
+                          frame::EulerianFrame{3, T},
+                          leaves::AbstractVector{<:Integer},
+                          bc_spec::FrameBoundaries{3},
+                          dt::Real;
+                          M_vv_override = nothing,
+                          ρ_ref::Real = 1.0,
+                          sparse_jac::Bool = true,
+                          abstol::Real = 1e-13,
+                          reltol::Real = 1e-13,
+                          maxiters::Int = 50) where {T<:Real}
+    @assert mesh.balanced == true "det_step_3d_HG! requires mesh.balanced == true"
+    N = length(leaves)
+    @assert N >= 1 "leaves vector must be non-empty"
+
+    aux = build_residual_aux_3D(fields, mesh, frame, leaves, bc_spec;
+                                 M_vv_override = M_vv_override,
+                                 ρ_ref = ρ_ref)
+    y_n = pack_state_3d(fields, leaves)
+
+    # Initial guess: explicit Euler from the boxed equations evaluated
+    # at q_n. For zero-strain configurations this is already a tight
+    # initial guess.
+    y0 = copy(y_n)
+
+    # NonlinearProblem closure.
+    f_in_place = (F, u, p_in) -> begin
+        cholesky_el_residual_3D!(F, u, p_in.y_n, p_in.aux, p_in.dt)
+        return nothing
+    end
+    p = (y_n = y_n, aux = aux, dt = T(dt))
+
+    # Sparse-Jacobian prototype: cell_adjacency Kron with a 15×15 dense
+    # block. M3-7b uses depth = 1 (per-axis pressure stencil reaches one
+    # face-hop along each axis; 6-face stencil in 3D).
+    if sparse_jac && N >= 4
+        cell_sparsity = cell_adjacency_sparsity(mesh; depth = 1,
+                                                  leaves_only = true)
+        rows = Int[]
+        cols = Int[]
+        cs_rows, cs_cols, _ = SparseArrays.findnz(cell_sparsity)
+        sizehint!(rows, length(cs_rows) * 225)  # 15 × 15
+        sizehint!(cols, length(cs_rows) * 225)
+        @inbounds for k in eachindex(cs_rows)
+            i = Int(cs_rows[k])
+            j = Int(cs_cols[k])
+            for r in 1:15, c in 1:15
+                push!(rows, 15 * (i - 1) + r)
+                push!(cols, 15 * (j - 1) + c)
+            end
+        end
+        jac_proto = _SA.sparse(rows, cols, ones(Float64, length(rows)),
+                                15 * N, 15 * N, max)
+        nf = NonlinearFunction(f_in_place; jac_prototype = jac_proto)
+        prob = NonlinearProblem(nf, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    else
+        prob = NonlinearProblem(f_in_place, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    end
+
+    # Verify residual norm (mirror the 1D / 2D `det_step!` pattern).
+    F_check = similar(sol.u)
+    cholesky_el_residual_3D!(F_check, sol.u, y_n, aux, T(dt))
+    res_norm = maximum(abs, F_check)
+    if res_norm > 10 * abstol && sol.retcode != ReturnCode.Success
+        error("det_step_3d_HG! Newton solve failed: retcode = $(sol.retcode), " *
+              "‖residual‖∞ = $res_norm")
+    end
+
+    unpack_state_3d!(fields, leaves, sol.u)
+    return fields
+end

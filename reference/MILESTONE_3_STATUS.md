@@ -1,4 +1,4 @@
-# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 in flight, M3-7a CLOSED)
+# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 in flight, M3-7a + M3-7b CLOSED)
 
 **Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26;
 M3-6 Phase 1a/1b/1c closed 2026-04-26 (the D.1 KH falsifier — methods
@@ -94,6 +94,9 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-7 prep** | 3D scaffolding: `DetField3D{T}` working struct + `src/cholesky_DD_3d.jl` (per-axis 3D Cholesky decomposition / recomposition; `gamma_per_axis_3d`; `rotation_matrix_3d`); intrinsic Cardan ZYX Euler-angle convention pinned to SymPy authority | done | +736 | Round-trip max_err 4.5e-15 on 50 random samples; 2D reduction byte-equal on top-left 2×2 block; iso-pullback gauge degeneracy + M-preservation; allocation-free hot path |
 | **M3-7a (a)** | 3D HaloView smoke test on 4×4×4 balanced `HierarchicalMesh{3}` (`test_M3_7a_halo_smoke.jl`) | done | +426 | 6-face neighbor access verified; corner-leaf out-of-domain → `nothing`; BC-aware wrap (PERIODIC/REFLECTING mix); allocation-free fast path ≤ 64 bytes; depth=2 characterised (Q1/Q4 resolved — works as designed) |
 | **M3-7a (b)** | 3D field-set allocator + read/write helpers: `allocate_cholesky_3d_fields(mesh::HierarchicalMesh{3})` (16-named-field `PolynomialFieldSet`) + `read_detfield_3d` / `write_detfield_3d!` round-trip helpers | done | +2155 | Bit-exact round-trip across all 16 dof on 64 leaves; write-order independence; single-leaf write isolation; T=Float32 sanity round-trip; M3-7b unblocked |
+| **M3-7b (a)** | Native HG-side **3D** EL residual (`cholesky_el_residual_3D!`) + 15-dof pack/unpack + 3-axis face-neighbor + periodic-wrap tables in `src/eom.jl`; θ_ab trivial-driven (Berry deferred to M3-7c) | done | (residual covered jointly with (b)/(c)) | Per-axis lift of M3-3b; 6-face stencil; 3-axis periodic wrap |
+| **M3-7b (b)** | 3D Newton driver `det_step_3d_HG!` in `src/newton_step_HG.jl`: `cell_adjacency_sparsity ⊗ ones(15, 15)` Jacobian prototype; mirrors `det_step_2d_HG!` pattern | done | (driver covered jointly with (a)/(c)) | Newton converges in 2 iterations on smooth IC (zero-strain / β=0) |
+| **M3-7b (c)** | Zero-strain regression + dimension-lift gates §7.1a (3D ⊂ 1D) + §7.1b (3D ⊂ 2D) — the load-bearing M3-7b acceptance criteria | done | +1546 | Both gates at **0.0 absolute** (well below ≤ 1e-12 tolerance); 4×4×4 (64 leaves) + 8×8×8 (512 leaves); 100-step M1 Phase-1 trajectory match; axis-swap symmetry across all 3 principal axes; 3D ⊂ 2D byte-equal vs M3-3b's `det_step_2d_HG!` |
 
 ## Test summary
 
@@ -125,7 +128,8 @@ L↔E remap substrate per §6 / §6.6.
 | M3-6 Phase 5 (D.10 ISM multi-tracer fidelity: IC + driver + acceptance) | 930 |
 | M3-7 prep (3D scaffolding: `DetField3D` + `cholesky_DD_3d.jl`) | 736 |
 | M3-7a (3D HaloView smoke + 3D field-set allocator + read/write) | 2581 |
-| **Total** | **~29980 + 1 deferred** (= 27399 baseline + 2581 from M3-7a; the 27399 already counts the M3-7 prep 736) |
+| M3-7b (3D EL residual + Newton + zero-strain + dimension-lift §7.1a/b) | 1546 |
+| **Total** | **~31526 + 1 deferred** (= 29980 baseline + 1546 from M3-7b) |
 
 ## M3-3 headline scientific findings
 
@@ -701,6 +705,114 @@ HaloView contract for `HierarchicalMesh{3}`. The 3D EL residual
 design note §3.
 
 See `reference/notes_M3_7a_3d_halo_allocator.md` for the full
+status note + handoff items.
+
+## M3-7b close (2026-04-27)
+
+Second sub-phase of M3-7 (3D extension). Lands the native HG-side
+3D EL residual `cholesky_el_residual_3D!` + Newton driver
+`det_step_3d_HG!` (no Berry; θ_ab trivial-driven). Direct
+dimension-lift of M3-3b's 2D residual: per-axis sums over
+`a ∈ {1, 2, 3}`; 6-face stencil (vs 4 in 2D); 3-axis periodic-
+coordinate wrap; 15 Newton-driven rows per leaf.
+
+**What landed:**
+
+  * `src/eom.jl` (+550 LOC, append-only) — `cholesky_el_residual_3D!`
+    + 15-dof `pack_state_3d` / `unpack_state_3d!` +
+    `build_face_neighbor_tables_3d` + `build_periodic_wrap_tables_3d`
+    + `build_residual_aux_3D` (3D analog of `build_residual_aux_2D`
+    that consumes the 16-named-field 3D field set from M3-7a).
+    The three θ_ab rows are TRIVIAL-DRIVEN
+    (`F^θ_ab = (θ_ab_np1 − θ_ab_n) / dt`) — Berry coupling lands
+    in M3-7c.
+  * `src/newton_step_HG.jl` (+145 LOC, append-only) —
+    `det_step_3d_HG!` Newton driver. Sparse-Jacobian prototype is
+    `cell_adjacency_sparsity ⊗ ones(15, 15)` (depth=1 face stencil,
+    225 nonzeros per cell-cell adjacency entry). Mirrors the
+    `det_step_2d_HG!` pattern; no off-diagonal β; entropy frozen.
+  * `src/dfmm.jl` (+13 LOC, append-only) — exports for
+    `cholesky_el_residual_3D!`, `cholesky_el_residual_3D`,
+    `pack_state_3d`, `unpack_state_3d!`,
+    `build_face_neighbor_tables_3d`, `build_periodic_wrap_tables_3d`,
+    `build_residual_aux_3D`, `det_step_3d_HG!`.
+  * `test/test_M3_7b_3d_zero_strain.jl` (NEW, 1442 asserts) —
+    cold-limit fixed-point IC on a 4×4×4 mesh: residual = 0 at IC;
+    one-step + 10-step preservation byte-equal; 15-dof pack/unpack
+    round-trip on all 64 leaves; face-neighbor table sanity
+    (REFLECTING + triply-periodic); EOS-driven cold-limit
+    reduction (s = -800 underflow); triply-periodic regression.
+  * `test/test_M3_7b_dimension_lift_3d.jl` (NEW, 104 asserts) —
+    THE LOAD-BEARING GATE. Two sub-gates:
+      §7.1a 3D ⊂ 1D — 1D-symmetric 3D config matches M1's Phase-1
+      zero-strain trajectory byte-equal: single-step (dt=1e-3,
+      1e-5), 100-step run (T=0.1), 4×4×4 + 8×8×8 meshes, axis-swap
+      symmetry across all 3 principal axes.
+      §7.1b 3D ⊂ 2D — 2D-symmetric 3D config matches M3-3b's
+      `det_step_2d_HG!` byte-equal on the axis-1 + axis-2 sub-block:
+      single-step + 10-step run.
+  * `test/runtests.jl` (append-only) — new "Phase M3-7b: native
+    3D EL residual (no Berry; θ_ab trivial)" testset block.
+
+**Test delta:** +1546 asserts (1442 + 104).
+
+**Headline result — both dimension-lift gates at 0.0 absolute:**
+
+  * §7.1a 3D ⊂ 1D single step: max |α_1 − α_1_M1| = 0.0
+  * §7.1a 3D ⊂ 1D 100-step run: max |α_1 − α_1_M1| = 0.0
+  * §7.1b 3D ⊂ 2D single step: max |α_1 − α_1_2D| = 0.0,
+    max |β_1 − β_1_2D| = 0.0, ditto axis 2
+
+The 3D residual reduces to M1's 1D residual byte-equal on the
+1D-symmetric slice, AND reduces to M3-3b's 2D residual byte-equal
+on the 2D-symmetric slice. The SO(3) Cholesky-sector reduction
+with three Euler angles set to zero is structurally consistent
+with the SO(2) 2D reduction.
+
+**Newton convergence:** 2 iterations on smooth (zero-strain or
+β=0) ICs — matches the M3-7 design note §3.3 expectation
+("2-5 iterations on smooth ICs"). On a non-isotropic 3D IC
+(nonzero β + nonzero θ_ab IC), the solver reaches residual
+norm ≤ 1e-13 within the maxiters=50 budget (NonlinearSolve.jl
+reports "Stalled" at 1e-13 since further iterations cannot
+improve below machine precision; same behavior as M3-3b's 2D
+path on equivalent non-trivial IC).
+
+**Wall-time per step:** 27.8 ms at 4×4×4 (64 leaves);
+582 ms at 8×8×8 (512 leaves). The ~21× scaling at 8× leaf-count
+reflects the 15×15 within-cell Jacobian + the
+`cell_adjacency_sparsity ⊗ 225-nonzero` Newton system; both
+within the M3-7 design note §3.3 expectation.
+
+**1D + 2D regression byte-equal:** verified by running
+`test_phase1_zero_strain.jl`, `test_M3_3a_*.jl`,
+`test_M3_3b_*.jl`, `test_M3_3c_*.jl`, `test_M3_3d_*.jl`,
+`test_M3_4_*.jl`, `test_M3_6_phase0_offdiag_dimension_lift.jl`,
+`test_M3_7_prep_3d_scaffolding.jl`, `test_M3_7a_*.jl` in
+isolation — all pass at their original counts (4062 + 3483
+asserts confirmed byte-equal).
+
+**M3-7c handoff items:**
+
+  * Promote `θ_12, θ_13, θ_23` from trivial-driven to Newton
+    unknowns; add Berry coupling via `berry_partials_3d`
+    (`src/berry.jl` — verified at the stencil level by 797
+    asserts in `test_M3_prep_3D_berry_verification.jl`).
+  * Per-pair Berry kinetic terms on the (α_a, β_a) rows
+    (`berry_partials_3d` returns `dα`, `dβ`, `dθ` decomposition
+    per pair). Three pair-Berry blocks structurally identical to
+    M3-3c's single 2D block.
+  * Kernel-orthogonality residual on the θ_23 row (M3-7 design
+    note §2.2 — the 9D Casimir kernel direction has its largest
+    component on θ_23 in SymPy's normalization).
+  * The 15-dof Newton system stays 15-dof; only the residual
+    rows for α_a, β_a, θ_ab change. The M3-7b zero-strain gate
+    + dimension-lift gates remain regressions for M3-7c (Berry
+    must vanish on the 1D / 2D dimension-lifted slices —
+    structural guarantee from CHECK 6 + CHECK 3b of the 3D Berry
+    verification note).
+
+See `reference/notes_M3_7b_native_3d_residual.md` for the full
 status note + handoff items.
 
 ## Repo housekeeping

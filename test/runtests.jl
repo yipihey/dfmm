@@ -684,4 +684,32 @@ using Test
         include("test_M3_7a_halo_smoke.jl")
         include("test_M3_7a_field_set_3d.jl")
     end
+    @testset verbose = true "Phase M3-7b: native 3D EL residual (no Berry; θ_ab trivial)" begin
+        # M3-7b sub-phase of M3-7 (3D extension). First native HG-side
+        # 3D EL residual on the M3-7a 3D Cholesky-sector substrate.
+        # Direct dimension-lift of M3-3b's 2D residual: per-axis sums
+        # over `a ∈ {1, 2, 3}`, 6-face stencil (vs 4 in 2D), 15 Newton-
+        # driven rows per leaf (vs 8 in M3-3b). The three θ_ab rows are
+        # TRIVIAL-DRIVEN — Berry coupling lands in M3-7c. Two test
+        # files:
+        #   • Zero-strain regression: cold-limit fixed-point IC on a
+        #     4×4×4 mesh; residual = 0 to machine precision; one Newton
+        #     step preserves the state byte-equally; pack/unpack 15-dof
+        #     round-trip; face-neighbor table sanity (REFLECTING +
+        #     PERIODIC); EOS-driven cold-limit reduction; triply-
+        #     periodic regression.
+        #   • Dimension-lift parity gates (§7.1a + §7.1b — the load-
+        #     bearing M3-7b acceptance criterion):
+        #       §7.1a 3D ⊂ 1D — 1D-symmetric 3D config matches M1's
+        #       Phase-1 zero-strain trajectory byte-equal (≤ 1e-12;
+        #       achieved 0.0 absolute);
+        #       §7.1b 3D ⊂ 2D — 2D-symmetric 3D config matches M3-3b's
+        #       2D `det_step_2d_HG!` byte-equal (≤ 1e-12; achieved 0.0
+        #       absolute). 3D ⊂ 1D run on 4×4×4 + 8×8×8 meshes; axis-
+        #       swap symmetry across all three principal axes.
+        # See `reference/notes_M3_7_3d_extension.md` §3 + §7 and
+        # `reference/notes_M3_7b_native_3d_residual.md`.
+        include("test_M3_7b_3d_zero_strain.jl")
+        include("test_M3_7b_dimension_lift_3d.jl")
+    end
 end
