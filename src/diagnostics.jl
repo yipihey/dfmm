@@ -190,3 +190,85 @@ in the order of `leaves`.
 """
 gamma_per_axis_2d_diag(fields, leaves; kwargs...) =
     gamma_per_axis_2d_field(fields, leaves; kwargs...)
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-7d: per-axis γ field-walking helper for the 3D Cholesky-sector field set
+# ─────────────────────────────────────────────────────────────────────
+
+"""
+    gamma_per_axis_3d_field(fields, leaves; M_vv_override=nothing,
+                             ρ_ref=1.0, Gamma=GAMMA_LAW_DEFAULT)
+        -> Matrix{Float64}
+
+Walk the leaves of a 3D Cholesky-sector field set (allocated by
+`allocate_cholesky_3d_fields` in `src/setups_2d.jl`) and compute the
+per-axis γ diagnostic per leaf:
+
+    γ_a[i] = √max(M_vv,aa − β_a²[i], 0)         for a = 1, 2, 3.
+
+Returns a `3 × N` matrix where `out[:, i]` is the per-axis γ at leaf
+`leaves[i]`. The `M_vv_override::NTuple{3, Real}` argument forces a
+constant per-axis `M_vv,aa` (used by the M3-7d §7.5 selectivity test);
+when `nothing`, `M_vv,aa = Mvv(J, s)` is read from the EOS with
+`J = 1/ρ_ref` (isotropic — all three axes share the same `Mvv(J, s)`).
+
+# Use cases (§4.3 of the M3-7 design note)
+
+  • Per-axis 3D AMR selectivity (the C.2 collapsing-axis test, lifted
+    to 3D). With `k = (1, 0, 0)` only γ_1 develops spatial structure;
+    with `k = (1, 1, 0)` γ_1, γ_2 do; with `k = (1, 1, 1)` all three.
+  • Per-axis 3D realizability projection (`realizability_project_3d!`).
+  • Diagnostic plot for the 3D Zel'dovich pancake test (M3-7e).
+
+The math primitive `gamma_per_axis_3d(β, M_vv_diag)` lives in
+`src/cholesky_DD_3d.jl` and operates on `SVector{3, T}` inputs; this
+walker is the public field-set-layer wrapper (the 3D analog of
+`gamma_per_axis_2d_field`).
+"""
+function gamma_per_axis_3d_field(fields, leaves;
+                                  M_vv_override = nothing,
+                                  ρ_ref::Real = 1.0,
+                                  Gamma::Real = GAMMA_LAW_DEFAULT)
+    N = length(leaves)
+    out = Matrix{Float64}(undef, 3, N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        β1 = Float64(fields.β_1[ci][1])
+        β2 = Float64(fields.β_2[ci][1])
+        β3 = Float64(fields.β_3[ci][1])
+        s_i = Float64(fields.s[ci][1])
+        if M_vv_override !== nothing
+            Mvv1 = Float64(M_vv_override[1])
+            Mvv2 = Float64(M_vv_override[2])
+            Mvv3 = Float64(M_vv_override[3])
+        else
+            Mvv_iso = Float64(Mvv(1.0 / Float64(ρ_ref), s_i; Gamma = Gamma))
+            Mvv1 = Mvv_iso
+            Mvv2 = Mvv_iso
+            Mvv3 = Mvv_iso
+        end
+        γ1² = Mvv1 - β1 * β1
+        γ2² = Mvv2 - β2 * β2
+        γ3² = Mvv3 - β3 * β3
+        out[1, i] = sqrt(max(γ1², 0.0))
+        out[2, i] = sqrt(max(γ2², 0.0))
+        out[3, i] = sqrt(max(γ3², 0.0))
+    end
+    return out
+end
+
+"""
+    gamma_per_axis_3d_diag(fields, leaves; M_vv_override=nothing,
+                            ρ_ref=1.0, Gamma=GAMMA_LAW_DEFAULT)
+        -> Matrix{Float64}
+
+Diagnostics-layer alias for `gamma_per_axis_3d_field`. Provided for
+symmetry with the 1D and 2D scalar diagnostics and as the canonical
+name for HDF5/JLD2 snapshot keys (the I/O layer in `src/io.jl` is
+generic over named tuples — callers populate the snapshot's
+`:gamma_per_axis_3d` entry from this helper).
+
+Returns a `3 × length(leaves)` matrix; row `a` is `γ_a` across leaves
+in the order of `leaves`.
+"""
+gamma_per_axis_3d_diag(fields, leaves; kwargs...) =
+    gamma_per_axis_3d_field(fields, leaves; kwargs...)

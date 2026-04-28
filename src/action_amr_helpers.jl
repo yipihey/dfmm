@@ -1132,3 +1132,290 @@ function register_tracers_on_refine_2d!(tm)
     end
     return register_refinement_listener!(mesh, cb)
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M3-7d: per-axis action-AMR indicator on HierarchicalMesh{3}
+# ─────────────────────────────────────────────────────────────────────
+#
+# The 3D Cholesky-sector field set carries 13 Newton-unknown scalars
+# `(x_a, u_a, α_a, β_a)_{a=1,2,3} + (θ_12, θ_13, θ_23) + s` per leaf.
+# The M2-1 action-AMR indicator generalises per-axis to 3 axes: ΔS_cell
+# is evaluated separately along each axis using the axis-a quantities
+# `(α_a, β_a, u_a)` and the per-axis γ collapse marker, then aggregated
+# as `max_a` so a cell refines along the most action-energetic axis.
+# This selects collapsing axes (γ → 0) without triggering on the
+# trivial axes (γ = O(1)). See §4.3 + §7.5 of
+# `reference/notes_M3_7_3d_extension.md`.
+
+"""
+    action_error_indicator_3d_per_axis(fields, mesh, frame, leaves, bc_spec;
+                                        ρ_ref=1.0, Gamma=GAMMA_LAW_DEFAULT,
+                                        M_vv_override=nothing)
+        -> Vector{Float64}
+
+Per-leaf, per-axis-aggregated action-error indicator on a 3D
+`HierarchicalMesh{3}`. The output `out[i]` is
+
+    max_a [|d2(α_a)| + |d2(β_a)| + |d2(u_a)|/c_s + 0.01·γ_inv_marker_a]
+    + |d2(s)|
+
+evaluated as a 3-point second difference along axis `a`, where
+`(j_lo_a, j_hi_a)` are pulled from `build_face_neighbor_tables_3d(mesh,
+leaves, bc_spec)` (so periodic wrap-around / reflecting BCs are
+honoured upstream). The shared `s`-curvature term `|d2(s)|` is added
+once per leaf (using the axis-1 stencil), since `s` is a scalar shared
+across axes.
+
+The per-axis γ marker `γ_inv_marker_a = √Mvv / max(γ_a, ε) − 1` is the
+3D analog of the 2D version — it is what gives the indicator its
+**per-axis selectivity**: when `γ_a → 0` along the collapsing axis
+(e.g., `a = 1` for k = (1, 0, 0) cold sinusoid), the marker spikes
+along that axis only; the trivial axes stay `O(1)` so their markers
+stay near zero. The `max_a` aggregation then picks the collapsing
+axis as the cell's indicator value.
+
+# Boundary handling
+
+When `face_lo_idx[a][i] == 0` or `face_hi_idx[a][i] == 0` (out-of-domain
+after BC processing), the indicator drops the corresponding axis-a
+contribution to zero (one-sided second-difference is unreliable at
+the indicator level — the 1D and 2D action-error indicators do the
+same on non-periodic boundaries).
+
+# Use cases
+
+  • Drives `refine_by_indicator!` on `HierarchicalMesh{3}` via
+    `step_with_amr_3d!` (this file).
+  • The §7.5 selectivity test: with `k = (1, 0, 0)` cold sinusoid IC
+    and the indicator running per step, refinement events fire only
+    on cells along the collapsing-x axis; the y- and z-directions stay
+    unrefined (1D-symmetric in 3D). With `k = (1, 1, 0)` axes 1 and 2
+    fire; axis 3 stays unrefined (2D-symmetric in 3D). With
+    `k = (1, 1, 1)` all three axes fire.
+"""
+function action_error_indicator_3d_per_axis(fields, mesh::HierarchicalMesh{3},
+                                            frame::EulerianFrame{3, T},
+                                            leaves::AbstractVector{<:Integer},
+                                            bc_spec;
+                                            ρ_ref::Real = 1.0,
+                                            Gamma::Real = GAMMA_LAW_DEFAULT,
+                                            M_vv_override = nothing) where {T}
+    N = length(leaves)
+    out = zeros(Float64, N)
+    if N < 3
+        return out
+    end
+
+    face_lo_idx, face_hi_idx = build_face_neighbor_tables_3d(mesh, leaves, bc_spec)
+
+    # Pre-compute per-leaf primitives.
+    α1 = Vector{Float64}(undef, N); α2 = Vector{Float64}(undef, N); α3 = Vector{Float64}(undef, N)
+    β1 = Vector{Float64}(undef, N); β2 = Vector{Float64}(undef, N); β3 = Vector{Float64}(undef, N)
+    u1 = Vector{Float64}(undef, N); u2 = Vector{Float64}(undef, N); u3 = Vector{Float64}(undef, N)
+    s_v = Vector{Float64}(undef, N)
+    Mvv_v = Vector{Float64}(undef, N)
+    cs_v = Vector{Float64}(undef, N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        α1[i] = Float64(fields.α_1[ci][1])
+        α2[i] = Float64(fields.α_2[ci][1])
+        α3[i] = Float64(fields.α_3[ci][1])
+        β1[i] = Float64(fields.β_1[ci][1])
+        β2[i] = Float64(fields.β_2[ci][1])
+        β3[i] = Float64(fields.β_3[ci][1])
+        u1[i] = Float64(fields.u_1[ci][1])
+        u2[i] = Float64(fields.u_2[ci][1])
+        u3[i] = Float64(fields.u_3[ci][1])
+        s_v[i] = Float64(fields.s[ci][1])
+        if M_vv_override !== nothing
+            Mvv_v[i] = max(Float64(M_vv_override[1]),
+                            Float64(M_vv_override[2]),
+                            Float64(M_vv_override[3]))
+        else
+            Mvv_v[i] = Float64(Mvv(1.0 / Float64(ρ_ref), s_v[i];
+                                    Gamma = Float64(Gamma)))
+        end
+        cs_v[i] = sqrt(max(Float64(Gamma) * Mvv_v[i], eps(Float64)))
+    end
+
+    @inbounds for i in 1:N
+        # Shared s-curvature contribution (uses axis-1 stencil; the
+        # 3D field set has a single scalar `s` per leaf).
+        d2_s_axis1 = zero(Float64)
+        ilo = face_lo_idx[1][i]
+        ihi = face_hi_idx[1][i]
+        if ilo > 0 && ihi > 0
+            d2_s_axis1 = abs(s_v[ihi] - 2 * s_v[i] + s_v[ilo])
+        end
+
+        # Per-axis contributions.
+        max_axis = zero(Float64)
+        for a in 1:3
+            ilo_a = face_lo_idx[a][i]
+            ihi_a = face_hi_idx[a][i]
+            if ilo_a == 0 || ihi_a == 0
+                continue
+            end
+            if a == 1
+                d2_α = abs(α1[ihi_a] - 2 * α1[i] + α1[ilo_a])
+                d2_β = abs(β1[ihi_a] - 2 * β1[i] + β1[ilo_a])
+                d2_u = abs(u1[ihi_a] - 2 * u1[i] + u1[ilo_a])
+                β_self = β1[i]
+            elseif a == 2
+                d2_α = abs(α2[ihi_a] - 2 * α2[i] + α2[ilo_a])
+                d2_β = abs(β2[ihi_a] - 2 * β2[i] + β2[ilo_a])
+                d2_u = abs(u2[ihi_a] - 2 * u2[i] + u2[ilo_a])
+                β_self = β2[i]
+            else
+                d2_α = abs(α3[ihi_a] - 2 * α3[i] + α3[ilo_a])
+                d2_β = abs(β3[ihi_a] - 2 * β3[i] + β3[ilo_a])
+                d2_u = abs(u3[ihi_a] - 2 * u3[i] + u3[ilo_a])
+                β_self = β3[i]
+            end
+            d2_u_norm = d2_u / max(cs_v[i], eps(Float64))
+            γ²_a = max(Mvv_v[i] - β_self * β_self, 0.0)
+            γ_inv = sqrt(max(Mvv_v[i], eps(Float64))) /
+                    sqrt(max(γ²_a, eps(Float64)))
+            γ_marker = γ_inv - 1.0
+            axis_val = d2_α + d2_β + d2_u_norm + 0.01 * γ_marker
+            max_axis = max(max_axis, axis_val)
+        end
+        out[i] = max_axis + d2_s_axis1
+    end
+    return out
+end
+
+"""
+    register_field_set_on_refine_3d!(fields, mesh::HierarchicalMesh{3};
+                                      default_value=0.0)
+        -> ListenerHandle
+
+3D-specific alias of `register_field_set_on_refine!` for use with the
+3D Cholesky-sector field set (`allocate_cholesky_3d_fields`). The
+underlying listener is dimension-generic — it walks
+`HierarchicalGrids.field_names(fields)` and prolongates / restricts
+each named scalar field across `refine_cells!` / `coarsen_cells!`
+events, with `2^D = 8` children per refined parent in 3D — but the 3D
+naming makes call sites self-documenting and matches the M3-3d 2D
+naming convention (`register_field_set_on_refine!` for 2D — kept
+unchanged for backwards compatibility).
+
+See `register_field_set_on_refine!` for the full listener semantics
+(piecewise-constant order-0 prolongation, mass-conservative
+arithmetic-mean coarsening on equal-volume isotropic refinement).
+"""
+function register_field_set_on_refine_3d!(fields, mesh::HierarchicalMesh{3};
+                                           default_value::Real = 0.0)
+    return register_field_set_on_refine!(fields, mesh;
+                                          default_value = default_value)
+end
+
+"""
+    step_with_amr_3d!(fields, mesh::HierarchicalMesh{3},
+                      frame::EulerianFrame{3, T},
+                      bc_spec, dt, n_steps;
+                      refine_threshold,
+                      coarsen_threshold = refine_threshold / 4,
+                      hysteresis_steps = 3,
+                      max_level = typemax(Int),
+                      isotropic = true,
+                      M_vv_override = nothing,
+                      ρ_ref = 1.0,
+                      newton_kwargs = (;)) where {T}
+
+End-to-end M3-7d AMR-driven 3D run on a `HierarchicalMesh{3}`. Wraps
+HG's `step_with_amr!` driver with:
+
+  • A `step!` callback that (a) calls `det_step_3d_berry_HG!` per step
+    on the current leaves, then (b) refreshes the leaves vector after
+    each AMR cycle.
+  • An `indicator(mesh)` callback that returns the per-axis-aggregated
+    action-error indicator `action_error_indicator_3d_per_axis` mapped
+    onto **mesh-cell indices** (length `n_cells(mesh)`; non-leaf cells
+    get value 0 so they can never trigger refinement).
+  • A refinement listener registered via `register_field_set_on_refine_3d!`
+    that prolongates / restricts the field set across each
+    `refine_by_indicator!` event.
+
+Returns `n_steps` (the number of physics steps taken). Mutates
+`fields` and `mesh` in place. The 3D analog of `step_with_amr_2d!`
+(M3-3d).
+
+# Constraints
+
+  • `mesh.balanced == true` (asserted; required by HG's
+    `refine_by_indicator!` and by `det_step_3d_berry_HG!`).
+  • The 3D path uses Berry-coupled Newton (M3-7c) by default; pass
+    `newton_kwargs = (;)` to forward kwargs to `det_step_3d_berry_HG!`.
+
+# Unlike 2D
+
+The 3D version does **not** thread a per-axis realizability projection
+through `det_step_3d_berry_HG!` (since M3-7c's driver does not yet
+take a `project_kind` keyword). Callers wanting realizability-projected
+runs should call `realizability_project_3d!(fields, leaves; …)` from
+the surrounding driver between AMR cycles. M3-7e (3D Tier-D
+Zel'dovich pancake) is the natural place to thread the projection
+into the inner step.
+"""
+function step_with_amr_3d!(fields, mesh::HierarchicalMesh{3},
+                            frame::EulerianFrame{3, T},
+                            bc_spec, dt::Real, n_steps::Integer;
+                            refine_threshold::Real,
+                            coarsen_threshold::Real = refine_threshold / 4,
+                            hysteresis_steps::Integer = 3,
+                            max_level::Integer = typemax(Int),
+                            isotropic::Bool = true,
+                            M_vv_override = nothing,
+                            ρ_ref::Real = 1.0,
+                            newton_kwargs::NamedTuple = NamedTuple()) where {T}
+    @assert mesh.balanced "step_with_amr_3d! requires mesh.balanced == true"
+
+    # State carried across the step!/indicator closures.
+    state = Ref(enumerate_leaves(mesh))
+
+    handle = register_field_set_on_refine_3d!(fields, mesh)
+    try
+        step_fn = function(state_ref, frame_arg)
+            leaves_now = state_ref[]
+            # Refresh leaves if a refinement happened since last call
+            # (the listener has updated `fields` by now).
+            if length(leaves_now) != length(enumerate_leaves(frame_arg.mesh))
+                leaves_now = enumerate_leaves(frame_arg.mesh)
+                state_ref[] = leaves_now
+            end
+            det_step_3d_berry_HG!(fields, frame_arg.mesh, frame_arg, leaves_now,
+                                   bc_spec, dt;
+                                   M_vv_override = M_vv_override,
+                                   ρ_ref = ρ_ref,
+                                   newton_kwargs...)
+            return nothing
+        end
+
+        ind_fn = function(mesh_arg)
+            leaves_now = enumerate_leaves(mesh_arg)
+            state[] = leaves_now
+            ind_leaf = action_error_indicator_3d_per_axis(
+                fields, mesh_arg, frame, leaves_now, bc_spec;
+                ρ_ref = ρ_ref, M_vv_override = M_vv_override)
+            # Map leaf-major indicator to mesh-cell indicator. Non-leaves
+            # are not eligible for refine_by_indicator anyway, but HG
+            # still calls the indicator across all cells; we return 0
+            # for non-leaves so they never trigger.
+            nc = HierarchicalGrids.n_cells(mesh_arg)
+            full = zeros(Float64, nc)
+            @inbounds for (k, ci) in enumerate(leaves_now)
+                full[ci] = ind_leaf[k]
+            end
+            return full
+        end
+
+        return step_with_amr!(fields, frame, step_fn, ind_fn, n_steps;
+                               refine_threshold = refine_threshold,
+                               coarsen_threshold = coarsen_threshold,
+                               hysteresis_steps = hysteresis_steps,
+                               max_level = max_level,
+                               isotropic = isotropic)
+    finally
+        unregister_refinement_listener!(mesh, handle)
+    end
+end
