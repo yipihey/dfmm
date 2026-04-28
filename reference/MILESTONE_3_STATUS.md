@@ -1,4 +1,4 @@
-# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 ENTIRE CLOSED; M3-8 next)
+# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 ENTIRE CLOSED; M3-8 Phase a CLOSED — Tier E + GPU audit; M3-8b/c next)
 
 **Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26;
 M3-6 Phase 1a/1b/1c closed 2026-04-26 (the D.1 KH falsifier — methods
@@ -119,6 +119,9 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-7e (b)** | C.1 / C.2 / C.3 + D.4 3D drivers in `experiments/`: `C1_3d_sod.jl` (transverse independence + axis-swap), `C2_3d_cold_sinusoid.jl` (per-axis γ + selectivity), `C3_3d_plane_wave.jl` (boundedness + convergence harness), `D4_zeldovich_3d.jl` (headline 3D scientific test) | done | (drivers covered jointly with (c)/(d)) | +615 LOC; D.4 driver tracks per-axis γ uniformity + conservation |
 | **M3-7e (c)** | C.1 / C.2 / C.3 + D.4 3D acceptance gates in `test/test_M3_7e_*.jl` | done | +1182 | **C.1**: 280 asserts, transverse-indep ≤ 1e-12; **C.2**: 405 asserts, 1D-sym ratio = 6.4e10 (>1e10), 2D-sym ratio = 6.4e10 (>1e6), full-3D all axes fire; **C.3**: 147 asserts, IC bridge round-trip + linear-acoustic boundedness; **D.4**: 350 asserts, **selectivity ratio = 3.0e13** (>1e10 gate); conservation ≤ 1e-8; γ_2 = γ_3 byte-equal by symmetry; 1D-symmetry preservation u_2 = u_3 = 0 throughout |
 | **M3-7e (d)** | D.4 3D Zel'dovich pancake headline figure `reference/figs/M3_7e_D4_zeldovich_3d.png` (4-panel CairoMakie: γ_1 spatial profile, γ_2/γ_3 std vs time, Lagrangian deviation, log10(γ_1) at near-caustic) | done | (figure-only) | Rendered from level=2, A=0.5, T_factor=0.25 trajectory |
+| **M3-8a (a)** | Tier-E IC factories — `tier_e_high_mach_shock_ic_full` (M5/M10 Sod, RH downstream from analytical formulas), `tier_e_severe_shell_crossing_ic_full` (2-axis Zel'dovich superposition at A=0.7), `tier_e_low_knudsen_ic_full` (smooth strain mode at τ=1e-6 ≪ τ_dyn) — append-only to `src/setups_2d.jl` (~310 LOC); 3 new exports in `src/dfmm.jl` | done | (covered jointly with (b)/(c)) | M=10 RH: pR/pL=124.75, ρR/ρL=3.88; E.2 t_cross=0.227; E.3 Kn≈1.3e-6 |
+| **M3-8a (b)** | Tier-E drivers + acceptance gates: `experiments/E1_high_mach_shock.jl` (~190 LOC), `experiments/E2_severe_shell_crossing.jl` (~210 LOC), `experiments/E3_low_knudsen.jl` (~190 LOC); test files `test/test_M3_8a_E*.jl` (3 files, ~440 LOC) | done | +315 (101+119+95) | **E.1**: NaN=0 at M=5/10, KE bounded ≤ 5× IC, transverse-indep ≤ 1e-10; **E.2**: NaN=0 pre-caustic (T_factor ≤ 0.25), γ_min > 0.5, projection events ≥ 0 with `:reanchor`; **E.3**: NaN=0, β_max < 1e-2, γ²/Mvv deviation ≤ 1e-2 (Navier-Stokes limit) |
+| **M3-8a (c)** | GPU readiness audit + Apple Metal probe — `reference/notes_M3_8a_gpu_readiness_audit.md` (per-file GPU portability assessment + Metal probe results + M3-8b sub-phase brief); `Metal.jl` confirmed working on M2 Max but **NOT** added as a hard dep (kept opt-in) | done | (audit-only, no asserts) | Metal load 1.66 s; warm broadcast 0.83 ms (N=1024); 5× elementwise add 8.8 ms (N=1e6); top blockers: NonlinearSolve+ForwardDiff CPU-only, sparse-Jac construction CPU-only, PolynomialFieldSet needs Backend param |
 
 ## Test summary
 
@@ -154,7 +157,8 @@ L↔E remap substrate per §6 / §6.6.
 | M3-7c (SO(3) Berry coupling + verification + iso-pullback + H_rot + dim-lift) | 485 |
 | M3-7d (per-axis γ + AMR/realizability per-axis 3D + selectivity gate) | 418 |
 | M3-7e (3D Tier-C/D drivers + D.4 3D Zel'dovich pancake headline) | 1182 |
-| **Total** | **~33611 + 1 deferred** (= 32429 + 1182 from M3-7e) |
+| M3-8a (Tier-E stress tests: E.1 high-Mach + E.2 shell-crossing + E.3 low-Knudsen) | 315 |
+| **Total** | **~33926 + 1 deferred** (= 33611 + 315 from M3-8a) |
 
 ## M3-3 headline scientific findings
 
