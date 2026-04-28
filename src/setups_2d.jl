@@ -2214,3 +2214,458 @@ function read_detfield_3d(fields::PolynomialFieldSet, leaf_cell_idx::Integer)
     s   = fields.s[leaf_cell_idx][1]
     return DetField3D(x, u, α, β, θ12, θ13, θ23, s)
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-7e: 3D Tier-C IC bridge — primitive (ρ, u_x, u_y, u_z, P) → Cholesky
+# ─────────────────────────────────────────────────────────────────────
+#
+# 3D analog of `cholesky_sector_state_from_primitive` (the 2D bridge in
+# M3-4 Phase 2). Maps a primitive `(ρ, u_x, u_y, u_z, P)` per-cell
+# average plus the cell center `(x_1, x_2, x_3)` onto the M3-7 13-dof
+# Cholesky-sector state. Cold-limit, isotropic IC convention:
+#   • α_a = 1, β_a = 0 for all three axes.
+#   • θ_12 = θ_13 = θ_23 = 0 (no off-diagonal Berry rotation).
+#   • s solved from the EOS via `s_from_pressure_density`.
+#
+# Returns a `DetField3D` ready to write into a 3D field set allocated
+# by `allocate_cholesky_3d_fields`.
+
+"""
+    cholesky_sector_state_from_primitive_3d(ρ, u_x, u_y, u_z, P, x_center;
+                                             Gamma=GAMMA_LAW_DEFAULT,
+                                             cv=CV_DEFAULT)
+        -> DetField3D{Float64}
+
+3D Tier-C IC bridge. Map `(ρ, u_x, u_y, u_z, P)` plus
+`x_center::NTuple{3}` onto the M3-7 Cholesky-sector state. Returns a
+`DetField3D` with `α_a = 1`, `β_a = 0`, `θ_ab = 0`, and `s` from EOS
+inversion. Mirrors the 2D `cholesky_sector_state_from_primitive`.
+"""
+function cholesky_sector_state_from_primitive_3d(ρ::Real, u_x::Real, u_y::Real,
+                                                   u_z::Real, P::Real,
+                                                   x_center::NTuple{3,<:Real};
+                                                   Gamma::Real = GAMMA_LAW_DEFAULT,
+                                                   cv::Real = CV_DEFAULT)
+    s = s_from_pressure_density(ρ, P; Gamma = Gamma, cv = cv)
+    return DetField3D{Float64}(
+        (Float64(x_center[1]), Float64(x_center[2]), Float64(x_center[3])),
+        (Float64(u_x), Float64(u_y), Float64(u_z)),
+        (1.0, 1.0, 1.0),
+        (0.0, 0.0, 0.0),
+        0.0, 0.0, 0.0,
+        Float64(s),
+    )
+end
+
+"""
+    primitive_recovery_3d(fields::PolynomialFieldSet, leaves, frame;
+                          ρ_ref=1.0, Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT)
+        -> NamedTuple
+
+3D analog of `primitive_recovery_2d`. Walks leaves of a 3D Cholesky-
+sector field set and recovers `(ρ, u_x, u_y, u_z, P, x, y, z)` per cell
+for diagnostics. Density is treated as `ρ_ref` (cold-limit IC bridge
+convention; Lagrangian J-tracking is M3-9 work).
+"""
+function primitive_recovery_3d(fields::PolynomialFieldSet,
+                                leaves::AbstractVector{<:Integer},
+                                frame::EulerianFrame{3, T};
+                                ρ_ref::Real = 1.0,
+                                Gamma::Real = GAMMA_LAW_DEFAULT,
+                                cv::Real = CV_DEFAULT) where {T}
+    N = length(leaves)
+    ρ_out  = Vector{Float64}(undef, N)
+    u_x    = Vector{Float64}(undef, N)
+    u_y    = Vector{Float64}(undef, N)
+    u_z    = Vector{Float64}(undef, N)
+    P_out  = Vector{Float64}(undef, N)
+    x_out  = Vector{Float64}(undef, N)
+    y_out  = Vector{Float64}(undef, N)
+    z_out  = Vector{Float64}(undef, N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        x_out[i] = 0.5 * (lo_c[1] + hi_c[1])
+        y_out[i] = 0.5 * (lo_c[2] + hi_c[2])
+        z_out[i] = 0.5 * (lo_c[3] + hi_c[3])
+        u_x[i]   = Float64(fields.u_1[ci][1])
+        u_y[i]   = Float64(fields.u_2[ci][1])
+        u_z[i]   = Float64(fields.u_3[ci][1])
+        s_i      = Float64(fields.s[ci][1])
+        ρ_out[i] = Float64(ρ_ref)
+        P_out[i] = ρ_out[i] * Float64(Mvv(1.0 / ρ_out[i], s_i; Gamma = Gamma, cv = cv))
+    end
+    return (ρ = ρ_out, u_x = u_x, u_y = u_y, u_z = u_z, P = P_out,
+            x = x_out, y = y_out, z = z_out)
+end
+
+"""
+    primitive_recovery_3d_per_cell(fields, leaves, frame, ρ_per_cell; …)
+
+Variant of `primitive_recovery_3d` for non-uniform density (e.g. C.1
+Sod). Takes an explicit per-cell `ρ_per_cell` (length N, leaf-major).
+"""
+function primitive_recovery_3d_per_cell(fields::PolynomialFieldSet,
+                                          leaves::AbstractVector{<:Integer},
+                                          frame::EulerianFrame{3, T},
+                                          ρ_per_cell::AbstractVector{<:Real};
+                                          Gamma::Real = GAMMA_LAW_DEFAULT,
+                                          cv::Real = CV_DEFAULT) where {T}
+    N = length(leaves)
+    @assert length(ρ_per_cell) == N "ρ_per_cell length $(length(ρ_per_cell)) ≠ N=$N"
+    ρ_out  = Vector{Float64}(undef, N)
+    u_x    = Vector{Float64}(undef, N)
+    u_y    = Vector{Float64}(undef, N)
+    u_z    = Vector{Float64}(undef, N)
+    P_out  = Vector{Float64}(undef, N)
+    x_out  = Vector{Float64}(undef, N)
+    y_out  = Vector{Float64}(undef, N)
+    z_out  = Vector{Float64}(undef, N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        x_out[i] = 0.5 * (lo_c[1] + hi_c[1])
+        y_out[i] = 0.5 * (lo_c[2] + hi_c[2])
+        z_out[i] = 0.5 * (lo_c[3] + hi_c[3])
+        u_x[i]   = Float64(fields.u_1[ci][1])
+        u_y[i]   = Float64(fields.u_2[ci][1])
+        u_z[i]   = Float64(fields.u_3[ci][1])
+        s_i      = Float64(fields.s[ci][1])
+        ρ_i      = Float64(ρ_per_cell[i])
+        ρ_out[i] = ρ_i
+        P_out[i] = ρ_i * Float64(Mvv(1.0 / ρ_i, s_i; Gamma = Gamma, cv = cv))
+    end
+    return (ρ = ρ_out, u_x = u_x, u_y = u_y, u_z = u_z, P = P_out,
+            x = x_out, y = y_out, z = z_out)
+end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-7e: 3D Tier-C full IC factories — Cholesky-sector field set built
+# from primitive 3D Tier-C ICs (3D analogs of `tier_c_*_full_ic`).
+# ─────────────────────────────────────────────────────────────────────
+
+"""
+    tier_c_sod_3d_full_ic(; level=3, shock_axis=1, x_split=0.5,
+                            ρL=1.0, ρR=0.125, pL=1.0, pR=0.1,
+                            uL=0.0, uR=0.0, lo=nothing, hi=nothing,
+                            Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                            T=Float64) -> NamedTuple
+
+C.1 1D-symmetric 3D Sod IC. Builds a balanced octree (default
+`level=3`, 8×8×8 = 512 leaves) on `[lo, hi]` (default `[0, 1]³`),
+allocates the 16-named-field 3D Cholesky-sector field set, and
+populates it per-leaf via `cholesky_sector_state_from_primitive_3d`.
+
+The IC is a step discontinuity in `(ρ, P)` along `shock_axis ∈ {1, 2, 3}`:
+left state `(ρL, pL, uL)` at axis-coordinate < `x_split`, right state
+`(ρR, pR, uR)`. The step is trivial along the other two axes.
+
+Returns the same NamedTuple shape as `tier_c_sod_full_ic` (2D):
+  • `name = "tier_c_sod_3d_full"`
+  • `mesh::HierarchicalMesh{3}, frame::EulerianFrame{3, T}, leaves`
+  • `fields::PolynomialFieldSet` — 16-named 3D Cholesky-sector storage.
+  • `ρ_per_cell::Vector{Float64}` — leaf-major density (Sod step).
+  • `params::NamedTuple` — IC parameter echo.
+"""
+function tier_c_sod_3d_full_ic(; level::Integer = 3,
+                                  shock_axis::Integer = 1,
+                                  x_split::Real = 0.5,
+                                  ρL::Real = 1.0, ρR::Real = 0.125,
+                                  pL::Real = 1.0, pR::Real = 0.1,
+                                  uL::Real = 0.0, uR::Real = 0.0,
+                                  lo = nothing, hi = nothing,
+                                  Gamma::Real = GAMMA_LAW_DEFAULT,
+                                  cv::Real = CV_DEFAULT,
+                                  T::Type = Float64)
+    1 <= shock_axis <= 3 ||
+        throw(ArgumentError("shock_axis must be ∈ {1, 2, 3}; got $shock_axis"))
+    lo_t, hi_t = _default_box(3, lo, hi, T;
+                                default_lo = (zero(T), zero(T), zero(T)),
+                                default_hi = (one(T), one(T), one(T)))
+
+    mesh = HierarchicalMesh{3}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_3d_fields(mesh; T = T)
+
+    ρ_per_cell = Vector{Float64}(undef, length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        cz = 0.5 * (lo_c[3] + hi_c[3])
+        center = (cx, cy, cz)
+        is_left = center[shock_axis] < x_split
+        ρ_i = Float64(is_left ? ρL : ρR)
+        P_i = Float64(is_left ? pL : pR)
+        u_axis = Float64(is_left ? uL : uR)
+        u_x = shock_axis == 1 ? u_axis : 0.0
+        u_y = shock_axis == 2 ? u_axis : 0.0
+        u_z = shock_axis == 3 ? u_axis : 0.0
+        v = cholesky_sector_state_from_primitive_3d(ρ_i, u_x, u_y, u_z, P_i,
+                                                      (cx, cy, cz);
+                                                      Gamma = Gamma, cv = cv)
+        write_detfield_3d!(fields, ci, v)
+        ρ_per_cell[j] = ρ_i
+    end
+
+    return (
+        name = "tier_c_sod_3d_full",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        params = (level = level, shock_axis = shock_axis, x_split = x_split,
+                   ρL = ρL, ρR = ρR, pL = pL, pR = pR, uL = uL, uR = uR,
+                   lo = lo_t, hi = hi_t,
+                   Gamma = Gamma, cv = cv),
+    )
+end
+
+"""
+    tier_c_cold_sinusoid_3d_full_ic(; level=3, A=0.5, k=(1, 0, 0),
+                                      ρ0=1.0, P0=1.0,
+                                      lo=nothing, hi=nothing,
+                                      Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                                      T=Float64) -> NamedTuple
+
+C.2 3D cold sinusoid full IC. Velocity field is
+
+    u_d(x) = A · sin(2π · k_d · (x_d - lo_d) / L_d)    for d ∈ {1, 2, 3}
+
+(component-wise; `u_d = 0` if `k_d = 0`). Uniform `(ρ0, P0)`. Returns
+the same NamedTuple shape as `tier_c_sod_3d_full_ic`.
+"""
+function tier_c_cold_sinusoid_3d_full_ic(; level::Integer = 3,
+                                            A::Real = 0.5,
+                                            k = (1, 0, 0),
+                                            ρ0::Real = 1.0, P0::Real = 1.0,
+                                            lo = nothing, hi = nothing,
+                                            Gamma::Real = GAMMA_LAW_DEFAULT,
+                                            cv::Real = CV_DEFAULT,
+                                            T::Type = Float64)
+    lo_t, hi_t = _default_box(3, lo, hi, T;
+                                default_lo = (zero(T), zero(T), zero(T)),
+                                default_hi = (one(T), one(T), one(T)))
+    k_t = (Int(k[1]), Int(k[2]), Int(k[3]))
+
+    mesh = HierarchicalMesh{3}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_3d_fields(mesh; T = T)
+
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    L3 = hi_t[3] - lo_t[3]
+    ρ_per_cell = fill(Float64(ρ0), length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        cz = 0.5 * (lo_c[3] + hi_c[3])
+        u_x = k_t[1] == 0 ? 0.0 : Float64(A) * sin(2π * k_t[1] * (cx - lo_t[1]) / L1)
+        u_y = k_t[2] == 0 ? 0.0 : Float64(A) * sin(2π * k_t[2] * (cy - lo_t[2]) / L2)
+        u_z = k_t[3] == 0 ? 0.0 : Float64(A) * sin(2π * k_t[3] * (cz - lo_t[3]) / L3)
+        v = cholesky_sector_state_from_primitive_3d(Float64(ρ0), u_x, u_y, u_z,
+                                                      Float64(P0),
+                                                      (cx, cy, cz);
+                                                      Gamma = Gamma, cv = cv)
+        write_detfield_3d!(fields, ci, v)
+    end
+
+    return (
+        name = "tier_c_cold_sinusoid_3d_full",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        params = (level = level, A = A, k = k_t, ρ0 = ρ0, P0 = P0,
+                   lo = lo_t, hi = hi_t,
+                   Gamma = Gamma, cv = cv),
+    )
+end
+
+"""
+    tier_c_plane_wave_3d_full_ic(; level=3, A=1e-3, k=(1, 0, 0),
+                                   ρ0=1.0, P0=1.0, c=nothing,
+                                   lo=nothing, hi=nothing,
+                                   Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                                   T=Float64) -> NamedTuple
+
+C.3 3D acoustic plane wave full IC. Builds a balanced octree, allocates
+the 16-named-field 3D Cholesky-sector field set, and populates per-leaf.
+The IC seeds a single right-going acoustic mode about `(ρ0, 0, 0, 0, P0)`:
+
+    δρ(x) = A · cos(2π · k · x / L)
+    δu_d(x) = (c_s / ρ0) · δρ(x) · k̂_d
+    δp(x) = c_s² · δρ(x)
+
+with `k = (k_x, k_y, k_z)` integer wave-numbers. The sound-speed `c_s`
+defaults to `sqrt(Γ · P0/ρ0)`. Returns a NamedTuple shape matching the
+other 3D full-IC factories.
+"""
+function tier_c_plane_wave_3d_full_ic(; level::Integer = 3,
+                                         A::Real = 1e-3,
+                                         k = (1, 0, 0),
+                                         ρ0::Real = 1.0, P0::Real = 1.0,
+                                         c::Union{Real,Nothing} = nothing,
+                                         lo = nothing, hi = nothing,
+                                         Gamma::Real = GAMMA_LAW_DEFAULT,
+                                         cv::Real = CV_DEFAULT,
+                                         T::Type = Float64)
+    lo_t, hi_t = _default_box(3, lo, hi, T;
+                                default_lo = (zero(T), zero(T), zero(T)),
+                                default_hi = (one(T), one(T), one(T)))
+    k_t = (Int(k[1]), Int(k[2]), Int(k[3]))
+
+    mesh = HierarchicalMesh{3}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_3d_fields(mesh; T = T)
+
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    L3 = hi_t[3] - lo_t[3]
+    k_phys = (Float64(k_t[1]) / Float64(L1),
+              Float64(k_t[2]) / Float64(L2),
+              Float64(k_t[3]) / Float64(L3))
+    kmag_phys = sqrt(k_phys[1]^2 + k_phys[2]^2 + k_phys[3]^2)
+    k̂ = kmag_phys > 0 ? (k_phys[1] / kmag_phys,
+                          k_phys[2] / kmag_phys,
+                          k_phys[3] / kmag_phys) : (0.0, 0.0, 0.0)
+
+    c_eff = c === nothing ? sqrt(Float64(Gamma) * Float64(P0) / Float64(ρ0)) : Float64(c)
+
+    ρ_per_cell = Vector{Float64}(undef, length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        cz = 0.5 * (lo_c[3] + hi_c[3])
+        phase = k_phys[1] * (cx - lo_t[1]) + k_phys[2] * (cy - lo_t[2]) +
+                k_phys[3] * (cz - lo_t[3])
+        δρ = Float64(A) * cos(2π * phase)
+        ρ_i = Float64(ρ0) + δρ
+        P_i = Float64(P0) + c_eff^2 * δρ
+        u_x = (c_eff / Float64(ρ0)) * δρ * k̂[1]
+        u_y = (c_eff / Float64(ρ0)) * δρ * k̂[2]
+        u_z = (c_eff / Float64(ρ0)) * δρ * k̂[3]
+        v = cholesky_sector_state_from_primitive_3d(ρ_i, u_x, u_y, u_z, P_i,
+                                                      (cx, cy, cz);
+                                                      Gamma = Gamma, cv = cv)
+        write_detfield_3d!(fields, ci, v)
+        ρ_per_cell[j] = ρ_i
+    end
+
+    return (
+        name = "tier_c_plane_wave_3d_full",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        params = (level = level, A = A, k = k_t,
+                   ρ0 = ρ0, P0 = P0, c = c_eff,
+                   k_phys = k_phys, k̂ = k̂,
+                   lo = lo_t, hi = hi_t,
+                   Gamma = Gamma, cv = cv),
+    )
+end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-7e: 3D Zel'dovich pancake — D.4 cosmological reference test in 3D
+# ─────────────────────────────────────────────────────────────────────
+#
+# Methods paper §10.5 D.4 lifted to 3D. The Zel'dovich IC is intrinsically
+# 1D-symmetric: position perturbation along axis 1 only; axes 2 and 3
+# are trivial. The cosmological prediction is that γ_1 develops spatial
+# structure (collapses) while γ_2 and γ_3 stay uniform (trivial axes
+# preserve anisotropy).
+
+"""
+    tier_d_zeldovich_pancake_3d_ic_full(; level=3, A=0.5,
+                                         ρ0=1.0, P0=1e-6,
+                                         lo=nothing, hi=nothing,
+                                         Gamma=GAMMA_LAW_DEFAULT,
+                                         cv=CV_DEFAULT,
+                                         T=Float64) -> NamedTuple
+
+D.4 3D Zel'dovich pancake collapse Cholesky-sector full IC. The 3D
+analog of `tier_d_zeldovich_pancake_ic` (2D). Builds a balanced octree
+on `[lo, hi]` (default `[0, 1]³`), allocates the 16-named 3D field
+set, and populates each leaf via `cholesky_sector_state_from_primitive_3d`
+with the Zel'dovich velocity profile
+
+    u_1(x) = -A · 2π · cos(2π (x_1 - lo_1) / L_1)
+    u_2 = u_3 = 0
+
+uniform `(ρ0, P0)`, cold-limit `α = 1, β = 0, θ_ab = 0`. The caustic
+forms at `t_cross = 1 / (A · 2π)`; with `A = 0.5` we get
+`t_cross ≈ 0.318`.
+
+Returns a NamedTuple matching the 2D `tier_d_zeldovich_pancake_ic`
+shape, with `t_cross` and `(L1, L2, L3)` in `params`. The recommended
+BC mix is `PERIODIC` along axis 1 (collapsing) and `REFLECTING` along
+axes 2 and 3 (trivial).
+"""
+function tier_d_zeldovich_pancake_3d_ic_full(; level::Integer = 3,
+                                                A::Real = 0.5,
+                                                ρ0::Real = 1.0,
+                                                P0::Real = 1e-6,
+                                                lo = nothing, hi = nothing,
+                                                Gamma::Real = GAMMA_LAW_DEFAULT,
+                                                cv::Real = CV_DEFAULT,
+                                                T::Type = Float64)
+    lo_t, hi_t = _default_box(3, lo, hi, T;
+                                default_lo = (zero(T), zero(T), zero(T)),
+                                default_hi = (one(T), one(T), one(T)))
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    L3 = hi_t[3] - lo_t[3]
+    A_t = T(A)
+
+    mesh = HierarchicalMesh{3}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_3d_fields(mesh; T = T)
+
+    ρ_per_cell = fill(Float64(ρ0), length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        cz = 0.5 * (lo_c[3] + hi_c[3])
+        # Zel'dovich velocity along axis 1 only.
+        m1_norm = (cx - Float64(lo_t[1])) / Float64(L1)
+        u1 = -Float64(A_t) * 2π * cos(2π * m1_norm)
+        u2 = 0.0
+        u3 = 0.0
+        v = cholesky_sector_state_from_primitive_3d(Float64(ρ0), u1, u2, u3,
+                                                      Float64(P0),
+                                                      (cx, cy, cz);
+                                                      Gamma = Gamma, cv = cv)
+        write_detfield_3d!(fields, ci, v)
+    end
+
+    t_cross = 1.0 / (Float64(A_t) * 2π)
+
+    return (
+        name = "tier_d_zeldovich_pancake_3d",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        t_cross = t_cross,
+        params = (level = level, A = Float64(A_t),
+                   ρ0 = ρ0, P0 = P0,
+                   lo = lo_t, hi = hi_t,
+                   L1 = Float64(L1), L2 = Float64(L2), L3 = Float64(L3),
+                   t_cross = t_cross,
+                   Gamma = Gamma, cv = cv),
+    )
+end

@@ -546,4 +546,18 @@ export tier_d_dust_trap_ic_full
 # See `reference/notes_M3_6_phase5_D10_ism_tracers.md`.
 export tier_d_ism_tracers_ic_full
 
+# --- Phase M3-7e API: 3D Tier-C/D drivers + ICs --------------------------
+# 3D analogs of M3-4 Phase 2's 2D Tier-C IC factories + the M3-6 Phase 2
+# D.4 Zel'dovich pancake. Cold-limit IC bridge for 3D
+# (`cholesky_sector_state_from_primitive_3d`); 3D primitive recovery
+# helpers; full-IC factories for C.1 / C.2 / C.3 (3D Sod / cold sinusoid /
+# plane wave) and the cosmological D.4 3D Zel'dovich pancake. See
+# `reference/notes_M3_7e_3d_tier_cd_drivers.md`.
+export cholesky_sector_state_from_primitive_3d,
+       primitive_recovery_3d, primitive_recovery_3d_per_cell
+export tier_c_sod_3d_full_ic,
+       tier_c_cold_sinusoid_3d_full_ic,
+       tier_c_plane_wave_3d_full_ic,
+       tier_d_zeldovich_pancake_3d_ic_full
+
 end # module
