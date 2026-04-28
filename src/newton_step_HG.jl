@@ -1715,3 +1715,110 @@ function det_step_3d_berry_HG!(fields::PolynomialFieldSet,
     unpack_state_3d!(fields, leaves, sol.u)
     return fields
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M4-2: 3D KH-active Newton driver (21-dof per cell)
+# ─────────────────────────────────────────────────────────────────────
+#
+# 3D analog of `det_step_2d_berry_HG!` for the M4 Phase 2 21-dof
+# residual `cholesky_el_residual_3D_berry_kh!`. Mutates the 21
+# Newton-unknown slots `(x_a, u_a, α_a, β_a, θ_{ab}, β_{ab})` of `fields`
+# in-place; the `s` slot is left untouched (entropy operator-split,
+# frozen across the Newton step).
+#
+# Sparsity prototype: `cell_adjacency_sparsity ⊗ ones(21, 21)`. The 6
+# off-diag β rows are local to the cell (no off-cell stencil), so the
+# adjacency pattern matches M3-7c's M3-7b-derived prototype.
+
+"""
+    det_step_3d_berry_kh_HG!(fields, mesh, frame, leaves, bc_spec, dt;
+                               M_vv_override=nothing, ρ_ref=1.0,
+                               sparse_jac=true,
+                               abstol=1e-13, reltol=1e-13,
+                               maxiters=50, c_back=1.0)
+
+M4 Phase 2 3D KH Newton driver. Advances the 21-dof per-cell state by
+one timestep `dt` via implicit-midpoint Newton solve of
+`cholesky_el_residual_3D_berry_kh!`. Mirrors `det_step_3d_berry_HG!`
+plus six off-diagonal β slots and a `c_back` keyword for the closed-
+loop H_back coupling strength.
+
+Returns `fields` for convenience.
+"""
+function det_step_3d_berry_kh_HG!(fields::PolynomialFieldSet,
+                                    mesh::HierarchicalMesh{3},
+                                    frame::EulerianFrame{3, T},
+                                    leaves::AbstractVector{<:Integer},
+                                    bc_spec::FrameBoundaries{3},
+                                    dt::Real;
+                                    M_vv_override = nothing,
+                                    ρ_ref::Real = 1.0,
+                                    sparse_jac::Bool = true,
+                                    abstol::Real = 1e-13,
+                                    reltol::Real = 1e-13,
+                                    maxiters::Int = 50,
+                                    c_back::Real = 1.0) where {T<:Real}
+    @assert mesh.balanced == true "det_step_3d_berry_kh_HG! requires mesh.balanced == true"
+    N = length(leaves)
+    @assert N >= 1 "leaves vector must be non-empty"
+
+    aux = build_residual_aux_3D_kh(fields, mesh, frame, leaves, bc_spec;
+                                    M_vv_override = M_vv_override,
+                                    ρ_ref = ρ_ref,
+                                    c_back = c_back)
+    y_n = pack_state_3d_kh(fields, leaves)
+    y0 = copy(y_n)
+
+    f_in_place = (F, u, p_in) -> begin
+        cholesky_el_residual_3D_berry_kh!(F, u, p_in.y_n, p_in.aux, p_in.dt)
+        return nothing
+    end
+    p = (y_n = y_n, aux = aux, dt = T(dt))
+
+    if sparse_jac && N >= 4
+        cell_sparsity = cell_adjacency_sparsity(mesh; depth = 1,
+                                                  leaves_only = true)
+        rows = Int[]
+        cols = Int[]
+        cs_rows, cs_cols, _ = SparseArrays.findnz(cell_sparsity)
+        # 21×21 = 441 nonzeros per cell-cell adjacency entry. Six extra
+        # rows / columns for the off-diag β slots vs M3-7c's 15×15.
+        sizehint!(rows, length(cs_rows) * 441)
+        sizehint!(cols, length(cs_rows) * 441)
+        @inbounds for k in eachindex(cs_rows)
+            i = Int(cs_rows[k])
+            j = Int(cs_cols[k])
+            for r in 1:21, c in 1:21
+                push!(rows, 21 * (i - 1) + r)
+                push!(cols, 21 * (j - 1) + c)
+            end
+        end
+        jac_proto = _SA.sparse(rows, cols, ones(Float64, length(rows)),
+                                21 * N, 21 * N, max)
+        nf = NonlinearFunction(f_in_place; jac_prototype = jac_proto)
+        prob = NonlinearProblem(nf, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    else
+        prob = NonlinearProblem(f_in_place, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    end
+
+    F_check = similar(sol.u)
+    cholesky_el_residual_3D_berry_kh!(F_check, sol.u, y_n, aux, T(dt))
+    res_norm = maximum(abs, F_check)
+    if res_norm > 10 * abstol && sol.retcode != ReturnCode.Success
+        error("det_step_3d_berry_kh_HG! Newton solve failed: retcode = $(sol.retcode), " *
+              "‖residual‖∞ = $res_norm")
+    end
+
+    unpack_state_3d_kh!(fields, leaves, sol.u)
+    return fields
+end

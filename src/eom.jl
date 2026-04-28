@@ -2370,3 +2370,606 @@ function cholesky_el_residual_3D_berry(y_np1::AbstractVector,
     cholesky_el_residual_3D_berry!(F, y_np1, y_n, aux, dt)
     return F
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M4-2: 3D KH 19-dof residual (off-diag β + closed-loop H_back)
+# ─────────────────────────────────────────────────────────────────────
+#
+# M4 Phase 2 lifts the M4 Phase 1 2D closed-loop β_off ↔ β_a coupling to
+# 3D. The 3D Berry block has three (a, b) pairs (1, 2), (1, 3), (2, 3),
+# so the off-diagonal Cholesky sector has six entries:
+#
+#     β_{12}, β_{21}, β_{13}, β_{31}, β_{23}, β_{32}
+#
+# Each pair (a, b) carries its own forward strain coupling
+#
+#     H_rot^off,(ab) = G̃_{ab} · (α_a · β_{ba} + α_b · β_{ab}) / 2
+#
+# with G̃_{ab} = (∂_b u_a + ∂_a u_b)/2 (symmetric strain), and its own
+# closed-loop back-reaction
+#
+#     H_back^(ab) = c_back · G̃_{ab} · (α_b · β_{ab} · β_b
+#                                       + α_a · β_{ba} · β_a) / 2
+#
+# (mirroring the 2D form pair-by-pair). The Berry α/β-modifications per
+# axis sum the per-pair contributions; the W_{ab} · F_off^(ab) drive on
+# F^θ_{ab} per pair gives the vorticity coupling.
+#
+# Per-cell unknowns (19 dof per leaf, 16 named after entropy):
+#
+#     y[19(i-1) +  1.. 3] = (x_1, x_2, x_3)           positions
+#     y[19(i-1) +  4.. 6] = (u_1, u_2, u_3)           velocities
+#     y[19(i-1) +  7.. 9] = (α_1, α_2, α_3)           per-axis Cholesky
+#     y[19(i-1) + 10..12] = (β_1, β_2, β_3)           per-axis momenta
+#     y[19(i-1) + 13..15] = (θ_12, θ_13, θ_23)        Berry angles
+#     y[19(i-1) + 16..17] = (β_12, β_21)              pair (1, 2) off-diag
+#     y[19(i-1) + 18]     = β_13      (M4 Phase 2 — pair (1,3))
+#     y[19(i-1) + 19]     = β_31      (M4 Phase 2 — pair (1,3))
+#     (β_23, β_32 share two more slots; total 19 dof per cell.)
+#
+# Wait, that's 17 + 2 + 2 = 21. Let me recount: 15 (M3-7c) + 6 off-diag
+# = 21. Per the brief's "19 dof = 13 base + 6 off-diag" the labeling
+# treats the 13 dof as Cholesky-sector unknowns (9 + 3 angles + 1 entropy).
+# Newton-driven dof count is 15 (M3-7c) + 6 (off-diag) = 21 raw. We
+# follow the brief's "19 dof" framing for the per-cell driver naming
+# (matching the headline "19 dof per leaf cell" target) and acknowledge
+# that the actual residual carries 21 floats per cell: 15 base + 6
+# off-diag. The 2-position-equation Newton-frozen entropy is not in y.
+#
+# Per-cell unknowns (final layout, 21 floats per leaf):
+#
+#     y[21(i-1) +  1.. 3] = (x_1, x_2, x_3)
+#     y[21(i-1) +  4.. 6] = (u_1, u_2, u_3)
+#     y[21(i-1) +  7.. 9] = (α_1, α_2, α_3)
+#     y[21(i-1) + 10..12] = (β_1, β_2, β_3)
+#     y[21(i-1) + 13..15] = (θ_12, θ_13, θ_23)
+#     y[21(i-1) + 16]     = β_12
+#     y[21(i-1) + 17]     = β_21
+#     y[21(i-1) + 18]     = β_13
+#     y[21(i-1) + 19]     = β_31
+#     y[21(i-1) + 20]     = β_23
+#     y[21(i-1) + 21]     = β_32
+#
+# With β_off = 0 IC + axis-aligned u (zero off-diag strain), every pair's
+# H_rot^off and H_back contributions vanish multiplicatively. The 21-dof
+# residual reduces to the M3-7c 15-dof Berry residual byte-equal in the
+# first 15 slots; the off-diag slot rows 16..21 reduce to trivial
+# kinematic drives F^β_{ab} = (β_{ab}_np1 − β_{ab}_n)/dt. This preserves
+# the M3-7c regression bit-exactly (the 21-dof variant is only consumed
+# by the M4 Phase 2 KH driver).
+
+"""
+    pack_state_3d_kh(fields::PolynomialFieldSet,
+                      leaves::AbstractVector{<:Integer})
+        -> Vector{T}
+
+M4 Phase 2 packer: 21-dof per-leaf state for the 3D KH residual. Reads
+the 15 base Newton dof (`x_a, u_a, α_a, β_a, θ_{ab}`) plus the six
+off-diagonal `β_{ab}` slots from a 3D KH field set allocated by
+`allocate_cholesky_3d_kh_fields`. The off-diagonal slot order is
+
+    β_12, β_21, β_13, β_31, β_23, β_32.
+"""
+function pack_state_3d_kh(fields::PolynomialFieldSet,
+                           leaves::AbstractVector{<:Integer})
+    N = length(leaves)
+    T = typeof(fields.x_1[leaves[1]][1])
+    y = Vector{T}(undef, 21 * N)
+    @inbounds for (i, ci) in enumerate(leaves)
+        base = 21 * (i - 1)
+        y[base +  1] = fields.x_1[ci][1]
+        y[base +  2] = fields.x_2[ci][1]
+        y[base +  3] = fields.x_3[ci][1]
+        y[base +  4] = fields.u_1[ci][1]
+        y[base +  5] = fields.u_2[ci][1]
+        y[base +  6] = fields.u_3[ci][1]
+        y[base +  7] = fields.α_1[ci][1]
+        y[base +  8] = fields.α_2[ci][1]
+        y[base +  9] = fields.α_3[ci][1]
+        y[base + 10] = fields.β_1[ci][1]
+        y[base + 11] = fields.β_2[ci][1]
+        y[base + 12] = fields.β_3[ci][1]
+        y[base + 13] = fields.θ_12[ci][1]
+        y[base + 14] = fields.θ_13[ci][1]
+        y[base + 15] = fields.θ_23[ci][1]
+        y[base + 16] = fields.β_12[ci][1]
+        y[base + 17] = fields.β_21[ci][1]
+        y[base + 18] = fields.β_13[ci][1]
+        y[base + 19] = fields.β_31[ci][1]
+        y[base + 20] = fields.β_23[ci][1]
+        y[base + 21] = fields.β_32[ci][1]
+    end
+    return y
+end
+
+"""
+    unpack_state_3d_kh!(fields::PolynomialFieldSet,
+                          leaves::AbstractVector{<:Integer},
+                          y::AbstractVector)
+
+Inverse of `pack_state_3d_kh`: write the flat 21-dof per-leaf state back
+into the 3D KH field set. Leaves the `:s` slot untouched.
+"""
+function unpack_state_3d_kh!(fields::PolynomialFieldSet,
+                              leaves::AbstractVector{<:Integer},
+                              y::AbstractVector)
+    N = length(leaves)
+    @assert length(y) == 21 * N "y length $(length(y)) does not match 21 * N = $(21 * N)"
+    @inbounds for (i, ci) in enumerate(leaves)
+        base = 21 * (i - 1)
+        fields.x_1[ci]  = (y[base +  1],)
+        fields.x_2[ci]  = (y[base +  2],)
+        fields.x_3[ci]  = (y[base +  3],)
+        fields.u_1[ci]  = (y[base +  4],)
+        fields.u_2[ci]  = (y[base +  5],)
+        fields.u_3[ci]  = (y[base +  6],)
+        fields.α_1[ci]  = (y[base +  7],)
+        fields.α_2[ci]  = (y[base +  8],)
+        fields.α_3[ci]  = (y[base +  9],)
+        fields.β_1[ci]  = (y[base + 10],)
+        fields.β_2[ci]  = (y[base + 11],)
+        fields.β_3[ci]  = (y[base + 12],)
+        fields.θ_12[ci] = (y[base + 13],)
+        fields.θ_13[ci] = (y[base + 14],)
+        fields.θ_23[ci] = (y[base + 15],)
+        fields.β_12[ci] = (y[base + 16],)
+        fields.β_21[ci] = (y[base + 17],)
+        fields.β_13[ci] = (y[base + 18],)
+        fields.β_31[ci] = (y[base + 19],)
+        fields.β_23[ci] = (y[base + 20],)
+        fields.β_32[ci] = (y[base + 21],)
+    end
+    return fields
+end
+
+"""
+    build_residual_aux_3D_kh(fields, mesh, frame, leaves, bc_spec;
+                              M_vv_override=nothing, ρ_ref=1.0,
+                              c_back=1.0)
+
+M4 Phase 2 aux builder: 3D analog of `build_residual_aux_2D` for the
+21-dof KH residual. Identical to `build_residual_aux_3D` plus the
+`c_back` keyword for the closed-loop H_back coupling strength.
+"""
+function build_residual_aux_3D_kh(fields::PolynomialFieldSet,
+                                    mesh::HierarchicalMesh{3},
+                                    frame::EulerianFrame{3, T},
+                                    leaves::AbstractVector{<:Integer},
+                                    bc_spec;
+                                    M_vv_override = nothing,
+                                    ρ_ref::Real = 1.0,
+                                    c_back::Real = 1.0) where {T}
+    aux_base = build_residual_aux_3D(fields, mesh, frame, leaves, bc_spec;
+                                      M_vv_override = M_vv_override,
+                                      ρ_ref = ρ_ref)
+    return (
+        s_vec       = aux_base.s_vec,
+        Δm_per_axis = aux_base.Δm_per_axis,
+        face_lo_idx = aux_base.face_lo_idx,
+        face_hi_idx = aux_base.face_hi_idx,
+        wrap_lo_idx = aux_base.wrap_lo_idx,
+        wrap_hi_idx = aux_base.wrap_hi_idx,
+        M_vv_override = aux_base.M_vv_override,
+        ρ_ref       = aux_base.ρ_ref,
+        c_back      = T(c_back),
+    )
+end
+
+"""
+    cholesky_el_residual_3D_berry_kh!(F, y_np1, y_n, aux, dt)
+
+M4 Phase 2 21-dof per-leaf 3D residual extending the M3-7c 15-dof Berry
+residual with three off-diagonal Cholesky pairs and the closed-loop
+H_back back-reaction per pair. Lifts the M4 Phase 1 2D form
+pair-by-pair.
+
+# Pair structure
+
+For each pair (a, b) ∈ {(1, 2), (1, 3), (2, 3)}:
+  • Cross-axis velocity gradients: `(∂_b u_a, ∂_a u_b)` from face-neighbor
+    stencils.
+  • Strain decomposition:
+      G̃_{ab} = (∂_b u_a + ∂_a u_b) / 2
+      W_{ab} = (∂_b u_a − ∂_a u_b) / 2
+  • F^β_{ab} += G̃_{ab} · ᾱ_b / 2 + c_back · G̃_{ab} · ᾱ_b · β̄_b / 2
+  • F^β_{ba} += G̃_{ab} · ᾱ_a / 2 + c_back · G̃_{ab} · ᾱ_a · β̄_a / 2
+  • F^θ_{ab} += W_{ab} · F_off^(ab)
+      with F_off^(ab) = (ᾱ_a²·ᾱ_b·β̄_{ab} − ᾱ_a·ᾱ_b²·β̄_{ba}) / 2.
+  • Per-axis Berry α/β-modifications gain pair-(a, b) contributions
+    proportional to G̃_{ab}·β_off and c_back·G̃_{ab}·β_off·β_a.
+
+# Bit-exact regression
+
+When all six off-diag β slots are zero AND velocity is axis-aligned,
+G̃_{ab} = W_{ab} = 0 ∀ pairs, all closed-loop additions vanish
+multiplicatively, and the residual reduces to the M3-7c 15-dof Berry
+form on the first 15 slots; rows 16..21 reduce to trivial kinematic
+drives `F^β_{ab} = (β_{ab}_np1 − β_{ab}_n)/dt`.
+"""
+function cholesky_el_residual_3D_berry_kh!(F::AbstractVector,
+                                             y_np1::AbstractVector,
+                                             y_n::AbstractVector,
+                                             aux::NamedTuple,
+                                             dt::Real)
+    s_vec       = aux.s_vec
+    Δm_per_axis = aux.Δm_per_axis
+    face_lo     = aux.face_lo_idx
+    face_hi     = aux.face_hi_idx
+    M_vv_over   = aux.M_vv_override
+    ρ_ref       = aux.ρ_ref
+    wrap_lo     = haskey(aux, :wrap_lo_idx) ? aux.wrap_lo_idx : nothing
+    wrap_hi     = haskey(aux, :wrap_hi_idx) ? aux.wrap_hi_idx : nothing
+    C_BACK = haskey(aux, :c_back) ? eltype(y_np1)(aux.c_back) : one(eltype(y_np1))
+
+    N = length(s_vec)
+    @assert length(y_np1) == 21 * N "y_np1 length $(length(y_np1)) does not match 21 * N = $(21 * N)"
+    @assert length(y_n)   == 21 * N
+    @assert length(F)     == 21 * N
+    @assert length(Δm_per_axis[1]) == N
+    @assert length(Δm_per_axis[2]) == N
+    @assert length(Δm_per_axis[3]) == N
+
+    Tres = promote_type(eltype(y_np1), eltype(y_n), eltype(s_vec), typeof(dt))
+
+    @inline get_x(y, a, i) = y[21 * (i - 1) + a]
+    @inline get_u(y, a, i) = y[21 * (i - 1) + 3 + a]
+    @inline get_α(y, a, i) = y[21 * (i - 1) + 6 + a]
+    @inline get_β(y, a, i) = y[21 * (i - 1) + 9 + a]
+    @inline get_θ(y, ab, i) = y[21 * (i - 1) + 12 + ab]
+    # Off-diag slot index helpers for pair (a, b):
+    #   pair (1, 2): β_12 = slot 16, β_21 = slot 17
+    #   pair (1, 3): β_13 = slot 18, β_31 = slot 19
+    #   pair (2, 3): β_23 = slot 20, β_32 = slot 21
+    @inline get_β12(y, i) = y[21 * (i - 1) + 16]
+    @inline get_β21(y, i) = y[21 * (i - 1) + 17]
+    @inline get_β13(y, i) = y[21 * (i - 1) + 18]
+    @inline get_β31(y, i) = y[21 * (i - 1) + 19]
+    @inline get_β23(y, i) = y[21 * (i - 1) + 20]
+    @inline get_β32(y, i) = y[21 * (i - 1) + 21]
+
+    @inbounds for i in 1:N
+        s_i = s_vec[i]
+
+        # Per-cell θ_{ab} midpoints + finite-difference rates.
+        θ12_n   = get_θ(y_n,   1, i); θ12_np1 = get_θ(y_np1, 1, i)
+        θ13_n   = get_θ(y_n,   2, i); θ13_np1 = get_θ(y_np1, 2, i)
+        θ23_n   = get_θ(y_n,   3, i); θ23_np1 = get_θ(y_np1, 3, i)
+        dθ12_dt = (θ12_np1 - θ12_n) / Tres(dt)
+        dθ13_dt = (θ13_np1 - θ13_n) / Tres(dt)
+        dθ23_dt = (θ23_np1 - θ23_n) / Tres(dt)
+
+        # Per-axis self midpoints.
+        α1_n   = get_α(y_n,   1, i); α1_np1 = get_α(y_np1, 1, i)
+        α2_n   = get_α(y_n,   2, i); α2_np1 = get_α(y_np1, 2, i)
+        α3_n   = get_α(y_n,   3, i); α3_np1 = get_α(y_np1, 3, i)
+        β1_n   = get_β(y_n,   1, i); β1_np1 = get_β(y_np1, 1, i)
+        β2_n   = get_β(y_n,   2, i); β2_np1 = get_β(y_np1, 2, i)
+        β3_n   = get_β(y_n,   3, i); β3_np1 = get_β(y_np1, 3, i)
+        ᾱ_self_1 = (α1_n + α1_np1) / 2
+        ᾱ_self_2 = (α2_n + α2_np1) / 2
+        ᾱ_self_3 = (α3_n + α3_np1) / 2
+        β̄_self_1 = (β1_n + β1_np1) / 2
+        β̄_self_2 = (β2_n + β2_np1) / 2
+        β̄_self_3 = (β3_n + β3_np1) / 2
+
+        # Off-diag β midpoints + rates for all six slots.
+        β12_n   = get_β12(y_n,   i); β12_np1 = get_β12(y_np1, i)
+        β21_n   = get_β21(y_n,   i); β21_np1 = get_β21(y_np1, i)
+        β13_n   = get_β13(y_n,   i); β13_np1 = get_β13(y_np1, i)
+        β31_n   = get_β31(y_n,   i); β31_np1 = get_β31(y_np1, i)
+        β23_n   = get_β23(y_n,   i); β23_np1 = get_β23(y_np1, i)
+        β32_n   = get_β32(y_n,   i); β32_np1 = get_β32(y_np1, i)
+        β̄12 = (β12_n + β12_np1) / 2
+        β̄21 = (β21_n + β21_np1) / 2
+        β̄13 = (β13_n + β13_np1) / 2
+        β̄31 = (β31_n + β31_np1) / 2
+        β̄23 = (β23_n + β23_np1) / 2
+        β̄32 = (β32_n + β32_np1) / 2
+
+        # ──────────────────────────────────────────────────────────
+        # Cross-axis velocity gradients per pair (a, b): (∂_b u_a, ∂_a u_b)
+        # for (a, b) ∈ {(1, 2), (1, 3), (2, 3)}.
+        # We compute six cross-axis directional derivatives via the
+        # existing per-axis face-neighbor tables.
+        #
+        # Helper: read u_c at axis-d neighbors and compute (∂_d u_c).
+        @inline function cross_grad(y_field_get_u::Function, c::Int, d::Int)
+            ilo = face_lo[d][i]
+            ihi = face_hi[d][i]
+            wrap_lo_off = wrap_lo === nothing ? zero(Tres) : Tres(wrap_lo[d][i])
+            wrap_hi_off = wrap_hi === nothing ? zero(Tres) : Tres(wrap_hi[d][i])
+            if ilo == 0
+                u_c_lo_n   = y_field_get_u(y_n,   c, i)
+                u_c_lo_np1 = y_field_get_u(y_np1, c, i)
+                x_d_lo_n   = get_x(y_n,   d, i)
+                x_d_lo_np1 = get_x(y_np1, d, i)
+            else
+                u_c_lo_n   = y_field_get_u(y_n,   c, ilo)
+                u_c_lo_np1 = y_field_get_u(y_np1, c, ilo)
+                x_d_lo_n   = get_x(y_n,   d, ilo) + wrap_lo_off
+                x_d_lo_np1 = get_x(y_np1, d, ilo) + wrap_lo_off
+            end
+            if ihi == 0
+                u_c_hi_n   = y_field_get_u(y_n,   c, i)
+                u_c_hi_np1 = y_field_get_u(y_np1, c, i)
+                x_d_hi_n   = get_x(y_n,   d, i)
+                x_d_hi_np1 = get_x(y_np1, d, i)
+            else
+                u_c_hi_n   = y_field_get_u(y_n,   c, ihi)
+                u_c_hi_np1 = y_field_get_u(y_np1, c, ihi)
+                x_d_hi_n   = get_x(y_n,   d, ihi) + wrap_hi_off
+                x_d_hi_np1 = get_x(y_np1, d, ihi) + wrap_hi_off
+            end
+            ū_c_lo = (u_c_lo_n + u_c_lo_np1) / 2
+            ū_c_hi = (u_c_hi_n + u_c_hi_np1) / 2
+            x̄_d_lo = (x_d_lo_n + x_d_lo_np1) / 2
+            x̄_d_hi = (x_d_hi_n + x_d_hi_np1) / 2
+            Δ = x̄_d_hi - x̄_d_lo
+            return Δ > 0 ? (ū_c_hi - ū_c_lo) / Δ : zero(Tres)
+        end
+
+        # Pair (1, 2): ∂_2 u_1, ∂_1 u_2.
+        d2_u1 = cross_grad(get_u, 1, 2)
+        d1_u2 = cross_grad(get_u, 2, 1)
+        # Pair (1, 3): ∂_3 u_1, ∂_1 u_3.
+        d3_u1 = cross_grad(get_u, 1, 3)
+        d1_u3 = cross_grad(get_u, 3, 1)
+        # Pair (2, 3): ∂_3 u_2, ∂_2 u_3.
+        d3_u2 = cross_grad(get_u, 2, 3)
+        d2_u3 = cross_grad(get_u, 3, 2)
+
+        # Per-pair strain decomposition.
+        G̃12 = (d2_u1 + d1_u2) / 2;  W12 = (d2_u1 - d1_u2) / 2
+        G̃13 = (d3_u1 + d1_u3) / 2;  W13 = (d3_u1 - d1_u3) / 2
+        G̃23 = (d3_u2 + d2_u3) / 2;  W23 = (d3_u2 - d2_u3) / 2
+
+        for a in 1:3
+            # Self midpoints.
+            x_n   = get_x(y_n,   a, i); x_np1 = get_x(y_np1, a, i)
+            u_n   = get_u(y_n,   a, i); u_np1 = get_u(y_np1, a, i)
+            α_n   = get_α(y_n,   a, i); α_np1 = get_α(y_np1, a, i)
+            β_n   = get_β(y_n,   a, i); β_np1 = get_β(y_np1, a, i)
+            x̄ = (x_n   + x_np1)   / 2
+            ū = (u_n   + u_np1)   / 2
+            ᾱ = (α_n   + α_np1)   / 2
+            β̄ = (β_n   + β_np1)   / 2
+
+            ilo = face_lo[a][i]
+            ihi = face_hi[a][i]
+            wrap_lo_off = wrap_lo === nothing ? zero(Tres) : Tres(wrap_lo[a][i])
+            wrap_hi_off = wrap_hi === nothing ? zero(Tres) : Tres(wrap_hi[a][i])
+
+            if ilo == 0
+                x_lo_n   = x_n; x_lo_np1 = x_np1
+                u_lo_n   = u_n; u_lo_np1 = u_np1
+                s_lo     = s_i
+            else
+                x_lo_n   = get_x(y_n,   a, ilo) + wrap_lo_off
+                x_lo_np1 = get_x(y_np1, a, ilo) + wrap_lo_off
+                u_lo_n   = get_u(y_n,   a, ilo)
+                u_lo_np1 = get_u(y_np1, a, ilo)
+                s_lo     = s_vec[ilo]
+            end
+            x̄_lo = (x_lo_n + x_lo_np1) / 2
+            ū_lo = (u_lo_n + u_lo_np1) / 2
+
+            if ihi == 0
+                x_hi_n   = x_n; x_hi_np1 = x_np1
+                u_hi_n   = u_n; u_hi_np1 = u_np1
+                s_hi     = s_i
+            else
+                x_hi_n   = get_x(y_n,   a, ihi) + wrap_hi_off
+                x_hi_np1 = get_x(y_np1, a, ihi) + wrap_hi_off
+                u_hi_n   = get_u(y_n,   a, ihi)
+                u_hi_np1 = get_u(y_np1, a, ihi)
+                s_hi     = s_vec[ihi]
+            end
+            x̄_hi = (x_hi_n + x_hi_np1) / 2
+            ū_hi = (u_hi_n + u_hi_np1) / 2
+
+            Δm_i = Δm_per_axis[a][i]
+
+            M̄vv_a = if M_vv_over !== nothing
+                Tres(M_vv_over[a])
+            else
+                Δx_avg = if ilo == 0 && ihi == 0
+                    zero(Tres)
+                elseif ilo == 0
+                    2 * (x̄_hi - x̄)
+                elseif ihi == 0
+                    2 * (x̄ - x̄_lo)
+                else
+                    x̄_hi - x̄_lo
+                end
+                J̄_self = Δx_avg > 0 ? Δx_avg / (2 * Δm_i) : zero(Tres)
+                J̄_self > 0 ? Mvv(J̄_self, s_i) : zero(Tres)
+            end
+
+            P_self = Tres(ρ_ref) * M̄vv_a
+            P_lo_neighbor = if ilo == 0
+                P_self
+            else
+                Mvv_lo = if M_vv_over !== nothing
+                    Tres(M_vv_over[a])
+                else
+                    Tres(ρ_ref) * Mvv(one(Tres) / Tres(ρ_ref), s_lo)
+                end
+                Tres(ρ_ref) * Mvv_lo
+            end
+            P_hi_neighbor = if ihi == 0
+                P_self
+            else
+                Mvv_hi = if M_vv_over !== nothing
+                    Tres(M_vv_over[a])
+                else
+                    Tres(ρ_ref) * Mvv(one(Tres) / Tres(ρ_ref), s_hi)
+                end
+                Tres(ρ_ref) * Mvv_hi
+            end
+            P̄_lo = (P_self + P_lo_neighbor) / 2
+            P̄_hi = (P_self + P_hi_neighbor) / 2
+
+            Δx̄_full = x̄_hi - x̄_lo
+            div̄u_a = Δx̄_full > 0 ? (ū_hi - ū_lo) / Δx̄_full : zero(Tres)
+
+            m̄_a = Δm_i
+            γ²_a = M̄vv_a - β̄^2
+
+            # Berry α/β-modifications per axis a (M3-7c base) + M4 Phase 2
+            # off-diagonal pair contributions.
+            #
+            # Base SO(3) Berry (mirrors `cholesky_el_residual_3D_berry!`):
+            base_α, base_β = if a == 1
+                ( (ᾱ_self_2^3) / (3 * ᾱ_self_1^2) * dθ12_dt +
+                  (ᾱ_self_3^3) / (3 * ᾱ_self_1^2) * dθ13_dt,
+                  β̄_self_2 * dθ12_dt + β̄_self_3 * dθ13_dt
+                )
+            elseif a == 2
+                ( -(ᾱ_self_1^3) / (3 * ᾱ_self_2^2) * dθ12_dt +
+                   (ᾱ_self_3^3) / (3 * ᾱ_self_2^2) * dθ23_dt,
+                  -β̄_self_1 * dθ12_dt + β̄_self_3 * dθ23_dt
+                )
+            else
+                ( -(ᾱ_self_1^3) / (3 * ᾱ_self_3^2) * dθ13_dt +
+                  -(ᾱ_self_2^3) / (3 * ᾱ_self_3^2) * dθ23_dt,
+                  -β̄_self_1 * dθ13_dt - β̄_self_2 * dθ23_dt
+                )
+            end
+
+            # M4 Phase 2 off-diagonal pair contributions to (berry_α_term,
+            # berry_β_term) per axis. For each pair (a*, b*) in which `a`
+            # participates, add the M4 Phase 1 2D form's per-pair
+            # contribution to F^α_a (via berry_α_term) and F^β_a (via
+            # berry_β_term). Each contribution is multiplicative in some
+            # off-diag β AND/OR β_a, so vanishes at the regression IC.
+            offdiag_α = zero(Tres)
+            offdiag_β = zero(Tres)
+            if a == 1
+                # Pair (1, 2): a is the "left" (a*=1, b*=2). Mirrors 2D a=1 form.
+                ᾱ_other = ᾱ_self_2; β̄_other = β̄_self_2
+                G̃ = G̃12; β̄_off_self = β̄21; β̄_off_other = β̄12
+                # H_back ⇒ berry_α_term gains -c_back·G̃·β_off_self/(2·α_a)
+                offdiag_α += -C_BACK * G̃ * β̄_off_self / (2 * ᾱ_self_1)
+                # H_rot^off + closed-loop in F^β_a (M4 Phase 1 form):
+                offdiag_β += (ᾱ_other / ᾱ_self_1) * β̄_off_other * dθ12_dt
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_1^2)) * β̄_off_self * dθ12_dt
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_1^2)) * (β12_np1 - β12_n) / Tres(dt)
+                offdiag_β += -(ᾱ_other / ᾱ_self_1) * (β21_np1 - β21_n) / Tres(dt)
+                offdiag_β += G̃ * β̄_off_self / (2 * ᾱ_self_1^2)
+                offdiag_β += C_BACK * G̃ * β̄_off_self * β̄_self_1 / (2 * ᾱ_self_1^2)
+
+                # Pair (1, 3): a is the "left" (a*=1, b*=3). Same form, pair-(1,3) data.
+                ᾱ_other = ᾱ_self_3; β̄_other = β̄_self_3
+                G̃ = G̃13; β̄_off_self = β̄31; β̄_off_other = β̄13
+                offdiag_α += -C_BACK * G̃ * β̄_off_self / (2 * ᾱ_self_1)
+                offdiag_β += (ᾱ_other / ᾱ_self_1) * β̄_off_other * dθ13_dt
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_1^2)) * β̄_off_self * dθ13_dt
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_1^2)) * (β13_np1 - β13_n) / Tres(dt)
+                offdiag_β += -(ᾱ_other / ᾱ_self_1) * (β31_np1 - β31_n) / Tres(dt)
+                offdiag_β += G̃ * β̄_off_self / (2 * ᾱ_self_1^2)
+                offdiag_β += C_BACK * G̃ * β̄_off_self * β̄_self_1 / (2 * ᾱ_self_1^2)
+            elseif a == 2
+                # Pair (1, 2): a is the "right" (a*=1, b*=2). Mirrors 2D a=2 form.
+                ᾱ_other = ᾱ_self_1; β̄_other = β̄_self_1
+                G̃ = G̃12; β̄_off_self = β̄12; β̄_off_other = β̄21
+                offdiag_α += -C_BACK * G̃ * β̄_off_self / (2 * ᾱ_self_2)
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_2^2)) * β̄_off_self * dθ12_dt
+                offdiag_β += (ᾱ_other / ᾱ_self_2) * β̄_off_other * dθ12_dt
+                offdiag_β += -(ᾱ_other / ᾱ_self_2) * (β12_np1 - β12_n) / Tres(dt)
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_2^2)) * (β21_np1 - β21_n) / Tres(dt)
+                offdiag_β += G̃ * β̄_off_self / (2 * ᾱ_self_2^2)
+                offdiag_β += C_BACK * G̃ * β̄_off_self * β̄_self_2 / (2 * ᾱ_self_2^2)
+
+                # Pair (2, 3): a is the "left" (a*=2, b*=3).
+                ᾱ_other = ᾱ_self_3; β̄_other = β̄_self_3
+                G̃ = G̃23; β̄_off_self = β̄32; β̄_off_other = β̄23
+                offdiag_α += -C_BACK * G̃ * β̄_off_self / (2 * ᾱ_self_2)
+                offdiag_β += (ᾱ_other / ᾱ_self_2) * β̄_off_other * dθ23_dt
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_2^2)) * β̄_off_self * dθ23_dt
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_2^2)) * (β23_np1 - β23_n) / Tres(dt)
+                offdiag_β += -(ᾱ_other / ᾱ_self_2) * (β32_np1 - β32_n) / Tres(dt)
+                offdiag_β += G̃ * β̄_off_self / (2 * ᾱ_self_2^2)
+                offdiag_β += C_BACK * G̃ * β̄_off_self * β̄_self_2 / (2 * ᾱ_self_2^2)
+            else  # a == 3
+                # Pair (1, 3): a is the "right" (a*=1, b*=3). Mirrors 2D a=2 form.
+                ᾱ_other = ᾱ_self_1; β̄_other = β̄_self_1
+                G̃ = G̃13; β̄_off_self = β̄13; β̄_off_other = β̄31
+                offdiag_α += -C_BACK * G̃ * β̄_off_self / (2 * ᾱ_self_3)
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_3^2)) * β̄_off_self * dθ13_dt
+                offdiag_β += (ᾱ_other / ᾱ_self_3) * β̄_off_other * dθ13_dt
+                offdiag_β += -(ᾱ_other / ᾱ_self_3) * (β13_np1 - β13_n) / Tres(dt)
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_3^2)) * (β31_np1 - β31_n) / Tres(dt)
+                offdiag_β += G̃ * β̄_off_self / (2 * ᾱ_self_3^2)
+                offdiag_β += C_BACK * G̃ * β̄_off_self * β̄_self_3 / (2 * ᾱ_self_3^2)
+
+                # Pair (2, 3): a is the "right" (a*=2, b*=3).
+                ᾱ_other = ᾱ_self_2; β̄_other = β̄_self_2
+                G̃ = G̃23; β̄_off_self = β̄23; β̄_off_other = β̄32
+                offdiag_α += -C_BACK * G̃ * β̄_off_self / (2 * ᾱ_self_3)
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_3^2)) * β̄_off_self * dθ23_dt
+                offdiag_β += (ᾱ_other / ᾱ_self_3) * β̄_off_other * dθ23_dt
+                offdiag_β += -(ᾱ_other / ᾱ_self_3) * (β23_np1 - β23_n) / Tres(dt)
+                offdiag_β += -(ᾱ_other^2 / (2 * ᾱ_self_3^2)) * (β32_np1 - β32_n) / Tres(dt)
+                offdiag_β += G̃ * β̄_off_self / (2 * ᾱ_self_3^2)
+                offdiag_β += C_BACK * G̃ * β̄_off_self * β̄_self_3 / (2 * ᾱ_self_3^2)
+            end
+
+            berry_α_term = base_α + offdiag_α
+            berry_β_term = base_β + offdiag_β
+
+            # Residual rows.
+            base = 21 * (i - 1)
+            F[base + a]      = (x_np1 - x_n) / dt - ū                                 # F^x_a
+            F[base + 3 + a]  = (u_np1 - u_n) / dt + (P̄_hi - P̄_lo) / m̄_a               # F^u_a
+            F[base + 6 + a]  = (α_np1 - α_n) / dt - β̄ + berry_α_term                  # F^α_a
+            F[base + 9 + a]  = (β_np1 - β_n) / dt + div̄u_a * β̄ -
+                               (ᾱ != 0 ? γ²_a / ᾱ : zero(Tres)) + berry_β_term        # F^β_a
+        end
+
+        # F^θ_{ab}: kinematic-drive form + W_{ab} · F_off^(ab) per-pair
+        # vorticity coupling (M4 Phase 2 lift of M3-6 Phase 1a).
+        F_off_12 = (ᾱ_self_1^2 * ᾱ_self_2 * β̄12 -
+                    ᾱ_self_1 * ᾱ_self_2^2 * β̄21) / 2
+        F_off_13 = (ᾱ_self_1^2 * ᾱ_self_3 * β̄13 -
+                    ᾱ_self_1 * ᾱ_self_3^2 * β̄31) / 2
+        F_off_23 = (ᾱ_self_2^2 * ᾱ_self_3 * β̄23 -
+                    ᾱ_self_2 * ᾱ_self_3^2 * β̄32) / 2
+        base = 21 * (i - 1)
+        F[base + 13] = (θ12_np1 - θ12_n) / dt + W12 * F_off_12
+        F[base + 14] = (θ13_np1 - θ13_n) / dt + W13 * F_off_13
+        F[base + 15] = (θ23_np1 - θ23_n) / dt + W23 * F_off_23
+
+        # F^β_{ab} rows: trivial-drive + symmetric-strain forcing + closed-loop
+        # H_back contribution (M4 Phase 1 form, lifted per pair).
+        F[base + 16] = (β12_np1 - β12_n) / dt + G̃12 * ᾱ_self_2 / 2 +
+                       C_BACK * G̃12 * ᾱ_self_2 * β̄_self_2 / 2     # F^β_12
+        F[base + 17] = (β21_np1 - β21_n) / dt + G̃12 * ᾱ_self_1 / 2 +
+                       C_BACK * G̃12 * ᾱ_self_1 * β̄_self_1 / 2     # F^β_21
+        F[base + 18] = (β13_np1 - β13_n) / dt + G̃13 * ᾱ_self_3 / 2 +
+                       C_BACK * G̃13 * ᾱ_self_3 * β̄_self_3 / 2     # F^β_13
+        F[base + 19] = (β31_np1 - β31_n) / dt + G̃13 * ᾱ_self_1 / 2 +
+                       C_BACK * G̃13 * ᾱ_self_1 * β̄_self_1 / 2     # F^β_31
+        F[base + 20] = (β23_np1 - β23_n) / dt + G̃23 * ᾱ_self_3 / 2 +
+                       C_BACK * G̃23 * ᾱ_self_3 * β̄_self_3 / 2     # F^β_23
+        F[base + 21] = (β32_np1 - β32_n) / dt + G̃23 * ᾱ_self_2 / 2 +
+                       C_BACK * G̃23 * ᾱ_self_2 * β̄_self_2 / 2     # F^β_32
+    end
+    return F
+end
+
+"""
+    cholesky_el_residual_3D_berry_kh(y_np1, y_n, aux, dt)
+
+Allocating wrapper around `cholesky_el_residual_3D_berry_kh!`. Returns
+a fresh residual vector. Used in tests where allocation cost is
+irrelevant.
+"""
+function cholesky_el_residual_3D_berry_kh(y_np1::AbstractVector,
+                                            y_n::AbstractVector,
+                                            aux::NamedTuple,
+                                            dt::Real)
+    Tres = promote_type(eltype(y_np1), eltype(y_n), eltype(aux.s_vec), typeof(dt))
+    F = similar(y_np1, Tres, length(y_np1))
+    cholesky_el_residual_3D_berry_kh!(F, y_np1, y_n, aux, dt)
+    return F
+end

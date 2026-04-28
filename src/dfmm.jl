@@ -592,4 +592,15 @@ export det_step_2d_HG_matrix_free!,
        det_step_2d_berry_HG_matrix_free!,
        det_step_3d_berry_HG_matrix_free!
 
+# --- Phase M4-2 API: 3D KH 21-dof residual + driver + IC factory --------
+# 3D analog of M4 Phase 1 (2D closed-loop β_off ↔ β_a). Lifts the
+# off-diagonal Cholesky-sector to six β_{ab} slots (one per pair (a, b))
+# with full closed-loop H_back per pair. Used by the M4 Phase 2 D.1 3D
+# Kelvin-Helmholtz falsifier driver.
+# See `reference/notes_M4_phase2_3d_kh_falsifier.md`.
+export cholesky_el_residual_3D_berry_kh!, cholesky_el_residual_3D_berry_kh
+export pack_state_3d_kh, unpack_state_3d_kh!, build_residual_aux_3D_kh
+export det_step_3d_berry_kh_HG!
+export allocate_cholesky_3d_kh_fields, tier_d_kh_3d_ic_full
+
 end # module
