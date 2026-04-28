@@ -743,6 +743,211 @@ function realizability_project_2d!(fields, leaves;
     return fields
 end
 
+# -----------------------------------------------------------------------------
+# Per-axis (3D) realizability projection (M3-7d)
+# -----------------------------------------------------------------------------
+
+"""
+    ProjectionStats3D
+
+Lightweight per-run accumulator counting how often the 3D per-axis
+realizability projection (`realizability_project_3d!`) fired across
+calls. The 3D analog of `ProjectionStats` (1D / 2D form). Tracks the
+same per-cell-per-step event statistics, lifted to three axes.
+
+Fields:
+  * `n_steps::Int` — number of `realizability_project_3d!` calls observed.
+  * `n_events::Int` — number of cell-step pairs where the projection
+                      raised `M_vv` (i.e., `M_vv_pre < headroom · max_a β_a²`
+                      or `M_vv_pre < Mvv_floor`).
+  * `n_floor_events::Int` — subset of `n_events` where the absolute
+                            `Mvv_floor` (rather than the relative
+                            headroom) was the binding constraint.
+  * `total_dE_inj::Float64` — accumulated extra internal energy added
+                              by all projection events.
+  * `Mvv_min_pre::Float64`  — running min of pre-projection `M_vv`.
+  * `Mvv_min_post::Float64` — running min of post-projection `M_vv`.
+
+# Reduction to ProjectionStats at β_3 = 0
+
+When the 3D field has `β_3 = 0` everywhere, the 3D projection target
+collapses byte-equally to the 2D form (`max(β_1², β_2², β_3²) =
+max(β_1², β_2²)`); the M3-7d test verifies this against the M3-3d 2D
+reference.
+"""
+mutable struct ProjectionStats3D
+    n_steps::Int
+    n_events::Int
+    n_floor_events::Int
+    total_dE_inj::Float64
+    Mvv_min_pre::Float64
+    Mvv_min_post::Float64
+end
+
+ProjectionStats3D() = ProjectionStats3D(0, 0, 0, 0.0, Inf, Inf)
+
+"""
+    reset!(stats::ProjectionStats3D)
+
+Zero a `ProjectionStats3D` accumulator in place. Useful for re-using
+the same `stats` across multiple `realizability_project_3d!` calls.
+"""
+function reset!(stats::ProjectionStats3D)
+    stats.n_steps = 0
+    stats.n_events = 0
+    stats.n_floor_events = 0
+    stats.total_dE_inj = 0.0
+    stats.Mvv_min_pre = Inf
+    stats.Mvv_min_post = Inf
+    return stats
+end
+
+"""
+    realizability_project_3d!(fields, leaves; project_kind=:reanchor,
+                              headroom=1.05, Mvv_floor=1e-2,
+                              pressure_floor=1e-8, ρ_ref=1.0,
+                              Gamma=GAMMA_LAW_DEFAULT,
+                              stats::Union{ProjectionStats3D,Nothing}=nothing)
+        -> fields
+
+Per-axis 3D analog of `realizability_project_2d!`. Walks the leaves of
+a 3D Cholesky-sector field set (`allocate_cholesky_3d_fields`) and
+pushes each cell's `(α_a, β_a, s)` state back inside the realizability
+cone along **all three** principal axes:
+
+    M_vv,aa ≥ headroom · β_a²    for a = 1, 2, 3.
+
+Mutates `fields` in place; returns `fields`. If `stats !== nothing`,
+projection-event statistics are accumulated.
+
+# Why per-axis?
+
+In 3D the per-axis `γ²_a = M_vv,aa − β_a²` realizability constraint is
+checked once per axis. Because the diagonal EOS gives
+`M_vv,11 = M_vv,22 = M_vv,33 = Mvv(J, s)` (an isotropic ideal gas does
+not distinguish axes), raising `s` raises all three `M_vv,aa`
+simultaneously. The per-axis loop therefore reduces to a single
+`s`-raise driven by `max_a(headroom · β_a², Mvv_floor)`. The
+off-diagonal coupling stays zero per M3-3a Q3 + M3-7 design note §4.4
+(off-diag β omitted in M3-7); this projection honours that — `β_{ab}`
+are not stored in the 3D field set.
+
+# Variants
+
+  • `:reanchor` *(default)* — raise `s` so that
+    `M_vv,aa ≥ max(headroom · β_a², Mvv_floor)` for all three axes
+    simultaneously. The 1D-projection's per-cell P_⊥ debit is
+    inherited (debit comes from the post-Newton `Pp` slot if
+    available; the 3D field set does NOT carry `Pp` per the M3-7
+    deferred sector — the projection admits the energy increment as
+    a silent floor-gain, preserving entropy conservation).
+  • `:none` — no-op. Bit-equality regression mirror.
+
+# Conservation
+
+  • Per-axis β unchanged (projection acts only on `s`).
+  • Per-axis (α, x, u, θ_ab) unchanged.
+  • Internal-energy increment per leaf: `+ρ · (M_vv_target − M_vv_pre)`
+    when projection fires (silent floor-gain; admitted via stats
+    accumulator only).
+
+# 2D-symmetric reduction (β_3 = 0)
+
+On a 3D state with `β_3 = 0`, the per-axis target reduces byte-equally
+to the M3-3d 2D `max_a(β_1², β_2²)` target. The M3-7d test verifies
+this on a 3D 2D-symmetric IC (β_3 = 0 everywhere) against the M3-3d
+2D `realizability_project_2d!` form to ≤ 1e-12.
+
+# 1D-symmetric reduction (β_2 = β_3 = 0)
+
+Further collapsing to a 1D-symmetric IC, the target reduces to
+`headroom · β_1²` — identical to the M2-3 1D
+`realizability_project!`. This is the per-axis 3D ⊂ 1D dimension-lift
+gate at the projection level.
+"""
+function realizability_project_3d!(fields, leaves;
+                                   project_kind::Symbol = :reanchor,
+                                   headroom::Real = 1.05,
+                                   Mvv_floor::Real = 1e-2,
+                                   pressure_floor::Real = 1e-8,
+                                   ρ_ref::Real = 1.0,
+                                   Gamma::Real = GAMMA_LAW_DEFAULT,
+                                   stats::Union{ProjectionStats3D,Nothing} = nothing)
+    if project_kind === :none
+        if stats !== nothing
+            stats.n_steps += 1
+        end
+        return fields
+    end
+    @assert project_kind === :reanchor "realizability_project_3d!: unsupported project_kind=$(project_kind)"
+
+    if stats !== nothing
+        stats.n_steps += 1
+    end
+
+    h = Float64(headroom)
+    Mvv_floor_f = Float64(Mvv_floor)
+    pf = Float64(pressure_floor)
+    ρ_t = Float64(ρ_ref)
+    J_t = 1.0 / ρ_t
+
+    @inbounds for ci in leaves
+        β1 = Float64(fields.β_1[ci][1])
+        β2 = Float64(fields.β_2[ci][1])
+        β3 = Float64(fields.β_3[ci][1])
+        s_pre = Float64(fields.s[ci][1])
+
+        Mvv_pre = Float64(Mvv(J_t, s_pre; Gamma = Gamma))
+        if stats !== nothing
+            stats.Mvv_min_pre = min(stats.Mvv_min_pre, Mvv_pre)
+        end
+
+        # Per-axis realizability target. The binding constraint is the
+        # max over axes (β² is non-negative, so max defines the tighter
+        # cone-interior requirement). 3D adds β_3.
+        β2_max = max(β1 * β1, β2 * β2, β3 * β3)
+        Mvv_target_rel = h * β2_max
+        Mvv_target = max(Mvv_target_rel, Mvv_floor_f)
+
+        Mvv_post = Mvv_pre
+        if Mvv_pre < Mvv_target
+            # Per-axis projection event: raise s.
+            if stats !== nothing
+                stats.n_events += 1
+                if Mvv_target > Mvv_target_rel
+                    stats.n_floor_events += 1
+                end
+            end
+
+            Pxx_pre = ρ_t * Mvv_pre
+            Pxx_new = ρ_t * Mvv_target
+            ΔPxx = Pxx_new - Pxx_pre   # > 0 by construction
+            # 3D field set does NOT carry Pp; admit the full increment
+            # as silent floor-gain (the variational debit lives in the
+            # post-Newton sector that M3-9 will activate; for M3-7d the
+            # accumulator tracks the unbalanced energy injection).
+            floor_gain = 0.5 * ΔPxx
+            # Suppress unused-variable warnings: the pf arg mirrors 1D / 2D
+            # call signatures and is kept for forward-compatibility with
+            # M3-9 when Pp is added to the 3D field set.
+            _ = pf
+
+            if stats !== nothing
+                stats.total_dE_inj += floor_gain
+            end
+
+            s_new = s_pre + log(Mvv_target / max(Mvv_pre, 1e-300))
+            fields.s[ci] = (s_new,)
+            Mvv_post = Mvv_target
+        end
+
+        if stats !== nothing
+            stats.Mvv_min_post = min(stats.Mvv_min_post, Mvv_post)
+        end
+    end
+    return fields
+end
+
 """
     inject_vg_noise!(mesh::Mesh1D, dt; params, rng,
                      diag = InjectionDiagnostics(n_segments(mesh)))
