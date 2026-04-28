@@ -9,14 +9,15 @@
 | Phase | Status | Test delta | Notes |
 |---|---|---:|---|
 | M4-1: closed-loop β_off ↔ β_a coupling | **CLOSED** (HONEST_FALSIFICATION) | +598 | D.1 KH: closed-loop preserves regression but does not activate eigenmode |
-| M4-2: per-species momentum (D.7 follow-up) | not started | — | |
-| M4-3: 3D Tier-D headlines | not started | — | |
-| M4-4: full Metal/CUDA port | not started (HG `Backend` blocker) | — | |
-| M4-5: MPI scaling | not started | — | |
-| M4-6: E.4 cosmological + ColDICE | not started | — | |
-| M4-7: D.6 / D.8 / D.9 two-fluid 2D | not started | — | |
-| M4-8: Bernstein reconstruction | not started | — | |
-| M4-9: methods paper resubmission | not started | — | |
+| M4-2: 3D D.1 KH falsifier (lift of M4-1) | **CLOSED** (HONEST_FALSIFICATION_LIFTED) | +1187 | 2D kinematic-only finding generalizes to 3D; c_off ≈ 1.57 at L=3 |
+| M4-3: per-species momentum (D.7 follow-up) | not started | — | renumbered from M4-2 |
+| M4-4: 3D Tier-D headlines (D.7, D.10) | not started | — | |
+| M4-5: full Metal/CUDA port | not started (HG `Backend` blocker) | — | |
+| M4-6: MPI scaling | not started | — | |
+| M4-7: E.4 cosmological + ColDICE | not started | — | |
+| M4-8: D.6 / D.8 / D.9 two-fluid 2D | not started | — | |
+| M4-9: Bernstein reconstruction | not started | — | |
+| M4-10: methods paper resubmission | not started | — | |
 
 ## M4-1 close (2026-04-26)
 
@@ -126,3 +127,105 @@ momentum) and M4-3 (3D Tier-D) are unblocked; M4-3a (3D KH) will
 revisit the eigenmode question with the same closed-loop form lifted
 to 3D, where additional Berry-block degrees of freedom may activate
 the eigenvalue structure.*
+
+## M4-2 close (2026-04-26)
+
+**Headline scientific finding (HONEST_FALSIFICATION_LIFTED):** The
+M4 Phase 1 2D kinematic-only finding **generalizes to 3D**. Lifting
+the closed-loop β_off ↔ β_a coupling to 3D — three off-diagonal
+Cholesky pairs (1,2), (1,3), (2,3) with their own H_rot^off and
+H_back per pair — produces the same linear-in-t (forced) growth
+rather than exp-in-t (eigenmode self-amplification) at the level-3
+3D KH falsifier (8³ = 512 cells).
+
+**3D residual structure:**
+- 21 dof per leaf cell (15 base M3-7c + 6 off-diagonal `β_{ab}` slots).
+- Six cross-axis velocity-gradient pairs: (∂_2 u_1, ∂_1 u_2),
+  (∂_3 u_1, ∂_1 u_3), (∂_3 u_2, ∂_2 u_3).
+- Three H_rot^off pair contributions: H^off_{12}, H^off_{13},
+  H^off_{23} per cell.
+- Closed-loop H_back per pair: `H_back^(ab) = c_back · G̃_{ab} ·
+  (α_b·β_{ab}·β_b + α_a·β_{ba}·β_a) / 2`.
+- Six F^θ_{ab} drives via per-pair vorticity W_{ab} · F_off^(ab).
+
+**Falsifier verdict at level 3 (8³ = 512 cells, c_back=1):**
+- γ_DR = 3.333 (U/(2w) with U=1, w=0.15).
+- γ_measured = 5.24 ⇒ c_off ≈ 1.57 (broad band [0.5, 2.0] PASSED;
+  aspiration [0.8, 1.2] NOT ACHIEVED).
+- ssr_lin = 1.4e-5 ≪ ssr_exp = 0.037 ⇒ linear-in-t fits ~2700×
+  better than exp-in-t.
+- Wall-time per step: 3.41 s at level 3 (30 steps in 102 s wall).
+- n_negative_jacobian = 0 throughout the trajectory (6-component
+  β cone realizability holds).
+
+**Bit-exact regression preservation:**
+At β_off = 0 IC + axis-aligned u (the M3-7c regression configuration),
+the 21-dof residual reduces byte-equal to the M3-7c 15-dof Berry
+residual on the first 15 slots; rows 16..21 reduce to trivial
+kinematic drives. Verified by GATE 2 of `test_M4_phase2_3d_kh_falsifier.jl`.
+
+**Test delta:** +1187 asserts (8 GATEs in
+`test_M4_phase2_3d_kh_falsifier.jl`).
+
+**LOC delta:**
+- `src/eom.jl`: +468 lines (`pack_state_3d_kh`, `unpack_state_3d_kh!`,
+  `build_residual_aux_3D_kh`, `cholesky_el_residual_3D_berry_kh!` +
+  allocating wrapper).
+- `src/newton_step_HG.jl`: +110 lines (`det_step_3d_berry_kh_HG!`).
+- `src/setups_2d.jl`: +199 lines (`allocate_cholesky_3d_kh_fields`,
+  `tier_d_kh_3d_ic_full`).
+- `src/dfmm.jl`: +9 lines (M4 Phase 2 export block).
+
+**Headline plot:** `reference/figs/M4_phase2_3d_kh_falsifier.png` —
+4-panel figure (log|A_rms(t)| with linear & exp fit overlays; 3D
+γ_measured/γ_DR vs 2D Phase 1 reference; 6-component β cone diagnostics;
+per-axis γ_a max/min trajectories).
+
+**3D ⊂ 2D dimension-lift property (verified by GATE 8):**
+With u_3 = 0 in the IC, ∂_3 u_a = 0 for any a and the (1, 3) and
+(2, 3) pair velocity gradients vanish. The (1, 3)/(2, 3) off-diag β
+slots stay at zero throughout the trajectory; the dominant (1, 2)
+pair tilt mode is the only active growth mode. The 2D KH dynamics
+embed in the 3D path byte-equally on the z-symmetric sub-slice.
+
+**Reference:** `reference/notes_M4_phase2_3d_kh_falsifier.md`.
+
+### M4 Phase 3 (per-species momentum for D.7) handoff items
+
+  1. **Per-species momentum on 3D field set**: extend
+     `tier_d_dust_trap_ic_full` (2D) to 3D Taylor-Green / ABC flow
+     with multi-species `TracerMeshHG3D[:gas, :dust]`.
+  2. **Drag relaxation kernel**: `∂_t (ρ_k u_k) = -ρ_k (u_k - u_gas)
+     / τ_drag(size)` per species per axis.
+  3. **2D ⊂ 3D selectivity**: a 3D dust-trap IC with z-symmetric
+     base flow should reproduce the 2D D.7 verdicts byte-equal on
+     axes 1, 2.
+
+### Open questions for M4 Phase 2c (if revisited)
+
+  - Does the 3D path's additional Berry block (axis-3) admit a
+    higher-order H_back^cubic that activates the eigenmode without
+    breaking 3D ⊂ 2D parity?
+  - Does the antisymmetric H_back^anti variant (tested briefly in 2D
+    Phase 1, broke GATE 3) extend cleanly to 3D's six-component
+    sector?
+  - Bernstein reconstruction (M4-9) is the natural place to resolve
+    the eigenmode question — it lifts the per-cell linearised
+    Rayleigh equation as a substrate-level extension rather than a
+    Hamiltonian addition.
+
+---
+
+*M4-2 closed in HONEST_FALSIFICATION_LIFTED mode on 2026-04-26:
+the 2D kinematic-only finding from M4 Phase 1 generalizes to 3D.
+The 21-dof 3D KH-active residual closes the symplectic structure
+across all three Berry pairs and preserves bit-exact regression at
+β_off = 0; the falsifier verdict at level 3 confirms c_off ≈ 1.57
+in the broad band, with linear-in-t fitting ~2700× better than
+exp-in-t. The 6-component β cone realizability holds (n_negative_jacobian
+= 0). The methods paper §10.5 D.1 broad-band claim is preserved in
+3D as in 2D; the tighter aspiration band remains unmet, and the
+Drazin-Reid eigenmode requires a different physics extension
+(higher-order Hamiltonian, per-cell Rayleigh reconstruction, or
+Bernstein-order substrate lift). M4 Phase 3 (per-species momentum
+for D.7) is unblocked.*
