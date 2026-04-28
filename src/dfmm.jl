@@ -574,4 +574,22 @@ export tier_e_high_mach_shock_ic_full,
        tier_e_severe_shell_crossing_ic_full,
        tier_e_low_knudsen_ic_full
 
+# --- Phase M3-8 Phase b API: matrix-free Newton-Krylov drivers ------------
+# Matrix-free Newton-Krylov variants of the dense / sparse-Jacobian
+# Newton drivers `det_step_2d_HG!`, `det_step_2d_berry_HG!`, and
+# `det_step_3d_berry_HG!`. Same residual functions, same bit-equality
+# contract on zero-strain ICs (≤ 1e-12 abs); rel-error ≤ 1e-10 on
+# active-strain configurations due to GMRES inner-tolerance round-off.
+# Drops the SparseMatrixCSC Jacobian construction (M3-8a audit blocker
+# #2) and the ForwardDiff-Dual coloring (blocker #1) — both are GPU-
+# unfriendly. The matrix-free path is the algorithm-side prerequisite
+# for the M3-8c full Metal port; once HG-side `Backend`-parameterized
+# `PolynomialFieldSet` lands upstream, the same Newton-Krylov outer
+# loop runs unchanged on `MtlArray` / `CuArray` / `ROCArray` storage.
+# See `reference/notes_M3_8b_metal_gpu_port.md`.
+include("newton_step_matrix_free.jl")
+export det_step_2d_HG_matrix_free!,
+       det_step_2d_berry_HG_matrix_free!,
+       det_step_3d_berry_HG_matrix_free!
+
 end # module
