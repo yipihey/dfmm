@@ -785,4 +785,34 @@ using Test
         include("test_M3_7d_realizability_3d.jl")
         include("test_M3_7d_selectivity.jl")
     end
+
+    @testset verbose = true "Phase M3-7e: 3D Tier-C/D drivers (closes M3-7)" begin
+        # M3-7e (final M3-7 sub-phase). 3D analogs of the M3-4 Phase 2
+        # 2D Tier-C drivers + the M3-6 Phase 2 D.4 Zel'dovich pancake.
+        #
+        # Four test files (one per Tier-C/D driver):
+        #   • C.1 1D-symmetric 3D Sod (`test_M3_7e_C1_3d_sod.jl`):
+        #     IC bridge round-trip; transverse (y, z)-independence
+        #     ≤ 1e-12 per output step; conservation; axis-swap symmetry.
+        #   • C.2 3D cold sinusoid (`test_M3_7e_C2_3d_cold_sinusoid.jl`):
+        #     §7.5 per-axis γ selectivity reproduction across three k
+        #     symmetry classes (1D-sym k=(1,0,0): ratio>1e10;
+        #     2D-sym k=(1,1,0): ratio>1e6; full-3D k=(1,1,1): all axes
+        #     fire).
+        #   • C.3 3D plane wave (`test_M3_7e_C3_3d_plane_wave.jl`):
+        #     IC bridge round-trip; linear-acoustic stability across
+        #     n_steps = 5; trivial-axis velocities = 0 to round-off;
+        #     mesh-resolution sanity (levels 2, 3).
+        #   • D.4 3D Zel'dovich pancake (`test_M3_7e_D4_zeldovich_3d.jl`):
+        #     the headline scientific test of M3-7. Per-axis γ
+        #     selectivity at near-caustic > 1e10 (M3-7d gate); γ_2 = γ_3
+        #     byte-equal by symmetry; mass / momentum / energy
+        #     conservation ≤ 1e-8; 1D-symmetry preservation
+        #     (u_2 = u_3 = 0 throughout).
+        # See `reference/notes_M3_7e_3d_tier_cd_drivers.md`.
+        include("test_M3_7e_C1_3d_sod.jl")
+        include("test_M3_7e_C2_3d_cold_sinusoid.jl")
+        include("test_M3_7e_C3_3d_plane_wave.jl")
+        include("test_M3_7e_D4_zeldovich_3d.jl")
+    end
 end
