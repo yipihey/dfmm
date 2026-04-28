@@ -603,4 +603,26 @@ export pack_state_3d_kh, unpack_state_3d_kh!, build_residual_aux_3D_kh
 export det_step_3d_berry_kh_HG!
 export allocate_cholesky_3d_kh_fields, tier_d_kh_3d_ic_full
 
+# --- Phase M4-3 API: per-species momentum coupling (D.7 follow-up) -------
+# Per-species momentum + drag relaxation extension of `TracerMeshHG2D`,
+# closing the M3-6 Phase 4 D.7 dust-traps honest finding (the literal
+# centrifugal-accumulation claim was FALSIFIED on the M3-6 substrate
+# because `advect_tracers_HG_2d!` is a no-op pure-Lagrangian byte-stable
+# step; passive scalars cannot accumulate at vortex centres without an
+# explicit momentum coupling). The new `PerSpeciesMomentumHG2D` struct
+# adds per-species (u_x, u_y) per cell + per-species drag relaxation
+# timescale; `drag_relax_per_species!` is exponential Stokes-drag
+# relaxation toward gas velocity; `advance_positions_per_species!` is
+# kinematic position advance with the species' own velocity (decoupled
+# species drift relative to the gas frame); `accumulate_species_to_cells!`
+# remaps drifted Lagrangian positions back into per-cell concentrations
+# (the kinematic mechanism for vortex-centre accumulation).
+#
+# Bit-exact opt-in contract: not constructing a `PerSpeciesMomentumHG2D`
+# leaves all M3-6 Phase 3 / Phase 4 paths byte-equal.
+# See `reference/notes_M4_phase3_per_species_momentum.md`.
+export PerSpeciesMomentumHG2D
+export drag_relax_per_species!, advance_positions_per_species!
+export accumulate_species_to_cells!, dust_peak_over_mean_remapped
+
 end # module

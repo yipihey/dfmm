@@ -1332,3 +1332,328 @@ function gamma_per_axis_2d_per_species_field(fields, leaves;
     end
     return out
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M4 Phase 3: Per-species momentum coupling (D.7 follow-up).
+# ─────────────────────────────────────────────────────────────────────
+#
+# The M3-6 Phase 4 dust-trap finding (FALSIFIED on the literal claim,
+# `reference/notes_M3_6_phase4_D7_dust_traps.md`) showed that the
+# Phase 3 substrate's `advect_tracers_HG_2d!` is a no-op (pure-
+# Lagrangian byte-stable contract) so passive-scalar tracers cannot
+# accumulate at vortex centres. The methods paper §10.5 D.7 prediction
+# requires a *physics extension*: per-species momentum + drag.
+#
+# This M4 Phase 3 implementation adds:
+#
+#   • `PerSpeciesMomentumHG2D{T}` — wraps a `TracerMeshHG2D` plus
+#     per-species (u_x, u_y) fields per cell, per-species `ρ`
+#     (mass per cell), per-species drag relaxation timescale
+#     `τ_drag` (one per species), and per-species Lagrangian
+#     position offsets `(x_k, y_k)` per cell.
+#   • `drag_relax_per_species!(psm, dt)` — exponential relaxation
+#     of each species' velocity toward gas: `u_k ← u_k +
+#     (1 − exp(−dt/τ_k)) · (u_gas − u_k)`. For τ → 0 (passive-
+#     scalar limit) the dust velocity tracks gas exactly per step;
+#     for τ → ∞ (decoupled limit) the velocities are unchanged.
+#   • `advance_positions_per_species!(psm, dt)` — kinematic update
+#     `x_k ← x_k + dt · u_k` per species per axis. The position
+#     offsets are stored *relative to the cell centre at IC* so a
+#     species that moves with the gas has zero offset; a decoupled
+#     species accumulates centrifugal drift relative to the gas
+#     frame.
+#   • `accumulate_dust_at_vortex!(psm, frame, leaves, lo, L1, L2)`
+#     — remap dust mass from per-species position offsets back into
+#     a per-cell concentration. This is the kinematic mechanism by
+#     which decoupled dust accumulates at vortex centres: dust whose
+#     Lagrangian path drifts toward a centre deposits its mass at
+#     the cell containing the drifted position.
+#
+# Bit-exact opt-in contract: at construction with `enable=false` (or
+# by simply not using `PerSpeciesMomentumHG2D`), nothing in the
+# substrate path changes — `det_step_2d_berry_HG!` byte-equal,
+# `advect_tracers_HG_2d!` byte-equal. The M3-6 Phase 4 / Phase 3
+# regression suite is preserved unconditionally.
+
+"""
+    PerSpeciesMomentumHG2D{T<:Real}
+
+M4 Phase 3 per-species momentum extension of `TracerMeshHG2D`.
+
+Wraps a `TracerMeshHG2D` (which holds per-species per-cell
+concentrations) and adds per-species per-cell velocity components
+plus a Lagrangian position offset (relative to the cell centre at
+IC). The drag kernel relaxes each species' velocity toward the gas
+velocity stored in the underlying field set's `u_1, u_2` slots; the
+position kernel advects the per-species position by its own velocity
+(NOT the gas velocity), so a decoupled species drifts relative to
+the Eulerian frame.
+
+Storage:
+- `tm::TracerMeshHG2D{T}` — base tracer mesh (concentrations + names).
+- `u_per_species::Array{T, 3}` — `(N_species, 2, n_cells)` per-cell
+  velocity components.
+- `dx_per_species::Array{T, 3}` — `(N_species, 2, n_cells)` per-cell
+  Lagrangian position offset relative to the cell centre at IC.
+- `τ_drag_per_species::Vector{T}` — drag relaxation timescale per
+  species (length N_species). `τ → 0` ⇒ tightly-coupled (passive-
+  scalar limit); `τ → ∞` ⇒ decoupled (free-particles); intermediate
+  ⇒ Stokes-drag relaxation.
+
+# Bit-exact opt-in contract
+
+The struct is purely additive — using `TracerMeshHG2D` directly (the
+M3-6 Phase 3 / Phase 4 path) is byte-equal to the pre-M4-Phase-3
+codebase. The momentum coupling is invoked explicitly via
+`drag_relax_per_species!` and `advance_positions_per_species!`.
+
+# Initial conditions
+
+At construction the per-species velocity is initialised to the gas
+velocity (read from `tm.fields.u_1, tm.fields.u_2`) so all species
+are co-moving at t = 0. The position offsets are zero. Gas (species
+1 by convention) keeps `τ_drag[1] = 0` so it byte-tracks the gas
+field; dust species have `τ_drag[k] > 0`.
+"""
+mutable struct PerSpeciesMomentumHG2D{T<:Real}
+    tm::TracerMeshHG2D{T}
+    u_per_species::Array{T, 3}
+    dx_per_species::Array{T, 3}
+    τ_drag_per_species::Vector{T}
+end
+
+"""
+    PerSpeciesMomentumHG2D(tm::TracerMeshHG2D{T};
+                            τ_drag_per_species,
+                            leaves) -> PerSpeciesMomentumHG2D{T}
+
+Allocate a per-species momentum extension on top of `tm`. The
+per-species velocity is initialised to the gas velocity stored in
+`tm.fields.u_1, tm.fields.u_2` at every leaf; non-leaf cells are
+left at zero (mirrors the field-set storage convention).
+
+`τ_drag_per_species` must have length `n_species(tm)`; entry `k = 1`
+(the gas species) should be `0.0` (tightly-coupled to itself) for
+the canonical 2-species `[:gas, :dust]` configuration.
+"""
+function PerSpeciesMomentumHG2D(tm::TracerMeshHG2D{T};
+                                  τ_drag_per_species::AbstractVector,
+                                  leaves::AbstractVector{<:Integer}) where {T<:Real}
+    K = n_species(tm)
+    @assert length(τ_drag_per_species) == K "τ_drag_per_species length must equal n_species"
+    nc = n_cells_2d(tm)
+    u_arr = zeros(T, K, 2, nc)
+    dx_arr = zeros(T, K, 2, nc)
+    @inbounds for ci in leaves
+        u1 = T(tm.fields.u_1[ci][1])
+        u2 = T(tm.fields.u_2[ci][1])
+        for k in 1:K
+            u_arr[k, 1, ci] = u1
+            u_arr[k, 2, ci] = u2
+        end
+    end
+    τ = collect(T, τ_drag_per_species)
+    return PerSpeciesMomentumHG2D{T}(tm, u_arr, dx_arr, τ)
+end
+
+"""
+    n_species(psm::PerSpeciesMomentumHG2D) -> Int
+"""
+n_species(psm::PerSpeciesMomentumHG2D) = n_species(psm.tm)
+
+"""
+    species_index(psm::PerSpeciesMomentumHG2D, name::Symbol) -> Int
+"""
+species_index(psm::PerSpeciesMomentumHG2D, name::Symbol) =
+    species_index(psm.tm, name)
+
+"""
+    drag_relax_per_species!(psm::PerSpeciesMomentumHG2D, dt;
+                              leaves) -> psm
+
+Stokes-drag exponential relaxation of each species' velocity toward
+the gas velocity. For each leaf cell `ci` and each species `k`,
+each axis `a`:
+
+    u_k[a] ← u_k[a] + (1 − exp(−dt / τ_k)) · (u_gas[a] − u_k[a])
+
+with `u_gas` read from `psm.tm.fields.u_1, .u_2` at cell `ci`. The
+case `τ_k = 0` is treated as "infinitely tight coupling": `u_k ←
+u_gas` (passive-scalar limit). The case `τ_k = Inf` is treated as
+"decoupled": `u_k` unchanged. Intermediate τ produces Stokes-drag
+relaxation toward gas.
+
+Returns `psm` unchanged in identity (all writes in place).
+"""
+function drag_relax_per_species!(psm::PerSpeciesMomentumHG2D{T}, dt::Real;
+                                   leaves::AbstractVector{<:Integer}) where {T<:Real}
+    K = n_species(psm)
+    dtT = T(dt)
+    fields = psm.tm.fields
+    @inbounds for ci in leaves
+        ug1 = T(fields.u_1[ci][1])
+        ug2 = T(fields.u_2[ci][1])
+        for k in 1:K
+            τk = psm.τ_drag_per_species[k]
+            if τk == 0
+                # Tightly-coupled limit — u_k = u_gas exactly.
+                psm.u_per_species[k, 1, ci] = ug1
+                psm.u_per_species[k, 2, ci] = ug2
+            elseif !isfinite(τk)
+                # Decoupled limit — leave u_k unchanged.
+                continue
+            else
+                ratio = dtT / τk
+                fac = ratio > 100 ? T(1) : T(1) - exp(-ratio)
+                u1 = psm.u_per_species[k, 1, ci]
+                u2 = psm.u_per_species[k, 2, ci]
+                psm.u_per_species[k, 1, ci] = u1 + fac * (ug1 - u1)
+                psm.u_per_species[k, 2, ci] = u2 + fac * (ug2 - u2)
+            end
+        end
+    end
+    return psm
+end
+
+"""
+    advance_positions_per_species!(psm::PerSpeciesMomentumHG2D, dt;
+                                     leaves) -> psm
+
+Kinematic update of per-species Lagrangian position offset:
+
+    dx_k[a] ← dx_k[a] + dt · u_k[a]
+
+A species that tracks the gas velocity perfectly (`τ_k = 0`)
+maintains `u_k = u_gas` so `dx_k` accumulates the integrated path
+relative to the cell centre. A decoupled species (`τ_k = ∞`) keeps
+its IC velocity, so its `dx_k` integrates that constant velocity.
+Intermediate τ produces drift that lags the gas — the kinematic
+mechanism for centrifugal accumulation in vortex flows.
+
+Returns `psm` (writes in place).
+"""
+function advance_positions_per_species!(psm::PerSpeciesMomentumHG2D{T},
+                                          dt::Real;
+                                          leaves::AbstractVector{<:Integer}) where {T<:Real}
+    K = n_species(psm)
+    dtT = T(dt)
+    @inbounds for ci in leaves
+        for k in 1:K
+            psm.dx_per_species[k, 1, ci] += dtT * psm.u_per_species[k, 1, ci]
+            psm.dx_per_species[k, 2, ci] += dtT * psm.u_per_species[k, 2, ci]
+        end
+    end
+    return psm
+end
+
+"""
+    accumulate_species_to_cells!(psm::PerSpeciesMomentumHG2D, frame, leaves;
+                                   k::Integer,
+                                   lo::Tuple, hi::Tuple,
+                                   wrap::Bool=true) -> Vector{T}
+
+Remap species-`k`'s mass from its drifted Lagrangian positions back
+into a per-cell concentration array. For each source cell `ci` with
+concentration `c = psm.tm.tracers[k, ci]` and Lagrangian offset
+`(dx, dy) = psm.dx_per_species[k, :, ci]`, the destination cell
+centre `(cx + dx, cy + dy)` (modulo the box on each axis when
+`wrap=true`) is computed and the cell containing that point gets
+its concentration accumulator updated by `c` (volume-weighted —
+since all leaves are equal-volume on a balanced quadtree this is
+just an additive deposit divided by per-destination cell count).
+
+Returns a `Vector{T}` of length `length(leaves)` giving the new
+per-leaf concentration after remap. Total mass is conserved exactly
+(deposits are bookkeeping moves of contributing concentrations).
+"""
+function accumulate_species_to_cells!(psm::PerSpeciesMomentumHG2D{T},
+                                        frame, leaves::AbstractVector{<:Integer};
+                                        k::Integer,
+                                        lo::Tuple, hi::Tuple,
+                                        wrap::Bool = true) where {T<:Real}
+    n = length(leaves)
+    @assert 1 ≤ k ≤ n_species(psm) "species index out of range"
+    L1 = T(hi[1] - lo[1])
+    L2 = T(hi[2] - lo[2])
+    lo1 = T(lo[1]); lo2 = T(lo[2])
+    # Cell centres + indices.
+    cx_arr = Vector{T}(undef, n)
+    cy_arr = Vector{T}(undef, n)
+    @inbounds for (i, ci) in enumerate(leaves)
+        lo_c, hi_c = HierarchicalGrids.cell_physical_box(frame, ci)
+        cx_arr[i] = T(0.5 * (lo_c[1] + hi_c[1]))
+        cy_arr[i] = T(0.5 * (lo_c[2] + hi_c[2]))
+    end
+    # Source mass: c * 1 (equal-volume cells; drop the constant factor).
+    src_mass = Vector{T}(undef, n)
+    @inbounds for (i, ci) in enumerate(leaves)
+        src_mass[i] = T(psm.tm.tracers[k, ci])
+    end
+    # Compute destination cell index for each source.
+    dest = Vector{Int}(undef, n)
+    @inbounds for (i, ci) in enumerate(leaves)
+        xt = cx_arr[i] + psm.dx_per_species[k, 1, ci]
+        yt = cy_arr[i] + psm.dx_per_species[k, 2, ci]
+        if wrap
+            xt = lo1 + mod(xt - lo1, L1)
+            yt = lo2 + mod(yt - lo2, L2)
+        end
+        # Find nearest cell-centre via brute-force (n is small at the
+        # M3-6 Phase 4 acceptance window L ≤ 4).
+        best = 1
+        best_d = (xt - cx_arr[1])^2 + (yt - cy_arr[1])^2
+        for j in 2:n
+            d = (xt - cx_arr[j])^2 + (yt - cy_arr[j])^2
+            if d < best_d
+                best_d = d
+                best = j
+            end
+        end
+        dest[i] = best
+    end
+    # Accumulate destination mass.
+    new_c = zeros(T, n)
+    counts = zeros(Int, n)
+    @inbounds for i in 1:n
+        d = dest[i]
+        new_c[d] += src_mass[i]
+        counts[d] += 1
+    end
+    # Where multiple sources collapse onto the same dest, average
+    # (preserves Σ c · A under equal-volume cells iff we record
+    # density correctly: total mass = Σ_i c_i = Σ_i src_mass[i]; so
+    # if cells `dest = j` accumulated count `n_j` with sum
+    # `Σ_{i∈Sj} c_i`, the destination concentration `new_c[j] /
+    # max(1, count_at_dest_j)` over-divides). We instead keep the
+    # SUM at destinations that received traffic and 0 elsewhere; the
+    # total-mass invariant is `sum(new_c) == sum(src_mass)`.
+    return new_c
+end
+
+"""
+    dust_peak_over_mean_remapped(psm, frame, leaves; lo, hi, wrap=true)
+        -> NamedTuple
+
+Compute the dust-species peak-over-mean ratio after remapping the
+per-species Lagrangian positions back to cells. Returns
+`(peak, mean, peak_over_mean, new_c, max_pile)`.
+"""
+function dust_peak_over_mean_remapped(psm, frame,
+                                        leaves::AbstractVector{<:Integer};
+                                        lo::Tuple, hi::Tuple,
+                                        wrap::Bool = true)
+    k = species_index(psm.tm, :dust)
+    new_c = accumulate_species_to_cells!(psm, frame, leaves;
+                                          k = k, lo = lo, hi = hi,
+                                          wrap = wrap)
+    n = length(leaves)
+    s = 0.0
+    @inbounds for i in 1:n
+        s += Float64(new_c[i])
+    end
+    mean_c = s / n
+    pk = Float64(maximum(new_c))
+    pom = mean_c > 1e-300 ? pk / mean_c : NaN
+    return (peak = pk, mean = mean_c, peak_over_mean = pom,
+            new_c = new_c, max_pile = pk)
+end
