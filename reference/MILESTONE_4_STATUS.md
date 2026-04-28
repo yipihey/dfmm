@@ -10,7 +10,7 @@
 |---|---|---:|---|
 | M4-1: closed-loop β_off ↔ β_a coupling | **CLOSED** (HONEST_FALSIFICATION) | +598 | D.1 KH: closed-loop preserves regression but does not activate eigenmode |
 | M4-2: 3D D.1 KH falsifier (lift of M4-1) | **CLOSED** (HONEST_FALSIFICATION_LIFTED) | +1187 | 2D kinematic-only finding generalizes to 3D; c_off ≈ 1.57 at L=3 |
-| M4-3: per-species momentum (D.7 follow-up) | not started | — | renumbered from M4-2 |
+| M4-3: per-species momentum (D.7 follow-up) | **CLOSED** (HONEST_PARTIAL) | +1708 | substrate + kernel + IC factory in place; τ_drag regimes differentiate with u_dust_offset bias; static gas equilibrium leaves regimes identical without offset |
 | M4-4: 3D Tier-D headlines (D.7, D.10) | not started | — | |
 | M4-5: full Metal/CUDA port | not started (HG `Backend` blocker) | — | |
 | M4-6: MPI scaling | not started | — | |
@@ -229,3 +229,112 @@ Drazin-Reid eigenmode requires a different physics extension
 (higher-order Hamiltonian, per-cell Rayleigh reconstruction, or
 Bernstein-order substrate lift). M4 Phase 3 (per-species momentum
 for D.7) is unblocked.*
+
+## M4-3 close (2026-04-26)
+
+**Headline scientific finding (HONEST_PARTIAL):** The
+`PerSpeciesMomentumHG2D` opt-in extension of `TracerMeshHG2D`
+adds per-species (u_x, u_y) per cell + per-species drag
+relaxation timescale `τ_drag` + per-species Lagrangian position
+offsets. The substrate, kernel, and IC factory all work
+correctly:
+
+  - **Drag relaxation kernel** `drag_relax_per_species!` —
+    exponential Stokes-drag toward gas; verified at three limits
+    (τ→0 passive scalar, τ→∞ decoupled, intermediate analytic
+    formula `1 − exp(−dt/τ)` at machine precision).
+  - **Position kernel** `advance_positions_per_species!` —
+    kinematic `dx ← dx + dt·u`; verified bit-exact.
+  - **Mass-conservative remap** `accumulate_species_to_cells!` —
+    `Σ new_c == Σ source_c` to ≤ 1e-10.
+  - **4-component realizability** under per-species momentum —
+    `n_negative_jacobian = 0` throughout L=3 T_factor=0.1
+    trajectory.
+  - **Bit-exact regression contract** — at zero per-species
+    momentum (no `PerSpeciesMomentumHG2D` constructed), the M3-6
+    Phase 4 path is byte-equal to the pre-M4-3 codebase.
+
+**Falsifier verdict (PARTIAL):** under the M3-6 Phase 4 Taylor-
+Green vortex IC, the gas equilibrium is **static** under
+`det_step_2d_berry_HG!` (the cold-limit Cholesky-sector residual
+has no time evolution for incompressible ∇·u=0 + uniform pressure
+ICs). With co-moving dust IC, all τ_drag regimes integrate the
+same constant velocity field and produce identical drift
+trajectories. The driver provides a `u_dust_offset` knob that
+introduces a controlled IC bias; with `u_dust_offset = 0.5` the
+three regimes differentiate as expected:
+
+  | τ_drag | u_dust_speed_mean[end] | dx_dust_max[end] |
+  |---:|---:|---:|
+  | 1e-6 (tight) | 0.683 | 0.087 |
+  | 0.1 (intermediate) | 0.697 | 0.117 |
+  | 1e6 (decoupled) | 0.794 | 0.136 |
+
+The literal D.7 centrifugal-accumulation prediction in the strict
+sense (driven by gas time-evolution + size-dependent inertia)
+requires either:
+
+  1. **Non-stationary base flow** (e.g., decaying Taylor-Green
+     under M3-7d viscosity, or a forced KH with explicit gas time
+     dependence) — activates differential drag on top of the
+     kinematic-only kernel.
+  2. **Explicit centrifugal-force computation** in the drag kernel
+     (`(u_k · ∇)u_gas` finite-difference term) — produces inward
+     spiral drift for decoupled dust in a steady vortex.
+
+Both are deferred to **M4 Phase 4 or beyond**.
+
+**Test delta:** +1708 asserts (1 new test file
+`test_M4_phase3_per_species_momentum.jl`, 8 GATEs / 8 testsets).
+
+**LOC delta:**
+- `src/newton_step_HG_M3_2.jl`: +325 LOC (struct + 4 kernels +
+  diagnostics).
+- `src/setups_2d.jl`: +99 LOC (`tier_d_dust_trap_per_species_ic_full`).
+- `src/dfmm.jl`: +21 LOC re-exports.
+- `experiments/D7_dust_traps.jl`: +517 LOC (driver + sweep + plot).
+- `test/test_M4_phase3_per_species_momentum.jl`: NEW, ~310 LOC.
+- `test/runtests.jl`: APPEND-ONLY new Phase M4-3 testset block.
+
+**Headline plot:** `reference/figs/M4_phase3_dust_accumulation.png` —
+4-panel figure (gas |u| vortex map; remapped dust concentration at
+intermediate τ; peak/mean (remapped) vs t at three τ values; max
+|dx_dust| Lagrangian drift magnitude vs t).
+
+**Reference:** `reference/notes_M4_phase3_per_species_momentum.md`.
+
+### M4 Phase 4 (Metal port post-HG-Backend) handoff items
+
+  1. **Centrifugal-force kernel** (`apply_centrifugal_drift!`) —
+     adds `(u_k · ∇)u_gas` finite-difference term to the drag
+     relaxation. Activates inward spiral drift for decoupled dust
+     in steady vortices; reproduces the literal D.7 prediction.
+  2. **Two-way momentum exchange** — extends the gas Cholesky-
+     sector residual with the back-reaction `Σ_k≠gas ρ_k (u_k −
+     u_gas) / τ_drag_k` term.
+  3. **3D per-species momentum** (`PerSpeciesMomentumHG3D` +
+     3D dust-trap IC factory + `run_D7_dust_traps_3d_per_species`)
+     — closes the M4-2 handoff for 3D D.7.
+  4. **Refine/coarsen listener** for `PerSpeciesMomentumHG2D`
+     (mirrors `register_tracers_on_refine_2d!` for the per-species
+     `u` and `dx` arrays).
+  5. **HG `Backend`-parameterized `PolynomialFieldSet`** (M3-8c
+     blocker) — required for the per-leaf residual GPU port.
+  6. **Non-stationary IC** — decaying Taylor-Green or forced KH
+     base flow that activates differential drag.
+
+---
+
+*M4-3 closed in HONEST_PARTIAL mode on 2026-04-26: the substrate,
+kernel, and IC factory for per-species momentum coupling all land
+correctly with full bit-exact regression preservation and 1708
+test asserts. The literal D.7 centrifugal-accumulation prediction
+is not reproduced in the strict-static-gas regime because the cold-
+limit Cholesky-sector residual leaves the Taylor-Green vortex
+equilibrium static — all τ_drag regimes integrate the same
+constant velocity field. The driver provides a `u_dust_offset`
+knob that does differentiate regimes (verified by GATE 6); the
+full physics requires either a non-stationary base flow or
+explicit centrifugal-force computation, both deferred to M4 Phase
+4. M4 Phase 4 (3D D.7, two-way momentum exchange, Metal port post-
+HG-Backend) is unblocked.*
