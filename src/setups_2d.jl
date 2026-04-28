@@ -3227,3 +3227,110 @@ function tier_d_kh_3d_ic_full(; level::Integer = 3,
                    quad_order = quad_order, Gamma = Gamma, cv = cv),
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M4 Phase 3: Per-species momentum extension of D.7 dust-traps IC
+# ─────────────────────────────────────────────────────────────────────
+#
+# Lifts the M3-6 Phase 4 `tier_d_dust_trap_ic_full` Taylor-Green
+# vortex IC with a `PerSpeciesMomentumHG2D` extension that carries
+# per-species per-cell velocity + drag relaxation timescale.
+#
+# Three `τ_drag_per_species` regimes for the standard 2-species
+# `[:gas, :dust]` configuration:
+#
+#   • Tightly-coupled (`τ_drag_dust → 0`, default 1e-6 · t_eddy):
+#     dust velocity tracks gas exactly; passive-scalar limit;
+#     dust position offset accumulates the gas trajectory.
+#   • Intermediate (`τ_drag_dust ≈ 0.1 · t_eddy`): Stokes-drag
+#     relaxation; dust lags gas in vortex regions and has a finite
+#     centrifugal drift relative to the gas frame.
+#   • Decoupled (`τ_drag_dust → ∞`, default 1e6 · t_eddy): dust
+#     velocity stays at IC; dust position drifts in a straight line
+#     while the gas rotates.
+
+"""
+    tier_d_dust_trap_per_species_ic_full(; level=3, U0=1.0, ρ0=1.0,
+                                          P0=1.0, ε_dust=0.05,
+                                          τ_drag_per_species=(0.0, 0.1),
+                                          lo=nothing, hi=nothing,
+                                          Gamma=GAMMA_LAW_DEFAULT,
+                                          cv=CV_DEFAULT,
+                                          T=Float64) -> NamedTuple
+
+D.7 dust-traps Cholesky-sector full IC with per-species momentum
+coupling (M4 Phase 3 lift of `tier_d_dust_trap_ic_full`).
+
+Identical fluid IC + 2-species `TracerMeshHG2D`; additionally
+allocates a `PerSpeciesMomentumHG2D` with per-species velocity
+initialised to the gas velocity at IC (so all species are co-moving
+at t = 0) and `τ_drag_per_species` set per the keyword. Default
+species ordering: `[:gas, :dust]` with gas `τ = 0` (always tightly
+co-moving with itself) and dust `τ = 0.1 · t_eddy` (intermediate).
+
+Returns a NamedTuple matching `tier_d_dust_trap_ic_full` plus a new
+`psm::PerSpeciesMomentumHG2D` field.
+"""
+function tier_d_dust_trap_per_species_ic_full(;
+        level::Integer = 3,
+        U0::Real = 1.0,
+        ρ0::Real = 1.0,
+        P0::Real = 1.0,
+        ε_dust::Real = 0.05,
+        τ_drag_per_species = nothing,
+        u_dust_offset::Real = 0.0,
+        lo = nothing, hi = nothing,
+        Gamma::Real = GAMMA_LAW_DEFAULT,
+        cv::Real = CV_DEFAULT,
+        T::Type = Float64)
+    base = tier_d_dust_trap_ic_full(; level = level, U0 = U0,
+                                     ρ0 = ρ0, P0 = P0,
+                                     ε_dust = ε_dust,
+                                     lo = lo, hi = hi,
+                                     Gamma = Gamma, cv = cv, T = T)
+    t_eddy = base.params.t_eddy
+    # Default τ_drag_per_species: gas tightly coupled (τ=0), dust
+    # intermediate (0.1 · t_eddy). Override via keyword.
+    τ_arr = if τ_drag_per_species === nothing
+        T[T(0.0), T(0.1) * T(t_eddy)]
+    else
+        @assert length(τ_drag_per_species) == 2 "τ_drag_per_species must have length 2 for [gas, dust]"
+        T[T(τ_drag_per_species[1]), T(τ_drag_per_species[2])]
+    end
+    psm = PerSpeciesMomentumHG2D(base.tm;
+                                   τ_drag_per_species = τ_arr,
+                                   leaves = base.leaves)
+    # Optional initial offset between dust and gas velocity. When
+    # `u_dust_offset > 0`, dust velocity at IC is `u_gas + offset · ê_x`
+    # (a uniform x-axis bias). This lets the τ_drag regimes
+    # differentiate even when gas evolution is static under the cold-
+    # limit Cholesky-sector residual: a tightly-coupled dust (τ→0)
+    # erases the offset on first drag step; a decoupled dust (τ→∞)
+    # retains it and drifts purely on the IC bias.
+    if u_dust_offset != 0
+        k_dust = species_index(base.tm, :dust)
+        bias = T(u_dust_offset)
+        @inbounds for ci in base.leaves
+            psm.u_per_species[k_dust, 1, ci] += bias
+        end
+    end
+    return (
+        name = "tier_d_dust_trap_per_species",
+        mesh = base.mesh, frame = base.frame, leaves = base.leaves,
+        fields = base.fields,
+        tm = base.tm,
+        psm = psm,
+        ρ_per_cell = base.ρ_per_cell,
+        t_eddy = t_eddy,
+        params = (level = level, U0 = Float64(base.params.U0),
+                   ρ0 = ρ0, P0 = P0,
+                   ε_dust = Float64(base.params.ε_dust),
+                   τ_drag_per_species = Tuple(Float64.(τ_arr)),
+                   u_dust_offset = Float64(u_dust_offset),
+                   lo = base.params.lo, hi = base.params.hi,
+                   L1 = Float64(base.params.L1),
+                   L2 = Float64(base.params.L2),
+                   t_eddy = t_eddy,
+                   Gamma = Gamma, cv = cv),
+    )
+end

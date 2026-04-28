@@ -1635,8 +1635,16 @@ end
         -> NamedTuple
 
 Compute the dust-species peak-over-mean ratio after remapping the
-per-species Lagrangian positions back to cells. Returns
-`(peak, mean, peak_over_mean, new_c, max_pile)`.
+per-species Lagrangian positions back to cells. Returns:
+
+  • `peak::Float64` — `max(new_c)` (most-piled-up cell concentration)
+  • `mean::Float64` — `sum(new_c) / N` (preserved across remap)
+  • `peak_over_mean::Float64` — `peak / mean` (ratio diagnostic)
+  • `new_c::Vector` — per-leaf remapped concentration
+  • `n_occupied::Int` — number of leaves that received any deposit
+    (`< N` indicates dust collapse onto a smaller subset)
+  • `collapse_fraction::Float64` — `1 − n_occupied / N` (0 = no
+    collapse, 1 = all dust onto one cell)
 """
 function dust_peak_over_mean_remapped(psm, frame,
                                         leaves::AbstractVector{<:Integer};
@@ -1648,12 +1656,19 @@ function dust_peak_over_mean_remapped(psm, frame,
                                           wrap = wrap)
     n = length(leaves)
     s = 0.0
+    n_occ = 0
     @inbounds for i in 1:n
-        s += Float64(new_c[i])
+        v = Float64(new_c[i])
+        s += v
+        if v > 0
+            n_occ += 1
+        end
     end
     mean_c = s / n
     pk = Float64(maximum(new_c))
     pom = mean_c > 1e-300 ? pk / mean_c : NaN
+    collapse_frac = 1.0 - n_occ / n
     return (peak = pk, mean = mean_c, peak_over_mean = pom,
-            new_c = new_c, max_pile = pk)
+            new_c = new_c, max_pile = pk,
+            n_occupied = n_occ, collapse_fraction = collapse_frac)
 end

@@ -624,5 +624,6 @@ export allocate_cholesky_3d_kh_fields, tier_d_kh_3d_ic_full
 export PerSpeciesMomentumHG2D
 export drag_relax_per_species!, advance_positions_per_species!
 export accumulate_species_to_cells!, dust_peak_over_mean_remapped
+export tier_d_dust_trap_per_species_ic_full
 
 end # module

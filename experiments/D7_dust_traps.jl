@@ -52,7 +52,11 @@ using dfmm: tier_d_dust_trap_ic_full, allocate_cholesky_2d_fields,
     det_step_2d_berry_HG!, gamma_per_axis_2d_field,
     gamma_per_axis_2d_per_species_field,
     advect_tracers_HG_2d!, n_species, species_index, n_cells_2d,
-    ProjectionStats
+    ProjectionStats,
+    tier_d_dust_trap_per_species_ic_full,
+    PerSpeciesMomentumHG2D,
+    drag_relax_per_species!, advance_positions_per_species!,
+    accumulate_species_to_cells!, dust_peak_over_mean_remapped
 using Statistics: mean, std
 
 """
@@ -739,6 +743,517 @@ function plot_D7_dust_traps(sweep; save_path::AbstractString)
                         "$(r.Px_traj[k]-r.Px_traj[1]),$(r.Py_traj[k]-r.Py_traj[1])," *
                         "$(r.KE_traj[k]),$(r.gas_gamma_mean[k]),$(r.dust_gamma_max[k])," *
                         "$(r.peak_over_mean[k]),$(r.n_negative_jacobian[k])")
+                end
+            end
+        end
+        return save_path
+    end
+end
+
+# ─────────────────────────────────────────────────────────────────────
+# M4 Phase 3: Per-species momentum driver (D.7 follow-up).
+# ─────────────────────────────────────────────────────────────────────
+#
+# The M3-6 Phase 4 driver above demonstrated the substrate gap: under
+# `advect_tracers_HG_2d!` (no-op pure-Lagrangian, Phase 3 contract)
+# the dust concentration is byte-stable and cannot accumulate at
+# vortex centres. M4 Phase 3 adds the physics extension via
+# `PerSpeciesMomentumHG2D`: each species k carries its own velocity
+# u_k and a drag relaxation timescale τ_k. Dust drifts relative to
+# the gas frame; remapping the dust mass back to per-cell
+# concentration produces the literal D.7 prediction (peak at vortex
+# centres for intermediate τ_drag).
+
+"""
+    dust_total_mass_remapped(new_c) -> Float64
+"""
+@inline dust_total_mass_remapped(new_c) = sum(Float64, new_c)
+
+"""
+    run_D7_dust_traps_per_species(; level=3, U0=1.0, ρ0=1.0, P0=1.0,
+                                    ε_dust=0.05,
+                                    τ_drag_dust=0.1,
+                                    T_factor=1.0, dt=nothing,
+                                    project_kind=:reanchor,
+                                    realizability_headroom=1.05,
+                                    Mvv_floor=1e-2, pressure_floor=1e-8,
+                                    M_vv_override=(1.0, 1.0),
+                                    ρ_ref=1.0,
+                                    snapshots_at=(0.0, 0.5, 1.0),
+                                    verbose=false) -> NamedTuple
+
+D.7 dust-traps trajectory with M4 Phase 3 per-species momentum
+coupling. Uses `tier_d_dust_trap_per_species_ic_full` to allocate
+the IC + a `PerSpeciesMomentumHG2D` extension; per-species drag
+relaxation toward gas + per-species position advance + per-step
+remap of dust mass back into per-cell concentration produces the
+literal vortex-centre accumulation prediction for finite τ_drag.
+
+`τ_drag_dust` is in units of the eddy turnover time `t_eddy = L/U0`.
+Default 0.1 (intermediate Stokes regime; activates accumulation).
+Set to 1e-6 for tightly-coupled (passive scalar limit; peak/mean
+stays at IC value); set to 1e6 for decoupled (free particles).
+"""
+function run_D7_dust_traps_per_species(;
+        level::Integer = 3,
+        U0::Real = 1.0,
+        ρ0::Real = 1.0,
+        P0::Real = 1.0,
+        ε_dust::Real = 0.05,
+        τ_drag_dust::Real = 0.1,
+        u_dust_offset::Real = 0.0,
+        T_factor::Real = 1.0,
+        T_end::Union{Real,Nothing} = nothing,
+        dt::Union{Real,Nothing} = nothing,
+        project_kind::Symbol = :reanchor,
+        realizability_headroom::Real = 1.05,
+        Mvv_floor::Real = 1e-2,
+        pressure_floor::Real = 1e-8,
+        M_vv_override = (1.0, 1.0),
+        ρ_ref::Real = 1.0,
+        snapshots_at = (0.0, 0.5, 1.0),
+        verbose::Bool = false)
+    t_eddy = dust_trap_eddy_time(; U0 = U0)
+    T_end_val = T_end === nothing ? Float64(T_factor) * t_eddy : Float64(T_end)
+    if dt === nothing
+        Δx = 1.0 / (2^Int(level))
+        dt_val = 0.25 * Δx / max(Float64(U0), 1e-300)
+        dt_val = min(dt_val, T_end_val / 30.0)
+    else
+        dt_val = Float64(dt)
+    end
+    n_steps = Int(ceil(T_end_val / dt_val))
+    dt_val = T_end_val / n_steps
+
+    # Build IC with per-species momentum extension.
+    τ_dust_real = Float64(τ_drag_dust) * t_eddy
+    ic = tier_d_dust_trap_per_species_ic_full(;
+        level = level, U0 = U0, ρ0 = ρ0, P0 = P0, ε_dust = ε_dust,
+        τ_drag_per_species = (0.0, τ_dust_real),
+        u_dust_offset = u_dust_offset)
+    bc_dust = FrameBoundaries{2}(((PERIODIC, PERIODIC),
+                                   (PERIODIC, PERIODIC)))
+    areas = cell_areas_2d(ic.frame, ic.leaves)
+    L1 = ic.params.L1
+    L2 = ic.params.L2
+    lo_box = ic.params.lo
+    hi_box = (Float64(lo_box[1]) + L1, Float64(lo_box[2]) + L2)
+
+    M_vv_per_species = ((Float64(M_vv_override[1]), Float64(M_vv_override[2])),
+                         (0.0, 0.0))
+
+    # Pre-allocate trajectory arrays.
+    N = n_steps + 1
+    t = zeros(Float64, N)
+    M_dust_traj = zeros(Float64, N)
+    M_dust_remapped_traj = zeros(Float64, N)
+    M_gas_traj = zeros(Float64, N)
+    M_traj = zeros(Float64, N)
+    Px_traj = zeros(Float64, N)
+    Py_traj = zeros(Float64, N)
+    KE_traj = zeros(Float64, N)
+    n_neg_jac = zeros(Int, N)
+    gas_gamma_mean = zeros(Float64, N)
+    dust_gamma_max = zeros(Float64, N)
+    peak_over_mean = zeros(Float64, N)
+    peak_over_mean_remapped = zeros(Float64, N)
+    collapse_fraction = zeros(Float64, N)
+    dust_peak = zeros(Float64, N)
+    dust_mean_arr = zeros(Float64, N)
+    dx_dust_max = zeros(Float64, N)
+    dx_dust_mean = zeros(Float64, N)
+    u_dust_speed_mean = zeros(Float64, N)
+
+    # Snapshot bookkeeping.
+    snap_times = collect(Float64, snapshots_at)
+    snap_indices = Int[]
+    for tf in snap_times
+        target = tf * T_end_val
+        idx = clamp(Int(round(target / dt_val)) + 1, 1, N)
+        push!(snap_indices, idx)
+    end
+    snapshots = Vector{NamedTuple}(undef, length(snap_times))
+    snap_taken = falses(length(snap_times))
+
+    function take_snapshot(t_now)
+        k_dust = species_index(ic.tm, :dust)
+        x_centres = Vector{Float64}(undef, length(ic.leaves))
+        y_centres = Vector{Float64}(undef, length(ic.leaves))
+        c_dust_arr = Vector{Float64}(undef, length(ic.leaves))
+        u1_arr = Vector{Float64}(undef, length(ic.leaves))
+        u2_arr = Vector{Float64}(undef, length(ic.leaves))
+        u_dust_1 = Vector{Float64}(undef, length(ic.leaves))
+        u_dust_2 = Vector{Float64}(undef, length(ic.leaves))
+        dx_dust_1 = Vector{Float64}(undef, length(ic.leaves))
+        dx_dust_2 = Vector{Float64}(undef, length(ic.leaves))
+        for (i, ci) in enumerate(ic.leaves)
+            lo_c, hi_c = cell_physical_box(ic.frame, ci)
+            x_centres[i] = 0.5 * (lo_c[1] + hi_c[1])
+            y_centres[i] = 0.5 * (lo_c[2] + hi_c[2])
+            c_dust_arr[i] = ic.tm.tracers[k_dust, ci]
+            u1_arr[i] = Float64(ic.fields.u_1[ci][1])
+            u2_arr[i] = Float64(ic.fields.u_2[ci][1])
+            u_dust_1[i] = Float64(ic.psm.u_per_species[k_dust, 1, ci])
+            u_dust_2[i] = Float64(ic.psm.u_per_species[k_dust, 2, ci])
+            dx_dust_1[i] = Float64(ic.psm.dx_per_species[k_dust, 1, ci])
+            dx_dust_2[i] = Float64(ic.psm.dx_per_species[k_dust, 2, ci])
+        end
+        # Remapped concentration heatmap.
+        remap = dust_peak_over_mean_remapped(ic.psm, ic.frame, ic.leaves;
+                                              lo = lo_box, hi = hi_box)
+        return (t = t_now, x_centres = x_centres, y_centres = y_centres,
+                c_dust = c_dust_arr,
+                c_dust_remapped = Float64.(remap.new_c),
+                u_1 = u1_arr, u_2 = u2_arr,
+                u_dust_1 = u_dust_1, u_dust_2 = u_dust_2,
+                dx_dust_1 = dx_dust_1, dx_dust_2 = dx_dust_2)
+    end
+
+    # Initial diagnostics.
+    M_dust_traj[1] = dust_total_mass(ic.tm, ic.leaves, areas)
+    remap0 = dust_peak_over_mean_remapped(ic.psm, ic.frame, ic.leaves;
+                                            lo = lo_box, hi = hi_box)
+    M_dust_remapped_traj[1] = sum(Float64, remap0.new_c) * (areas[1])
+    M_gas_traj[1] = gas_total_mass(ic.tm, ic.leaves, areas)
+    cons0 = dust_trap_conservation(ic.fields, ic.leaves, ic.ρ_per_cell, areas)
+    M_traj[1] = cons0.M; Px_traj[1] = cons0.Px
+    Py_traj[1] = cons0.Py; KE_traj[1] = cons0.KE
+    n_neg_jac[1] = negative_jacobian_count_dust_trap(ic.fields, ic.leaves;
+                                                      M_vv_override = M_vv_override,
+                                                      ρ_ref = ρ_ref)
+    gstats0 = per_species_gamma_stats(ic.fields, ic.leaves;
+                                        n_species_n = 2,
+                                        M_vv_per_species = M_vv_per_species,
+                                        ρ_ref = ρ_ref)
+    gas_gamma_mean[1] = gstats0.gas_mean
+    dust_gamma_max[1] = gstats0.dust_max
+    vc0 = vortex_center_dust(ic.tm, ic.frame, ic.leaves;
+                              lo = lo_box, L1 = L1, L2 = L2)
+    dust_peak[1] = vc0.c_peak
+    dust_mean_arr[1] = vc0.c_mean
+    peak_over_mean[1] = vc0.peak_over_mean
+    peak_over_mean_remapped[1] = remap0.peak_over_mean
+    collapse_fraction[1] = remap0.collapse_fraction
+    dx_dust_max[1] = 0.0
+    dx_dust_mean[1] = 0.0
+    k_dust_idx = species_index(ic.tm, :dust)
+    let s = 0.0, c = 0
+        for ci in ic.leaves
+            s += sqrt(ic.psm.u_per_species[k_dust_idx, 1, ci]^2
+                      + ic.psm.u_per_species[k_dust_idx, 2, ci]^2)
+            c += 1
+        end
+        u_dust_speed_mean[1] = c > 0 ? s / c : 0.0
+    end
+    if 1 in snap_indices
+        for (k, idx) in enumerate(snap_indices)
+            if idx == 1 && !snap_taken[k]
+                snapshots[k] = take_snapshot(0.0)
+                snap_taken[k] = true
+            end
+        end
+    end
+
+    proj_stats = ProjectionStats()
+    nan_seen = false
+    wall_t0 = time()
+    for n in 1:n_steps
+        try
+            det_step_2d_berry_HG!(ic.fields, ic.mesh, ic.frame, ic.leaves,
+                                    bc_dust, dt_val;
+                                    M_vv_override = M_vv_override,
+                                    ρ_ref = ρ_ref,
+                                    project_kind = project_kind,
+                                    realizability_headroom = realizability_headroom,
+                                    Mvv_floor = Mvv_floor,
+                                    pressure_floor = pressure_floor,
+                                    proj_stats = proj_stats)
+            advect_tracers_HG_2d!(ic.tm, dt_val)
+            # M4 Phase 3 per-species momentum coupling.
+            drag_relax_per_species!(ic.psm, dt_val; leaves = ic.leaves)
+            advance_positions_per_species!(ic.psm, dt_val; leaves = ic.leaves)
+        catch e
+            if verbose
+                @warn "Newton solve failed at step $n: $e"
+            end
+            nan_seen = true
+            break
+        end
+
+        t[n + 1] = n * dt_val
+        M_dust_traj[n + 1] = dust_total_mass(ic.tm, ic.leaves, areas)
+        M_gas_traj[n + 1] = gas_total_mass(ic.tm, ic.leaves, areas)
+        cons = dust_trap_conservation(ic.fields, ic.leaves, ic.ρ_per_cell, areas)
+        M_traj[n + 1] = cons.M; Px_traj[n + 1] = cons.Px
+        Py_traj[n + 1] = cons.Py; KE_traj[n + 1] = cons.KE
+        n_neg_jac[n + 1] = negative_jacobian_count_dust_trap(ic.fields, ic.leaves;
+                                                              M_vv_override = M_vv_override,
+                                                              ρ_ref = ρ_ref)
+        gstats = per_species_gamma_stats(ic.fields, ic.leaves;
+                                           n_species_n = 2,
+                                           M_vv_per_species = M_vv_per_species,
+                                           ρ_ref = ρ_ref)
+        gas_gamma_mean[n + 1] = gstats.gas_mean
+        dust_gamma_max[n + 1] = gstats.dust_max
+        vc = vortex_center_dust(ic.tm, ic.frame, ic.leaves;
+                                  lo = lo_box, L1 = L1, L2 = L2)
+        dust_peak[n + 1] = vc.c_peak
+        dust_mean_arr[n + 1] = vc.c_mean
+        peak_over_mean[n + 1] = vc.peak_over_mean
+
+        # Per-species momentum diagnostics.
+        remap = dust_peak_over_mean_remapped(ic.psm, ic.frame, ic.leaves;
+                                              lo = lo_box, hi = hi_box)
+        peak_over_mean_remapped[n + 1] = remap.peak_over_mean
+        collapse_fraction[n + 1] = remap.collapse_fraction
+        M_dust_remapped_traj[n + 1] = sum(Float64, remap.new_c) * (areas[1])
+        let max_d = 0.0, sum_d = 0.0, c_n = 0, sum_u = 0.0
+            for ci in ic.leaves
+                d1 = Float64(ic.psm.dx_per_species[k_dust_idx, 1, ci])
+                d2 = Float64(ic.psm.dx_per_species[k_dust_idx, 2, ci])
+                d = sqrt(d1 * d1 + d2 * d2)
+                if d > max_d; max_d = d; end
+                sum_d += d
+                u1 = Float64(ic.psm.u_per_species[k_dust_idx, 1, ci])
+                u2 = Float64(ic.psm.u_per_species[k_dust_idx, 2, ci])
+                sum_u += sqrt(u1 * u1 + u2 * u2)
+                c_n += 1
+            end
+            dx_dust_max[n + 1] = max_d
+            dx_dust_mean[n + 1] = c_n > 0 ? sum_d / c_n : 0.0
+            u_dust_speed_mean[n + 1] = c_n > 0 ? sum_u / c_n : 0.0
+        end
+
+        for (k, idx) in enumerate(snap_indices)
+            if idx == n + 1 && !snap_taken[k]
+                snapshots[k] = take_snapshot(t[n + 1])
+                snap_taken[k] = true
+            end
+        end
+
+        if !isfinite(gas_gamma_mean[n + 1]) || !isfinite(M_dust_traj[n + 1])
+            nan_seen = true
+            break
+        end
+
+        if verbose && (n % max(1, n_steps ÷ 5) == 0)
+            @info "Step $n / $n_steps: t=$(round(t[n+1]; digits=4)), " *
+                  "peak/mean (Lagrangian)=$(round(peak_over_mean[n+1]; sigdigits=4)), " *
+                  "peak/mean (remapped)=$(round(peak_over_mean_remapped[n+1]; sigdigits=4)), " *
+                  "max|dx_dust|=$(round(dx_dust_max[n+1]; sigdigits=4))"
+        end
+    end
+    wall_t1 = time()
+    wall_time_per_step = (wall_t1 - wall_t0) / max(n_steps, 1)
+
+    for (k, taken) in enumerate(snap_taken)
+        if !taken
+            snapshots[k] = take_snapshot(t[end])
+            snap_taken[k] = true
+        end
+    end
+
+    M_dust_err_max = maximum(abs.(M_dust_traj .- M_dust_traj[1]))
+    M_gas_err_max = maximum(abs.(M_gas_traj .- M_gas_traj[1]))
+    # Remapped dust mass conservation: sum of new_c values is invariant
+    # under the remap (deposit moves; doesn't create or destroy).
+    M_dust_remapped_err_max =
+        maximum(abs.(M_dust_remapped_traj .- M_dust_remapped_traj[1]))
+
+    return (
+        t = t,
+        M_dust_traj = M_dust_traj,
+        M_dust_remapped_traj = M_dust_remapped_traj,
+        M_gas_traj = M_gas_traj,
+        M_traj = M_traj, Px_traj = Px_traj,
+        Py_traj = Py_traj, KE_traj = KE_traj,
+        M_dust_err_max = M_dust_err_max,
+        M_gas_err_max = M_gas_err_max,
+        M_dust_remapped_err_max = M_dust_remapped_err_max,
+        n_negative_jacobian = n_neg_jac,
+        gas_gamma_mean = gas_gamma_mean,
+        dust_gamma_max = dust_gamma_max,
+        dust_peak = dust_peak,
+        dust_mean = dust_mean_arr,
+        peak_over_mean = peak_over_mean,
+        peak_over_mean_remapped = peak_over_mean_remapped,
+        collapse_fraction = collapse_fraction,
+        dx_dust_max = dx_dust_max,
+        dx_dust_mean = dx_dust_mean,
+        u_dust_speed_mean = u_dust_speed_mean,
+        snapshot_times = snap_times,
+        snapshot_indices = snap_indices,
+        snapshots = snapshots,
+        t_eddy = t_eddy,
+        wall_time_per_step = wall_time_per_step,
+        nan_seen = nan_seen,
+        ic = ic,
+        params = (level = level, U0 = Float64(U0),
+                   ρ0 = ρ0, P0 = P0, ε_dust = Float64(ε_dust),
+                   τ_drag_dust = Float64(τ_drag_dust),
+                   τ_drag_dust_real = Float64(τ_dust_real),
+                   u_dust_offset = Float64(u_dust_offset),
+                   dt = dt_val, n_steps = n_steps,
+                   T_end = T_end_val, T_factor = T_factor,
+                   project_kind = project_kind,
+                   realizability_headroom = realizability_headroom,
+                   Mvv_floor = Mvv_floor, pressure_floor = pressure_floor,
+                   M_vv_override = M_vv_override, ρ_ref = ρ_ref,
+                   snapshots_at = Tuple(snap_times)),
+    )
+end
+
+"""
+    run_D7_dust_traps_per_species_sweep(; level=3,
+                                          τ_drag_values=(1e-6, 0.1, 1e6),
+                                          T_factor=1.0,
+                                          kwargs...) -> NamedTuple
+
+Run the per-species momentum driver at three τ_drag regimes
+(default: tightly-coupled, intermediate, decoupled) at one level.
+Returns a NamedTuple with `results::Vector{NamedTuple}` and per-
+regime peak/mean trajectories.
+"""
+function run_D7_dust_traps_per_species_sweep(;
+        level::Integer = 3,
+        τ_drag_values = (1e-6, 0.1, 1e6),
+        T_factor::Real = 1.0,
+        u_dust_offset::Real = 0.0,
+        kwargs...)
+    results = NamedTuple[]
+    for τ in τ_drag_values
+        push!(results, run_D7_dust_traps_per_species(;
+                          level = level,
+                          τ_drag_dust = τ,
+                          u_dust_offset = u_dust_offset,
+                          T_factor = T_factor,
+                          kwargs...))
+    end
+    pom_final = [r.peak_over_mean_remapped[end] for r in results]
+    return (
+        level = level,
+        τ_drag_values = Tuple(τ_drag_values),
+        T_factor = T_factor,
+        u_dust_offset = Float64(u_dust_offset),
+        results = results,
+        peak_over_mean_remapped_final = pom_final,
+        t_eddy = isempty(results) ? NaN : results[1].t_eddy,
+    )
+end
+
+"""
+    plot_D7_dust_traps_per_species(sweep; save_path) -> save_path
+
+4-panel headline figure for M4 Phase 3:
+
+  • Panel A: gas |u| at end-time (vortex map, common).
+  • Panel B: dust concentration (remapped) at end-time at three
+             τ_drag regimes (tightly-coupled, intermediate,
+             decoupled), tiled.
+  • Panel C: peak/mean ratio (remapped) over time at three τ_drag.
+  • Panel D: max |dx_dust| over time at three τ_drag (drift
+             magnitude diagnostic).
+"""
+function plot_D7_dust_traps_per_species(sweep; save_path::AbstractString)
+    try
+        CM = if isdefined(Main, :CairoMakie)
+            getfield(Main, :CairoMakie)
+        else
+            Base.require(Main, :CairoMakie)
+            getfield(Main, :CairoMakie)
+        end
+        rs = sweep.results
+        τs = collect(Float64, sweep.τ_drag_values)
+        # Use the intermediate regime (index 2 by default) for spatial
+        # snapshots.
+        i_mid = clamp(2, 1, length(rs))
+        r_mid = rs[i_mid]
+        snap_late = r_mid.snapshots[end]
+
+        xs_unique = sort!(unique(round.(snap_late.x_centres; digits = 12)))
+        ys_unique = sort!(unique(round.(snap_late.y_centres; digits = 12)))
+        nx = length(xs_unique); ny = length(ys_unique)
+
+        function reshape_to_grid(arr)
+            G = fill(NaN, ny, nx)
+            for k in eachindex(snap_late.x_centres)
+                xi = searchsortedfirst(xs_unique,
+                                        round(snap_late.x_centres[k]; digits = 12))
+                yi = searchsortedfirst(ys_unique,
+                                        round(snap_late.y_centres[k]; digits = 12))
+                if 1 ≤ xi ≤ nx && 1 ≤ yi ≤ ny
+                    G[yi, xi] = arr[k]
+                end
+            end
+            return G
+        end
+
+        u_mag = sqrt.(snap_late.u_1.^2 .+ snap_late.u_2.^2)
+        U_grid = reshape_to_grid(u_mag)
+
+        fig = CM.Figure(size = (1300, 1000))
+
+        axA = CM.Axis(fig[1, 1];
+            title = "A: |u| at t=$(round(snap_late.t; sigdigits=3)) (vortex map)",
+            xlabel = "x_1", ylabel = "x_2")
+        CM.heatmap!(axA, xs_unique, ys_unique, transpose(U_grid))
+
+        axB = CM.Axis(fig[1, 2];
+            title = "B: dust (remapped) at t=$(round(snap_late.t; sigdigits=3)), τ_drag=$(round(τs[i_mid]; sigdigits=3))",
+            xlabel = "x_1", ylabel = "x_2")
+        D_grid = reshape_to_grid(snap_late.c_dust_remapped)
+        CM.heatmap!(axB, xs_unique, ys_unique, transpose(D_grid))
+
+        axC = CM.Axis(fig[2, 1];
+            title = "C: dust peak/mean (remapped) vs t",
+            xlabel = "t / t_eddy", ylabel = "peak/mean")
+        for (i, τ) in enumerate(τs)
+            r = rs[i]
+            label = if τ < 1e-3
+                "tight (τ=$(round(τ; sigdigits=2)))"
+            elseif τ > 1e2
+                "decoupled (τ=$(round(τ; sigdigits=2)))"
+            else
+                "intermediate (τ=$(round(τ; sigdigits=2)))"
+            end
+            CM.lines!(axC, r.t ./ max(r.t_eddy, 1e-300),
+                       r.peak_over_mean_remapped; label = label)
+        end
+        CM.axislegend(axC; position = :rt)
+
+        axD = CM.Axis(fig[2, 2];
+            title = "D: max |dx_dust| (Lagrangian drift) vs t",
+            xlabel = "t / t_eddy", ylabel = "max|dx|")
+        for (i, τ) in enumerate(τs)
+            r = rs[i]
+            label = if τ < 1e-3
+                "tight"
+            elseif τ > 1e2
+                "decoupled"
+            else
+                "intermediate"
+            end
+            CM.lines!(axD, r.t ./ max(r.t_eddy, 1e-300),
+                       r.dx_dust_max; label = label)
+        end
+        CM.axislegend(axD; position = :rt)
+
+        mkpath(dirname(save_path))
+        CM.save(save_path, fig)
+        return save_path
+    catch e
+        @warn "Plotting M4 Phase 3 figure failed: $(e). Saving CSV instead."
+        mkpath(dirname(save_path))
+        for (i, τ) in enumerate(sweep.τ_drag_values)
+            r = sweep.results[i]
+            csv = replace(save_path, ".png" => "_tau$(i).csv")
+            open(csv, "w") do f
+                println(f, "t,peak_over_mean,peak_over_mean_remapped,dx_dust_max,dx_dust_mean,u_dust_speed_mean")
+                for k in eachindex(r.t)
+                    println(f,
+                        "$(r.t[k]),$(r.peak_over_mean[k])," *
+                        "$(r.peak_over_mean_remapped[k]),$(r.dx_dust_max[k])," *
+                        "$(r.dx_dust_mean[k]),$(r.u_dust_speed_mean[k])")
                 end
             end
         end
