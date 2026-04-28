@@ -747,4 +747,42 @@ using Test
         include("test_M3_7c_h_rot_solvability_3d.jl")
         include("test_M3_7c_dimension_lift_3d_with_berry.jl")
     end
+
+    @testset verbose = true "Phase M3-7d: per-axis γ + AMR/realizability per-axis (3D)" begin
+        # M3-7d sub-phase of M3-7 (3D extension). 3D analog of M3-3d's
+        # per-axis γ + AMR/realizability per-axis wiring. Three deliverables:
+        #
+        #   (a) `gamma_per_axis_3d_field` — wraps `gamma_per_axis_3d` over
+        #       a 3D Cholesky-sector field set for diagnostic + AMR
+        #       consumption (3D analog of M3-3d's `gamma_per_axis_2d_field`).
+        #
+        #   (b) 3D action-AMR — `action_error_indicator_3d_per_axis` +
+        #       `register_field_set_on_refine_3d!` + `step_with_amr_3d!`.
+        #       The 3D action-error indicator is the per-axis ΔS_cell
+        #       evaluated in 3D (analog of M3-3d's 2D version, with
+        #       `max_a` aggregation across all three axes).
+        #
+        #   (c) `realizability_project_3d!` + `ProjectionStats3D` — extends
+        #       M3-3d's 2D version to project (β_1, β_2, β_3) onto the
+        #       3-component cone. Off-diagonal β still omitted per M3-3a
+        #       Q3 default + M3-7 design note §4.4.
+        #
+        # Four test files:
+        #   • Per-axis γ diagnostic (3D): math primitive + field walker +
+        #     EOS path + 1D-symmetric reduction (γ_2 = γ_3 byte-equal).
+        #   • 3D AMR refine/coarsen: indicator selectivity (1D/2D/full),
+        #     refine + coarsen round-trip byte-equal, listener walks all
+        #     16 named fields.
+        #   • 3D realizability: no-op / fires / floor branch / 2D-symmetric
+        #     reduction at β_3 = 0 byte-equal / 1D-symmetric reduction.
+        #   • §7.5 Per-axis γ selectivity gate (the headline scientific
+        #     gate): 1D-symmetric ratio > 1e10, 2D-symmetric ratio > 1e6,
+        #     full 3D all-axes-fire.
+        # See `reference/notes_M3_7_3d_extension.md` §5 + §7.5 and
+        # `reference/notes_M3_7d_3d_per_axis_gamma_amr.md`.
+        include("test_M3_7d_gamma_per_axis_diag_3d.jl")
+        include("test_M3_7d_amr_3d.jl")
+        include("test_M3_7d_realizability_3d.jl")
+        include("test_M3_7d_selectivity.jl")
+    end
 end

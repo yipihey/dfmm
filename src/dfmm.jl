@@ -496,6 +496,19 @@ export cholesky_el_residual_3D_berry!, cholesky_el_residual_3D_berry
 export det_step_3d_berry_HG!
 export h_rot_partial_dtheta_3d, h_rot_kernel_orthogonality_residual_3d
 
+# --- Phase M3-7d API: per-axis γ + AMR + realizability per-axis (3D) -------
+# Per-axis γ diagnostic on the 3D Cholesky-sector field set, per-axis
+# action-AMR indicator on `HierarchicalMesh{3}`, per-axis realizability
+# projection, and the HG `step_with_amr!`-driven AMR loop wired through
+# `register_refinement_listener!`. The 3D analog of M3-3d (2D); generalises
+# the per-axis decomposition pattern from `(γ_1, γ_2)` to `(γ_1, γ_2, γ_3)`
+# selectivity. See `reference/notes_M3_7d_3d_per_axis_gamma_amr.md`.
+export gamma_per_axis_3d_field, gamma_per_axis_3d_diag
+export realizability_project_3d!, ProjectionStats3D
+export action_error_indicator_3d_per_axis,
+       register_field_set_on_refine_3d!,
+       step_with_amr_3d!
+
 # --- Phase M3-6 Phase 3 API: 2D substrate (tracers + stoch + γ-diag) -----
 # Three deliverables, each scoped to extend a 1D substrate to 2D:
 #  (a) `TracerMeshHG2D` — per-species per-cell passive scalars on a
