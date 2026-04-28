@@ -216,6 +216,7 @@ function run_D1_KH_growth_rate(; level::Integer = 5,
                                 M_vv_override = nothing,
                                 ρ_ref::Real = 1.0,
                                 t_window_factor::Tuple{<:Real, <:Real} = (0.5, 1.0),
+                                c_back::Real = 1.0,
                                 verbose::Bool = false)
     γ_DR = drazin_reid_gamma(; U_jet = U_jet, jet_width = jet_width)
     T_KH = 1.0 / γ_DR
@@ -295,7 +296,8 @@ function run_D1_KH_growth_rate(; level::Integer = 5,
                                     realizability_headroom = realizability_headroom,
                                     Mvv_floor = Mvv_floor,
                                     pressure_floor = pressure_floor,
-                                    proj_stats = proj_stats)
+                                    proj_stats = proj_stats,
+                                    c_back = c_back)
         catch e
             if verbose
                 @warn "Newton solve failed at step $n: $e"
