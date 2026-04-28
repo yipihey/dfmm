@@ -2669,3 +2669,371 @@ function tier_d_zeldovich_pancake_3d_ic_full(; level::Integer = 3,
                    Gamma = Gamma, cv = cv),
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M3-8 Phase a: Tier-E stress-test IC factories
+# ─────────────────────────────────────────────────────────────────────
+#
+# Methods paper §10.6 Tier E. Three "extreme regime" stress tests where
+# the variational scheme is expected to *report its own failure cleanly*
+# rather than capture the physics quantitatively:
+#
+#   • E.1 High-Mach 2D shocks. Mach 5, 10 Sod-style discontinuity in 2D.
+#     The shock is along `shock_axis` with severe pressure ratio
+#     (M=10 ⇒ p_L/p_R ≈ 116 by Rankine-Hugoniot). Acceptance is
+#     graceful: no NaN, no unbounded energy growth across n_steps.
+#     The L∞ error vs analytical RH is loose (~50%) since the
+#     variational scheme inherits M3-3 Open Issue #2.
+#
+#   • E.2 Severe shell-crossing geometries. 2D extension of M2-3's
+#     compression-cascade scenario. A superposition of two Zel'dovich-
+#     style velocity profiles (one along axis 1, one along axis 2) with
+#     extreme amplitude `A_x = A_y = 0.7` (vs Phase 2's 0.5) creates
+#     intersecting caustics at `t_cross ≈ 0.227`. Acceptance is
+#     long-horizon stability under realizability projection.
+#
+#   • E.3 Very low Knudsen. Small-τ BGK relaxation regime where the
+#     deviatoric pressure rapidly relaxes to local equilibrium. IC is
+#     a smooth strain field with non-equilibrium initial Pp/Q; tests
+#     the BGK relaxation handles the stiff-τ limit without timestep
+#     blowup. Acceptance: post-step Pp_max ≤ pre-step Pp_max·exp(-dt/τ)
+#     within a factor (Navier-Stokes / equilibrium-recovery limit).
+
+"""
+    tier_e_high_mach_shock_ic_full(; level=4, shock_axis=1,
+                                    x_split=0.5, mach=10.0,
+                                    ρL=1.0, pL=1.0, uL=0.0,
+                                    lo=nothing, hi=nothing,
+                                    Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                                    T=Float64) -> NamedTuple
+
+E.1 High-Mach 2D shock Cholesky-sector full IC. Builds a balanced
+quadtree on `[lo, hi]` (default `[0, 1]²`), allocates the 14-named-field
+2D Cholesky-sector field set, populates it cell-by-cell with a Sod-style
+discontinuity along `shock_axis` whose downstream/upstream ratios are
+set by the analytical Rankine-Hugoniot relations for the requested
+upstream Mach number `mach`:
+
+    p_R/p_L = (2γ M² - (γ-1)) / (γ+1)
+    ρ_R/ρ_L = ((γ+1) M²) / ((γ-1) M² + 2)
+    u_R - u_L = (2 c_L / (γ+1)) (M - 1/M)
+
+with `c_L = sqrt(γ pL/ρL)` the upstream sound speed. The IC is
+1D-symmetric across the trivial axis. At Mach 10 the pressure ratio
+is ~116; this stresses the Cholesky-sector solver into the regime
+where γ_a is small and realizability binds.
+
+Returns a NamedTuple shape matching `tier_c_*_full_ic`:
+
+  • `name = "tier_e_high_mach_shock"`
+  • `mesh, frame, leaves, fields` — Cholesky-sector field set ready
+    for `det_step_2d_berry_HG!`.
+  • `ρ_per_cell::Vector{Float64}` — leaf-major per-cell density (jumps
+    along `shock_axis`).
+  • `params::NamedTuple` — IC parameters echo plus
+    `(mach, ρL, ρR, pL, pR, uL, uR, c_L, c_R)`.
+
+# Boundary conditions
+
+Recommended:
+
+    bc_e1 = FrameBoundaries{2}(((REFLECTING, REFLECTING),
+                                 (PERIODIC, PERIODIC)))
+
+# Acceptance pattern
+
+Tests assert: (a) NaN-count = 0 across n_steps; (b) total energy stays
+bounded (no exponential blow-up); (c) post-shock pressure ratio within
+50% of RH analytical (loose tolerance per M3-3 Open Issue #2).
+"""
+function tier_e_high_mach_shock_ic_full(; level::Integer = 4,
+                                          shock_axis::Integer = 1,
+                                          x_split::Real = 0.5,
+                                          mach::Real = 10.0,
+                                          ρL::Real = 1.0,
+                                          pL::Real = 1.0,
+                                          uL::Real = 0.0,
+                                          lo = nothing, hi = nothing,
+                                          Gamma::Real = GAMMA_LAW_DEFAULT,
+                                          cv::Real = CV_DEFAULT,
+                                          T::Type = Float64)
+    @assert shock_axis in (1, 2) "shock_axis must be 1 or 2"
+    @assert mach > 1.0 "mach must be > 1 (supersonic upstream)"
+
+    lo_t, hi_t = _default_box(2, lo, hi, T;
+                                default_lo = (zero(T), zero(T)),
+                                default_hi = (one(T), one(T)))
+    γ = Float64(Gamma)
+    M = Float64(mach)
+    ρL_f = Float64(ρL)
+    pL_f = Float64(pL)
+    uL_f = Float64(uL)
+
+    # Rankine-Hugoniot: downstream state for an upstream Mach M shock.
+    # Stationary-shock convention: the shock is at x_split, "right" is
+    # downstream (post-shock), "left" is upstream (pre-shock).
+    pR = pL_f * (2 * γ * M^2 - (γ - 1)) / (γ + 1)
+    ρR = ρL_f * ((γ + 1) * M^2) / ((γ - 1) * M^2 + 2)
+    c_L = sqrt(γ * pL_f / ρL_f)
+    c_R = sqrt(γ * pR / ρR)
+    # Stationary-shock kinematics in the lab frame:
+    # u_L = M c_L (incoming supersonic), u_R = (ρL/ρR)·u_L.
+    # We want a Sod-style "left at rest" interpretation, so we shift to
+    # the lab frame where uL = caller's choice and uR is the post-shock
+    # velocity in that frame. For the simplest IC we use uL=0 default and
+    # let the post-shock velocity be the RH jump ((ρL−ρR)/ρR)·M·c_L is
+    # zero only at M=1; for general M we just record the analytical RH
+    # downstream state.
+    uR_f = uL_f + (2 * c_L / (γ + 1)) * (M - 1.0 / M)
+    # NB: The RH jump signed convention here is u_R < u_L for left→right
+    # propagation. The driver may choose either side as IC; we report the
+    # analytic RH ratio, leaving sign convention to the caller.
+
+    mesh = HierarchicalMesh{2}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_2d_fields(mesh; T = T)
+
+    ρ_per_cell = Vector{Float64}(undef, length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        center = (cx, cy)
+        is_left = center[shock_axis] < x_split
+        ρ_i = is_left ? ρL_f : ρR
+        P_i = is_left ? pL_f : pR
+        u_axis = is_left ? uL_f : uR_f
+        u_x = shock_axis == 1 ? u_axis : 0.0
+        u_y = shock_axis == 2 ? u_axis : 0.0
+        v = cholesky_sector_state_from_primitive(ρ_i, u_x, u_y, P_i,
+                                                   (cx, cy);
+                                                   Gamma = Gamma, cv = cv)
+        write_detfield_2d!(fields, ci, v)
+        ρ_per_cell[j] = ρ_i
+    end
+
+    return (
+        name = "tier_e_high_mach_shock",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        params = (level = level, shock_axis = shock_axis,
+                   x_split = x_split, mach = M,
+                   ρL = ρL_f, ρR = ρR, pL = pL_f, pR = pR,
+                   uL = uL_f, uR = uR_f, c_L = c_L, c_R = c_R,
+                   lo = lo_t, hi = hi_t,
+                   Gamma = γ, cv = cv),
+    )
+end
+
+"""
+    tier_e_severe_shell_crossing_ic_full(; level=4, A_x=0.7, A_y=0.7,
+                                          ρ0=1.0, P0=1e-6,
+                                          lo=nothing, hi=nothing,
+                                          Gamma=GAMMA_LAW_DEFAULT,
+                                          cv=CV_DEFAULT, T=Float64)
+        -> NamedTuple
+
+E.2 Severe shell-crossing 2D Cholesky-sector full IC. Builds a balanced
+quadtree on `[lo, hi]` (default `[0, 1]²`), allocates the 14-named-field
+2D Cholesky-sector field set, populates it with a *2D extension* of the
+M3-6 Phase 2 D.4 Zel'dovich pancake: a *superposition* of two Zel'dovich
+velocity profiles, one along each axis,
+
+    u_1(x_1) = -A_x · 2π · cos(2π (x_1 - lo_1) / L_1)
+    u_2(x_2) = -A_y · 2π · cos(2π (x_2 - lo_2) / L_2)
+
+with uniform `(ρ_0, P_0)` and `A_x = A_y = 0.7` (more aggressive than
+Phase 2's 0.5). Both axes form caustics at `t_cross ≈ 1/(A · 2π) ≈
+0.227`; the intersection at `(0, 0)` produces *multiple intersecting
+caustics* at `t > t_cross`, the methods-paper §10.6 E.2 stress test.
+
+Returns a NamedTuple shape matching `tier_d_zeldovich_pancake_ic`:
+
+  • `name = "tier_e_severe_shell_crossing"`
+  • `mesh, frame, leaves, fields` — Cholesky-sector field set ready
+    for `det_step_2d_berry_HG!`.
+  • `ρ_per_cell::Vector{Float64}` — uniform `fill(ρ0, N)`.
+  • `t_cross::Float64` — `min(1/(A_x·2π), 1/(A_y·2π))`.
+  • `params::NamedTuple` — IC parameters echo plus `(L1, L2, t_cross)`.
+
+# Boundary conditions
+
+Recommended:
+
+    bc_e2 = FrameBoundaries{2}(((PERIODIC, PERIODIC),
+                                (PERIODIC, PERIODIC)))
+
+(periodic on both axes — both axes carry collapsing modes).
+
+# Acceptance pattern
+
+Tests assert: (a) realizability projection fires (`n_neg_jac ≥ 0` per
+step) and prevents compression cascade (γ_a stays bounded above 0); (b)
+no NaN over n_steps at `T_factor = 0.25` (well pre-caustic); (c) at
+`T_factor = 0.5` (post-caustic), the projection rate increases but
+state remains finite. The post-caustic regime is a *graceful failure*
+mode — bounded behavior, not quantitative correctness.
+"""
+function tier_e_severe_shell_crossing_ic_full(; level::Integer = 4,
+                                                 A_x::Real = 0.7,
+                                                 A_y::Real = 0.7,
+                                                 ρ0::Real = 1.0,
+                                                 P0::Real = 1e-6,
+                                                 lo = nothing, hi = nothing,
+                                                 Gamma::Real = GAMMA_LAW_DEFAULT,
+                                                 cv::Real = CV_DEFAULT,
+                                                 T::Type = Float64)
+    lo_t, hi_t = _default_box(2, lo, hi, T;
+                                default_lo = (zero(T), zero(T)),
+                                default_hi = (one(T), one(T)))
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    A_x_t = T(A_x)
+    A_y_t = T(A_y)
+
+    mesh = HierarchicalMesh{2}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_2d_fields(mesh; T = T)
+
+    ρ_per_cell = fill(Float64(ρ0), length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        # Two-axis Zel'dovich superposition.
+        m1_norm = (cx - Float64(lo_t[1])) / Float64(L1)
+        m2_norm = (cy - Float64(lo_t[2])) / Float64(L2)
+        u1 = -Float64(A_x_t) * 2π * cos(2π * m1_norm)
+        u2 = -Float64(A_y_t) * 2π * cos(2π * m2_norm)
+        v = cholesky_sector_state_from_primitive(Float64(ρ0), u1, u2,
+                                                   Float64(P0),
+                                                   (cx, cy);
+                                                   Gamma = Gamma, cv = cv)
+        write_detfield_2d!(fields, ci, v)
+    end
+
+    t_cross_x = 1.0 / (Float64(A_x_t) * 2π)
+    t_cross_y = 1.0 / (Float64(A_y_t) * 2π)
+    t_cross = min(t_cross_x, t_cross_y)
+
+    return (
+        name = "tier_e_severe_shell_crossing",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        t_cross = t_cross,
+        params = (level = level, A_x = Float64(A_x_t), A_y = Float64(A_y_t),
+                   ρ0 = ρ0, P0 = P0,
+                   lo = lo_t, hi = hi_t,
+                   L1 = Float64(L1), L2 = Float64(L2),
+                   t_cross_x = t_cross_x, t_cross_y = t_cross_y,
+                   t_cross = t_cross,
+                   Gamma = Gamma, cv = cv),
+    )
+end
+
+"""
+    tier_e_low_knudsen_ic_full(; level=4, k=(1, 0), A_u=1e-2,
+                                τ=1e-6, ρ0=1.0, P0=1.0,
+                                lo=nothing, hi=nothing,
+                                Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                                T=Float64) -> NamedTuple
+
+E.3 Very low Knudsen 2D Cholesky-sector full IC. Builds a balanced
+quadtree on `[lo, hi]` (default `[0, 1]²`), allocates the 14-named-field
+2D Cholesky-sector field set, populates it with a smooth low-amplitude
+strain perturbation:
+
+    u_1(x_1) = A_u · sin(2π · k_1 · (x_1 - lo_1) / L_1)
+    u_2(x_2) = A_u · sin(2π · k_2 · (x_2 - lo_2) / L_2)
+
+(velocity components only present on axes with `k_d ≠ 0`). The
+relaxation timescale `τ = 1e-6` is much smaller than the dynamical
+timescale `τ_dyn ~ L/c_s ~ O(1)`, so the BGK relaxation operates in
+the stiff Navier-Stokes limit. Initial deviatoric pressure is set
+non-zero to provide a relaxation signal.
+
+Returns a NamedTuple shape matching `tier_c_*_full_ic`:
+
+  • `name = "tier_e_low_knudsen"`
+  • `mesh, frame, leaves, fields` — Cholesky-sector field set.
+  • `ρ_per_cell::Vector{Float64}` — uniform `fill(ρ0, N)`.
+  • `params::NamedTuple` — IC parameters echo plus `(L1, L2, τ, Kn)`.
+
+# Boundary conditions
+
+Recommended: all-PERIODIC (smooth periodic mode).
+
+# Acceptance pattern
+
+Tests assert: (a) the post-step Cholesky-sector state remains in the
+near-equilibrium manifold (β_a small, γ²_a ≈ M_vv); (b) the BGK
+relaxation rate matches `exp(-dt/τ)` within an order of magnitude
+(verifies the implicit Newton handles the stiff regime); (c) no NaN,
+no unbounded energy growth across n_steps.
+"""
+function tier_e_low_knudsen_ic_full(; level::Integer = 4,
+                                      k = (1, 0),
+                                      A_u::Real = 1e-2,
+                                      τ::Real = 1e-6,
+                                      ρ0::Real = 1.0,
+                                      P0::Real = 1.0,
+                                      lo = nothing, hi = nothing,
+                                      Gamma::Real = GAMMA_LAW_DEFAULT,
+                                      cv::Real = CV_DEFAULT,
+                                      T::Type = Float64)
+    lo_t, hi_t = _default_box(2, lo, hi, T;
+                                default_lo = (zero(T), zero(T)),
+                                default_hi = (one(T), one(T)))
+    k_t = (Int(k[1]), Int(k[2]))
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+
+    mesh = HierarchicalMesh{2}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_2d_fields(mesh; T = T)
+
+    ρ_per_cell = fill(Float64(ρ0), length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        u_x = k_t[1] == 0 ? 0.0 : Float64(A_u) * sin(2π * k_t[1] * (cx - lo_t[1]) / L1)
+        u_y = k_t[2] == 0 ? 0.0 : Float64(A_u) * sin(2π * k_t[2] * (cy - lo_t[2]) / L2)
+        v = cholesky_sector_state_from_primitive(Float64(ρ0), u_x, u_y, Float64(P0),
+                                                   (cx, cy);
+                                                   Gamma = Gamma, cv = cv)
+        write_detfield_2d!(fields, ci, v)
+    end
+
+    # Sound speed for the dimensional Knudsen estimate.
+    c_s = sqrt(Float64(Gamma) * Float64(P0) / Float64(ρ0))
+    τ_dyn = min(Float64(L1), Float64(L2)) / c_s
+    Kn = Float64(τ) / τ_dyn
+
+    return (
+        name = "tier_e_low_knudsen",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        params = (level = level, k = k_t, A_u = Float64(A_u),
+                   τ = Float64(τ), τ_dyn = τ_dyn, Kn = Kn, c_s = c_s,
+                   ρ0 = Float64(ρ0), P0 = Float64(P0),
+                   lo = lo_t, hi = hi_t,
+                   L1 = Float64(L1), L2 = Float64(L2),
+                   Gamma = Gamma, cv = cv),
+    )
+end

@@ -560,4 +560,18 @@ export tier_c_sod_3d_full_ic,
        tier_c_plane_wave_3d_full_ic,
        tier_d_zeldovich_pancake_3d_ic_full
 
+# --- Phase M3-8 Phase a API: Tier-E stress-test IC factories -------------
+# Methods paper §10.6 Tier E. Three "extreme regime" stress tests:
+#   • E.1 high-Mach 2D shocks (`tier_e_high_mach_shock_ic_full`) —
+#     Mach 5/10 Sod-style; acceptance is graceful failure (no NaN).
+#   • E.2 severe shell-crossing (`tier_e_severe_shell_crossing_ic_full`)
+#     — superposition of two-axis Zel'dovich at A=0.7; tests
+#     realizability projection against compression cascade.
+#   • E.3 very low Knudsen (`tier_e_low_knudsen_ic_full`) — small-τ BGK
+#     relaxation regime; tests the implicit Newton's stiff-τ limit.
+# See `reference/notes_M3_8a_tier_e_gpu_prep.md`.
+export tier_e_high_mach_shock_ic_full,
+       tier_e_severe_shell_crossing_ic_full,
+       tier_e_low_knudsen_ic_full
+
 end # module
