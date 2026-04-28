@@ -436,3 +436,114 @@ Mvv_diag = SVector(0.40, 0.30, 0.20)
     γ3 = sqrt(max(g3², zero(T)))
     return SVector{3, T}(γ1, γ2, γ3)
 end
+
+# ──────────────────────────────────────────────────────────────────────
+# 3D H_rot solvability constraint (M3-7c §7.4)
+# ──────────────────────────────────────────────────────────────────────
+
+"""
+    h_rot_partial_dtheta_3d(α::SVector{3,T}, β::SVector{3,T},
+                             γ²::SVector{3,T}; pair::Symbol = :_12) -> T
+
+Closed-form value of `∂H_rot/∂θ_{ab}` for one pair-rotation generator
+in 3D. The 3D analog of `h_rot_partial_dtheta` (2D, `src/cholesky_DD.jl`).
+
+Per pair `(a, b)` the per-pair restriction to the
+`(α_a, β_a, α_b, β_b, γ_a², γ_b²)` 5-tuple gives the same closed form
+as the 2D case (the third axis is fixed under the `(a, b)` rotation):
+
+    ∂H_rot/∂θ_{ab} = − (γ_a² · α_b³)/(3·α_a) + (γ_b² · α_a³)/(3·α_b)
+                       + (α_a² − α_b²) · β_a · β_b.
+
+The argument `pair` selects which pair to evaluate: `:_12`, `:_13`,
+or `:_23` (mapping to (1,2), (1,3), (2,3) respectively). Default is
+`:_12` (matches the 2D limit on the dimension-lift slice).
+
+# Sign convention
+
+Mirrors the 2D `h_rot_partial_dtheta` convention (sign matches the
+SymPy verification output of `scripts/verify_berry_connection_3D.py`).
+
+# Iso slice
+
+At `α_a = α_b`, `β_a = β_b`, `γ_a² = γ_b²`, this expression vanishes —
+consistent with the iso-pullback being a Lagrangian submanifold in 9D
+(CHECK 3a of `notes_M3_prep_3D_berry_verification.md`).
+
+# Algebraic guarantee in the discrete EL
+
+The relation is **automatically satisfied by the per-axis residual
+rows** of `cholesky_el_residual_3D!` with Berry coupling enabled (M3-7c):
+substituting the Berry-modified Hamilton equations (rows of Ω · X = -dH
+solved for α̇_a, β̇_a) into the θ_{ab} row identity makes the LHS equal
+to the closed form above. The discrete residual encodes the per-axis
+rows directly, so the kernel-orthogonality identity is structurally
+guaranteed at every Newton iterate (analog of M3-3c's 2D contract). This
+helper returns the closed form so the M3-7c §7.4 verification gate can
+cross-check it numerically against the kernel-orthogonality probe
+(`h_rot_kernel_orthogonality_residual_3d`).
+"""
+@inline function h_rot_partial_dtheta_3d(α::SVector{3, T},
+                                          β::SVector{3, T},
+                                          γ²::SVector{3, T};
+                                          pair::Symbol = :_12) where {T<:Real}
+    if pair === :_12
+        a, b = 1, 2
+    elseif pair === :_13
+        a, b = 1, 3
+    elseif pair === :_23
+        a, b = 2, 3
+    else
+        error("h_rot_partial_dtheta_3d: pair must be :_12, :_13, or :_23 (got $pair)")
+    end
+    αa, αb = α[a], α[b]
+    βa, βb = β[a], β[b]
+    ga², gb² = γ²[a], γ²[b]
+    return -(ga² * αb^3) / (3 * αa) +
+            (gb² * αa^3) / (3 * αb) +
+            (αa^2 - αb^2) * βa * βb
+end
+
+"""
+    h_rot_kernel_orthogonality_residual_3d(α, β, γ², α̇, β̇; pair = :_12) -> T
+
+Numerically evaluate the per-pair kernel-orthogonality identity that
+`∂H_rot/∂θ_{ab}` is supposed to enforce in 3D. Per pair `(a, b)`, when
+`α̇, β̇` solve the Berry-modified per-axis Hamilton equations (with the
+`(a, b)`-only Berry block active — i.e., `θ̇_{ab}` is the only non-zero
+rotation rate of the three pair-generators), the contraction
+
+    R = -α_a²·β_b·α̇_a + (α_b³/3)·β̇_a + α_b²·β_a·α̇_b - (α_a³/3)·β̇_b
+        + ∂H_rot/∂θ_{ab}
+
+evaluates to 0 (this is the θ_{ab} row of `Ω · X = -dH` restricted to
+the per-pair sub-block; the third-axis decoupling means cross-pair
+contributions vanish in the per-pair Hamilton solve).
+
+This helper is the 3D per-pair analog of M3-3c's
+`h_rot_kernel_orthogonality_residual` (`src/cholesky_DD.jl`); together
+the three pairs sample the 9D rank-8 Casimir kernel-orthogonality
+constraint. Returns the residual as a scalar of type `T`.
+"""
+@inline function h_rot_kernel_orthogonality_residual_3d(α::SVector{3, T},
+                                                         β::SVector{3, T},
+                                                         γ²::SVector{3, T},
+                                                         α̇::SVector{3, T},
+                                                         β̇::SVector{3, T};
+                                                         pair::Symbol = :_12
+                                                         ) where {T<:Real}
+    if pair === :_12
+        a, b = 1, 2
+    elseif pair === :_13
+        a, b = 1, 3
+    elseif pair === :_23
+        a, b = 2, 3
+    else
+        error("h_rot_kernel_orthogonality_residual_3d: pair must be :_12, :_13, or :_23")
+    end
+    αa, αb = α[a], α[b]
+    βa, βb = β[a], β[b]
+    R = -αa^2 * βb * α̇[a] + (αb^3) * β̇[a] / 3 +
+         αb^2 * βa * α̇[b] - (αa^3) * β̇[b] / 3
+    return R + h_rot_partial_dtheta_3d(α, β, γ²; pair = pair)
+end

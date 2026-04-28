@@ -1578,3 +1578,138 @@ function det_step_3d_HG!(fields::PolynomialFieldSet,
     unpack_state_3d!(fields, leaves, sol.u)
     return fields
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M3-7c: native HG-side 3D Newton step driver WITH Berry coupling
+# (full 13-dof Newton-active per cell + 2 trivial-θ-driven extras = 15
+# total; θ_12, θ_13, θ_23 are now genuine Newton unknowns coupled to the
+# per-axis (α_a, β_a) blocks via the SO(3) Berry kinetic 1-form). 3D
+# analog of `det_step_2d_berry_HG!` per M3-7 design note §3 + §9. The
+# residual is `cholesky_el_residual_3D_berry!` (`src/eom.jl`) with the
+# same 15-dof packing as M3-7b. Newton sparsity:
+# `cell_adjacency_sparsity ⊗ ones(15, 15)` — same prototype as M3-7b
+# (the Berry α/β-modification couplings to (θ_12, θ_13, θ_23) live on
+# the same 15×15 block, so the dense within-cell prototype already
+# covers them).
+# ─────────────────────────────────────────────────────────────────────
+
+"""
+    det_step_3d_berry_HG!(fields::PolynomialFieldSet,
+                           mesh::HierarchicalMesh{3},
+                           frame::EulerianFrame{3, T},
+                           leaves::AbstractVector{<:Integer},
+                           bc_spec::FrameBoundaries{3},
+                           dt::Real;
+                           M_vv_override = nothing,
+                           ρ_ref::Real = 1.0,
+                           sparse_jac::Bool = true,
+                           abstol::Real = 1e-13, reltol::Real = 1e-13,
+                           maxiters::Int = 50) where {T<:Real}
+
+Advance the 3D Cholesky-sector field set by one timestep `dt` via an
+implicit-midpoint Newton solve of `cholesky_el_residual_3D_berry!`
+(M3-7c: SO(3) Berry coupling + (θ_12, θ_13, θ_23) as genuine Newton
+unknowns). Mutates the 15 Newton-unknown slots
+`(x_a, u_a, α_a, β_a, θ_12, θ_13, θ_23)` of `fields` in-place; the
+`s` slot is left untouched (entropy is operator-split, frozen across
+the Newton step).
+
+Arguments mirror `det_step_3d_HG!` (M3-7b). The structural progression:
+
+  • M3-7b: Newton system `15N × 15N`, no Berry coupling, θ_{ab} rows
+    trivial-driven.
+  • **M3-7c**: Newton system `15N × 15N`, Berry α/β-modification (three
+    pair-Berry blocks) + (θ_12, θ_13, θ_23) as Newton unknowns. The
+    Jacobian sparsity prototype is `cell_adjacency_sparsity ⊗ 15×15`
+    (same shape as M3-7b — the Berry couplings live within the
+    existing 15×15 block).
+
+Returns `fields` for convenience.
+
+# Constraints
+
+  • `mesh.balanced == true` (asserted).
+  • The kinematic drive of `θ̇_{ab}` is still zero (free-flight cut);
+    the F^θ_{ab} rows enforce `(θ_{ab}_np1 − θ_{ab}_n)/dt = 0`. M3-9
+    (3D D.1 KH) will plumb the off-diagonal strain coupling that
+    breaks the triviality.
+  • Off-diagonal `β_{ab}` is NOT carried on the field set (per M3-3a
+    Q3 default + M3-7 design note §4.4); 3D D.1 KH (M3-9) will lift
+    the field set to 19-dof.
+"""
+function det_step_3d_berry_HG!(fields::PolynomialFieldSet,
+                                 mesh::HierarchicalMesh{3},
+                                 frame::EulerianFrame{3, T},
+                                 leaves::AbstractVector{<:Integer},
+                                 bc_spec::FrameBoundaries{3},
+                                 dt::Real;
+                                 M_vv_override = nothing,
+                                 ρ_ref::Real = 1.0,
+                                 sparse_jac::Bool = true,
+                                 abstol::Real = 1e-13,
+                                 reltol::Real = 1e-13,
+                                 maxiters::Int = 50) where {T<:Real}
+    @assert mesh.balanced == true "det_step_3d_berry_HG! requires mesh.balanced == true"
+    N = length(leaves)
+    @assert N >= 1 "leaves vector must be non-empty"
+
+    aux = build_residual_aux_3D(fields, mesh, frame, leaves, bc_spec;
+                                 M_vv_override = M_vv_override,
+                                 ρ_ref = ρ_ref)
+    y_n = pack_state_3d(fields, leaves)
+    y0 = copy(y_n)
+
+    f_in_place = (F, u, p_in) -> begin
+        cholesky_el_residual_3D_berry!(F, u, p_in.y_n, p_in.aux, p_in.dt)
+        return nothing
+    end
+    p = (y_n = y_n, aux = aux, dt = T(dt))
+
+    if sparse_jac && N >= 4
+        cell_sparsity = cell_adjacency_sparsity(mesh; depth = 1,
+                                                  leaves_only = true)
+        rows = Int[]
+        cols = Int[]
+        cs_rows, cs_cols, _ = SparseArrays.findnz(cell_sparsity)
+        # 15×15 = 225 nonzeros per cell-cell adjacency entry. Same as
+        # M3-7b — the M3-7c Berry couplings live within the existing
+        # 15×15 within-cell block.
+        sizehint!(rows, length(cs_rows) * 225)
+        sizehint!(cols, length(cs_rows) * 225)
+        @inbounds for k in eachindex(cs_rows)
+            i = Int(cs_rows[k])
+            j = Int(cs_cols[k])
+            for r in 1:15, c in 1:15
+                push!(rows, 15 * (i - 1) + r)
+                push!(cols, 15 * (j - 1) + c)
+            end
+        end
+        jac_proto = _SA.sparse(rows, cols, ones(Float64, length(rows)),
+                                15 * N, 15 * N, max)
+        nf = NonlinearFunction(f_in_place; jac_prototype = jac_proto)
+        prob = NonlinearProblem(nf, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    else
+        prob = NonlinearProblem(f_in_place, y0, p)
+        sol = solve(
+            prob,
+            NewtonRaphson(; autodiff = AutoForwardDiff());
+            abstol = abstol, reltol = reltol, maxiters = maxiters,
+        )
+    end
+
+    F_check = similar(sol.u)
+    cholesky_el_residual_3D_berry!(F_check, sol.u, y_n, aux, T(dt))
+    res_norm = maximum(abs, F_check)
+    if res_norm > 10 * abstol && sol.retcode != ReturnCode.Success
+        error("det_step_3d_berry_HG! Newton solve failed: retcode = $(sol.retcode), " *
+              "‖residual‖∞ = $res_norm")
+    end
+
+    unpack_state_3d!(fields, leaves, sol.u)
+    return fields
+end

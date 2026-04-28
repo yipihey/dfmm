@@ -478,6 +478,24 @@ export pack_state_3d, unpack_state_3d!,
        build_residual_aux_3D
 export det_step_3d_HG!
 
+# --- Phase M3-7c API: SO(3) Berry coupling integration on the 3D path ------
+# 3D analog of M3-3c's `cholesky_el_residual_2D_berry!` +
+# `det_step_2d_berry_HG!`. Same 15-dof packing as M3-7b
+# (`(x_a, u_a, α_a, β_a)_{a=1,2,3} + (θ_12, θ_13, θ_23)`); the θ_{ab}
+# are now genuine Newton unknowns coupled to the per-axis (α_a, β_a)
+# blocks via the verified SO(3) Berry kinetic 1-form
+# `(1/3) Σ_{a<b} (α_a^3 β_b − α_b^3 β_a) dθ_{ab}` from `src/berry.jl`.
+# The closed-form per-pair `∂H_rot/∂θ_{ab}` lives in
+# `src/cholesky_DD_3d.jl::h_rot_partial_dtheta_3d` (verification
+# artefact for §7.4; the discrete EL residual encodes the per-axis
+# Berry-modified Hamilton equations directly so the H_rot solvability
+# is structurally guaranteed at every Newton iterate).
+# See `reference/notes_M3_7_3d_extension.md` §4 + §7 and
+# `reference/notes_M3_7c_3d_berry_integration.md`.
+export cholesky_el_residual_3D_berry!, cholesky_el_residual_3D_berry
+export det_step_3d_berry_HG!
+export h_rot_partial_dtheta_3d, h_rot_kernel_orthogonality_residual_3d
+
 # --- Phase M3-6 Phase 3 API: 2D substrate (tracers + stoch + γ-diag) -----
 # Three deliverables, each scoped to extend a 1D substrate to 2D:
 #  (a) `TracerMeshHG2D` — per-species per-cell passive scalars on a

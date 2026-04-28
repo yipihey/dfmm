@@ -1944,3 +1944,367 @@ function build_residual_aux_3D(fields::PolynomialFieldSet,
         ρ_ref       = ρ_t,
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M3-7c: SO(3) Berry coupling integration on the 3D residual
+# ─────────────────────────────────────────────────────────────────────
+#
+# M3-7c extends the M3-7b residual `cholesky_el_residual_3D!` (which
+# carried trivial-driven θ_{ab} rows) by activating the SO(3) Berry
+# kinetic 1-form
+#
+#     Θ_rot^{(3D)} = (1/3) Σ_{a<b} (α_a^3 β_b − α_b^3 β_a) · dθ_{ab}
+#
+# (`src/berry.jl::berry_F_3d`, verified at the stencil level in
+# `test/test_M3_prep_3D_berry_verification.jl`, 797 asserts) on the per-
+# axis (α_a, β_a) residual rows.
+#
+# # Berry-modified per-axis Hamilton equations (3D)
+#
+# The Berry-modified rows of `Ω · X = -dH` per axis a, summed across the
+# three pair-rotation generators (a, b) ∈ {(1, 2), (1, 3), (2, 3)},
+# give the 3D analog of the 2D M3-3c boxed equations. Because each
+# pair-generator J_{ab} commutes with the (α_c, β_c) for c ∉ {a, b}
+# (the third axis is fixed under the (a, b) rotation), the per-pair
+# Berry contributions add independently across the three pairs. Per
+# axis a, summing over pairs in which a participates:
+#
+#   axis a = 1 (in pairs (1,2) and (1,3); a is the "left" index, sign +):
+#     α̇_1 = β_1 − (α_2^3/(3 α_1^2)) θ̇_12 − (α_3^3/(3 α_1^2)) θ̇_13
+#     β̇_1 = γ_1²/α_1 − β_2 θ̇_12 − β_3 θ̇_13
+#
+#   axis a = 2 (in pair (1,2) right, sign −; in pair (2,3) left, sign +):
+#     α̇_2 = β_2 + (α_1^3/(3 α_2^2)) θ̇_12 − (α_3^3/(3 α_2^2)) θ̇_23
+#     β̇_2 = γ_2²/α_2 + β_1 θ̇_12 − β_3 θ̇_23
+#
+#   axis a = 3 (in pairs (1,3) and (2,3) right, sign −):
+#     α̇_3 = β_3 + (α_1^3/(3 α_3^2)) θ̇_13 + (α_2^3/(3 α_3^2)) θ̇_23
+#     β̇_3 = γ_3²/α_3 + β_1 θ̇_13 + β_2 θ̇_23
+#
+# Sign convention. Each pair (a, b) (with a < b) contributes to the
+# axis-a row with the same sign as the 2D pair (1, 2) → axis-1 row
+# (sign +) and to the axis-b row with the same sign as the 2D pair
+# (1, 2) → axis-2 row (sign −). This follows directly from the 2D
+# berry_partials_2d → residual mapping in `cholesky_el_residual_2D_berry!`
+# applied per pair.
+#
+# # Residual rows (per cell)
+#
+#     F^x_a    = (x_a_np1 − x_a_n)/dt − ū_a
+#     F^u_a    = (u_a_np1 − u_a_n)/dt + (P̄_a^hi − P̄_a^lo)/m̄_a
+#     F^α_a    = (α_a_np1 − α_a_n)/dt − β̄_a + (Berry α-modification per axis)
+#     F^β_a    = (β_a_np1 − β_a_n)/dt + (∂_a u_a) β̄_a − γ̄_a²/ᾱ_a
+#                + (Berry β-modification per axis)
+#     F^θ_{ab} = (θ_{ab}_np1 − θ_{ab}_n)/dt
+#
+# The θ_{ab} rows are kinematic-equation drives with `drive = 0` (free-
+# flight cut, axis-aligned ICs); identical in form to M3-3c's F^θ_R row
+# (no off-diagonal velocity-gradient stencil). Each Euler angle is
+# conserved per cell when the Berry α/β-modification block vanishes
+# multiplicatively (β̄_b = 0, θ̇_{ab} = 0).
+#
+# # Dimension-lift gates carry through (CRITICAL)
+#
+#   • 3D ⊂ 1D (M3-7 design note §7.1a): on the 1D-symmetric slice
+#     (α_2 = α_3 = const, β_2 = β_3 = 0, all θ_{ab} = 0), every Berry
+#     α-modification term is multiplied by β̄_b = 0 (for b ∉ {a}) or by
+#     θ̇_{ab} = 0 (the θ_{ab} rows pin them); every Berry β-modification
+#     term is multiplied by β_b = 0 or θ̇_{ab} = 0. The residual reduces
+#     byte-equally to M3-7b's no-Berry form on the dimension-lift slice;
+#     M3-7b's gate transitively holds for M3-7c.
+#
+#   • 3D ⊂ 2D (M3-7 design note §7.1b): on the 2D-symmetric slice
+#     (α_3 = const, β_3 = 0, θ_13 = θ_23 = 0), Berry contributions
+#     involving the (1, 3) and (2, 3) pairs vanish because either β_3 = 0
+#     or θ̇_13 = θ̇_23 = 0 (their rows pin them). The (1, 2) pair Berry
+#     block matches M3-3c's 2D form byte-equally — a direct restriction
+#     of the closed-form `berry_partials_3d` (see CHECK 3b of
+#     `notes_M3_prep_3D_berry_verification.md`).
+#
+# # Off-diagonal β
+#
+# Off-diagonal β_{ab} is **not** carried on the 3D field set (per M3-3a
+# Q3 default + M3-7 design note §4.4); the 3D D.1 KH (M3-9) work will
+# lift to 19-dof when the 3D off-diagonal sector is calibrated.
+#
+# # H_rot solvability
+#
+# The closed-form `h_rot_partial_dtheta_3d(α, β, γ²; pair)` per pair
+# `(a, b)` is the 3D analog of M3-3c's `h_rot_partial_dtheta`. The
+# discrete EL residual rows do NOT consume this closed form directly
+# (the per-axis Berry-modification terms encode the rows of `Ω · X = -dH`
+# from `src/berry.jl::berry_partials_3d`); the helper exists as a
+# verification-gate artefact for §7.4.
+
+"""
+    cholesky_el_residual_3D_berry!(F, y_np1, y_n, aux, dt)
+
+Native HG-side 3D Cholesky-sector EL residual **with SO(3) Berry
+coupling and (θ_12, θ_13, θ_23) as Newton unknowns**. Writes the
+residual `F` for the 15-dof-per-cell flat unknown vector `y_np1`
+against the reference state `y_n`. Both vectors share the M3-7b
+packing layout (15 dof per leaf):
+
+    y[15(i-1) +  1..3]  = (x_1, x_2, x_3)
+    y[15(i-1) +  4..6]  = (u_1, u_2, u_3)
+    y[15(i-1) +  7..9]  = (α_1, α_2, α_3)
+    y[15(i-1) + 10..12] = (β_1, β_2, β_3)
+    y[15(i-1) + 13..15] = (θ_12, θ_13, θ_23)
+
+Auxiliary data carried in `aux::NamedTuple` is identical to
+`cholesky_el_residual_3D!` (M3-7b) — see that docstring. The 3D analog
+of `cholesky_el_residual_2D_berry!`.
+
+# Verification
+
+  • The §Dimension-lift gate (M3-7 design note §7.1a + §7.1b) holds at
+    0.0 absolute on the 1D-symmetric and 2D-symmetric slices (per
+    file-level comment block above).
+  • The Berry partials match `berry_partials_3d` up to the (1/dt)
+    factor and midpoint averaging — verified in
+    `test_M3_7c_berry_3d_residual.jl`.
+  • The H_rot solvability constraint per pair `(a, b)` evaluates to
+    machine zero at the converged Newton iterate — verified in
+    `test_M3_7c_h_rot_solvability_3d.jl`.
+
+See `reference/notes_M3_7c_3d_berry_integration.md` for the full
+integration write-up + sub-test inventory.
+"""
+function cholesky_el_residual_3D_berry!(F::AbstractVector,
+                                          y_np1::AbstractVector,
+                                          y_n::AbstractVector,
+                                          aux::NamedTuple,
+                                          dt::Real)
+    s_vec       = aux.s_vec
+    Δm_per_axis = aux.Δm_per_axis
+    face_lo     = aux.face_lo_idx
+    face_hi     = aux.face_hi_idx
+    M_vv_over   = aux.M_vv_override
+    ρ_ref       = aux.ρ_ref
+    wrap_lo     = haskey(aux, :wrap_lo_idx) ? aux.wrap_lo_idx : nothing
+    wrap_hi     = haskey(aux, :wrap_hi_idx) ? aux.wrap_hi_idx : nothing
+
+    N = length(s_vec)
+    @assert length(y_np1) == 15 * N "y_np1 length $(length(y_np1)) does not match 15 * N = $(15 * N)"
+    @assert length(y_n)   == 15 * N
+    @assert length(F)     == 15 * N
+    @assert length(Δm_per_axis[1]) == N
+    @assert length(Δm_per_axis[2]) == N
+    @assert length(Δm_per_axis[3]) == N
+
+    Tres = promote_type(eltype(y_np1), eltype(y_n), eltype(s_vec), typeof(dt))
+
+    # 15-dof per-cell index helpers (mirror M3-7b's residual).
+    @inline get_x(y, a, i) = y[15 * (i - 1) + a]              # 1..3
+    @inline get_u(y, a, i) = y[15 * (i - 1) + 3 + a]          # 4..6
+    @inline get_α(y, a, i) = y[15 * (i - 1) + 6 + a]          # 7..9
+    @inline get_β(y, a, i) = y[15 * (i - 1) + 9 + a]          # 10..12
+    @inline get_θ(y, ab, i) = y[15 * (i - 1) + 12 + ab]       # 13..15
+
+    @inbounds for i in 1:N
+        s_i = s_vec[i]
+
+        # Per-cell θ_{ab} midpoints + finite-difference rates (shared by
+        # all three axes via the Berry α/β-modification blocks).
+        θ12_n   = get_θ(y_n,   1, i)
+        θ12_np1 = get_θ(y_np1, 1, i)
+        θ13_n   = get_θ(y_n,   2, i)
+        θ13_np1 = get_θ(y_np1, 2, i)
+        θ23_n   = get_θ(y_n,   3, i)
+        θ23_np1 = get_θ(y_np1, 3, i)
+        dθ12_dt = (θ12_np1 - θ12_n) / Tres(dt)
+        dθ13_dt = (θ13_np1 - θ13_n) / Tres(dt)
+        dθ23_dt = (θ23_np1 - θ23_n) / Tres(dt)
+
+        # Cache per-axis self midpoints (needed for Berry cross-axis terms).
+        α1_n   = get_α(y_n,   1, i); α1_np1 = get_α(y_np1, 1, i)
+        α2_n   = get_α(y_n,   2, i); α2_np1 = get_α(y_np1, 2, i)
+        α3_n   = get_α(y_n,   3, i); α3_np1 = get_α(y_np1, 3, i)
+        β1_n   = get_β(y_n,   1, i); β1_np1 = get_β(y_np1, 1, i)
+        β2_n   = get_β(y_n,   2, i); β2_np1 = get_β(y_np1, 2, i)
+        β3_n   = get_β(y_n,   3, i); β3_np1 = get_β(y_np1, 3, i)
+        ᾱ_self_1 = (α1_n + α1_np1) / 2
+        ᾱ_self_2 = (α2_n + α2_np1) / 2
+        ᾱ_self_3 = (α3_n + α3_np1) / 2
+        β̄_self_1 = (β1_n + β1_np1) / 2
+        β̄_self_2 = (β2_n + β2_np1) / 2
+        β̄_self_3 = (β3_n + β3_np1) / 2
+
+        for a in 1:3
+            # Self midpoints.
+            x_n   = get_x(y_n,   a, i)
+            x_np1 = get_x(y_np1, a, i)
+            u_n   = get_u(y_n,   a, i)
+            u_np1 = get_u(y_np1, a, i)
+            α_n   = get_α(y_n,   a, i)
+            α_np1 = get_α(y_np1, a, i)
+            β_n   = get_β(y_n,   a, i)
+            β_np1 = get_β(y_np1, a, i)
+
+            x̄ = (x_n   + x_np1)   / 2
+            ū = (u_n   + u_np1)   / 2
+            ᾱ = (α_n   + α_np1)   / 2
+            β̄ = (β_n   + β_np1)   / 2
+
+            # Neighbor along axis a (lo, hi).
+            ilo = face_lo[a][i]
+            ihi = face_hi[a][i]
+
+            # Periodic-coordinate wrap (M3-7b 3-axis generalisation).
+            wrap_lo_off = wrap_lo === nothing ? zero(Tres) : Tres(wrap_lo[a][i])
+            wrap_hi_off = wrap_hi === nothing ? zero(Tres) : Tres(wrap_hi[a][i])
+
+            # Lo-face neighbor data; mirror-self when out-of-domain.
+            if ilo == 0
+                x_lo_n   = x_n
+                x_lo_np1 = x_np1
+                u_lo_n   = u_n
+                u_lo_np1 = u_np1
+                s_lo     = s_i
+            else
+                x_lo_n   = get_x(y_n,   a, ilo) + wrap_lo_off
+                x_lo_np1 = get_x(y_np1, a, ilo) + wrap_lo_off
+                u_lo_n   = get_u(y_n,   a, ilo)
+                u_lo_np1 = get_u(y_np1, a, ilo)
+                s_lo     = s_vec[ilo]
+            end
+            x̄_lo = (x_lo_n + x_lo_np1) / 2
+            ū_lo = (u_lo_n + u_lo_np1) / 2
+
+            # Hi-face neighbor data; mirror-self when out-of-domain.
+            if ihi == 0
+                x_hi_n   = x_n
+                x_hi_np1 = x_np1
+                u_hi_n   = u_n
+                u_hi_np1 = u_np1
+                s_hi     = s_i
+            else
+                x_hi_n   = get_x(y_n,   a, ihi) + wrap_hi_off
+                x_hi_np1 = get_x(y_np1, a, ihi) + wrap_hi_off
+                u_hi_n   = get_u(y_n,   a, ihi)
+                u_hi_np1 = get_u(y_np1, a, ihi)
+                s_hi     = s_vec[ihi]
+            end
+            x̄_hi = (x_hi_n + x_hi_np1) / 2
+            ū_hi = (u_hi_n + u_hi_np1) / 2
+
+            Δm_i = Δm_per_axis[a][i]
+
+            # Per-axis M_vv (override or EOS branch); mirrors M3-7b.
+            M̄vv_a = if M_vv_over !== nothing
+                Tres(M_vv_over[a])
+            else
+                Δx_avg = if ilo == 0 && ihi == 0
+                    zero(Tres)
+                elseif ilo == 0
+                    2 * (x̄_hi - x̄)
+                elseif ihi == 0
+                    2 * (x̄ - x̄_lo)
+                else
+                    x̄_hi - x̄_lo
+                end
+                J̄_self = Δx_avg > 0 ? Δx_avg / (2 * Δm_i) : zero(Tres)
+                J̄_self > 0 ? Mvv(J̄_self, s_i) : zero(Tres)
+            end
+
+            # Pressure stencil (mirrors M3-7b).
+            P_self = Tres(ρ_ref) * M̄vv_a
+            P_lo_neighbor = if ilo == 0
+                P_self
+            else
+                Mvv_lo = if M_vv_over !== nothing
+                    Tres(M_vv_over[a])
+                else
+                    Tres(ρ_ref) * Mvv(one(Tres) / Tres(ρ_ref), s_lo)
+                end
+                Tres(ρ_ref) * Mvv_lo
+            end
+            P_hi_neighbor = if ihi == 0
+                P_self
+            else
+                Mvv_hi = if M_vv_over !== nothing
+                    Tres(M_vv_over[a])
+                else
+                    Tres(ρ_ref) * Mvv(one(Tres) / Tres(ρ_ref), s_hi)
+                end
+                Tres(ρ_ref) * Mvv_hi
+            end
+            P̄_lo = (P_self + P_lo_neighbor) / 2
+            P̄_hi = (P_self + P_hi_neighbor) / 2
+
+            Δx̄_full = x̄_hi - x̄_lo
+            div̄u_a = if Δx̄_full > 0
+                (ū_hi - ū_lo) / Δx̄_full
+            else
+                zero(Tres)
+            end
+
+            m̄_a = Δm_i
+            γ²_a = M̄vv_a - β̄^2
+
+            # Berry α/β-modifications per axis a (signs from rows of
+            # Ω · X = -dH summed over the three pair-generators in
+            # which a participates; see file-level comment block above).
+            #
+            # axis 1: pairs (1,2) [+] and (1,3) [+]
+            # axis 2: pairs (1,2) [-] and (2,3) [+]
+            # axis 3: pairs (1,3) [-] and (2,3) [-]
+            berry_α_term, berry_β_term = if a == 1
+                ( (ᾱ_self_2^3) / (3 * ᾱ_self_1^2) * dθ12_dt +
+                  (ᾱ_self_3^3) / (3 * ᾱ_self_1^2) * dθ13_dt,
+                  β̄_self_2 * dθ12_dt +
+                  β̄_self_3 * dθ13_dt
+                )
+            elseif a == 2
+                ( -(ᾱ_self_1^3) / (3 * ᾱ_self_2^2) * dθ12_dt +
+                   (ᾱ_self_3^3) / (3 * ᾱ_self_2^2) * dθ23_dt,
+                  -β̄_self_1 * dθ12_dt +
+                   β̄_self_3 * dθ23_dt
+                )
+            else
+                ( -(ᾱ_self_1^3) / (3 * ᾱ_self_3^2) * dθ13_dt +
+                  -(ᾱ_self_2^3) / (3 * ᾱ_self_3^2) * dθ23_dt,
+                  -β̄_self_1 * dθ13_dt +
+                  -β̄_self_2 * dθ23_dt
+                )
+            end
+
+            # Residual rows.
+            base = 15 * (i - 1)
+            F[base + a]      = (x_np1 - x_n) / dt - ū                          # F^x_a
+            F[base + 3 + a]  = (u_np1 - u_n) / dt + (P̄_hi - P̄_lo) / m̄_a        # F^u_a
+            F[base + 6 + a]  = (α_np1 - α_n) / dt - β̄ + berry_α_term           # F^α_a
+            F[base + 9 + a]  = (β_np1 - β_n) / dt + div̄u_a * β̄ -
+                               (ᾱ != 0 ? γ²_a / ᾱ : zero(Tres)) + berry_β_term # F^β_a
+        end
+
+        # F^θ_{ab}: kinematic-drive form (3D analog of M3-3c's F^θ_R).
+        # In M3-7c first cut (no off-diagonal velocity-gradient stencil
+        # yet), drive = 0 ⇒ each Euler angle is conserved per cell across
+        # the Newton step. The Berry α/β-modifications above already
+        # encode the Hamilton equations of `Ω · X = -dH`, so the H_rot
+        # solvability identity is structurally guaranteed (per-pair
+        # check in `test_M3_7c_h_rot_solvability_3d.jl`).
+        base = 15 * (i - 1)
+        F[base + 13] = (θ12_np1 - θ12_n) / dt
+        F[base + 14] = (θ13_np1 - θ13_n) / dt
+        F[base + 15] = (θ23_np1 - θ23_n) / dt
+    end
+    return F
+end
+
+"""
+    cholesky_el_residual_3D_berry(y_np1, y_n, aux, dt)
+
+Allocating wrapper around `cholesky_el_residual_3D_berry!`. Returns a
+fresh residual vector. Used in tests where allocation cost is irrelevant.
+"""
+function cholesky_el_residual_3D_berry(y_np1::AbstractVector,
+                                         y_n::AbstractVector,
+                                         aux::NamedTuple,
+                                         dt::Real)
+    Tres = promote_type(eltype(y_np1), eltype(y_n), eltype(aux.s_vec), typeof(dt))
+    F = similar(y_np1, Tres, length(y_np1))
+    cholesky_el_residual_3D_berry!(F, y_np1, y_n, aux, dt)
+    return F
+end
