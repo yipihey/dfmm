@@ -712,4 +712,39 @@ using Test
         include("test_M3_7b_3d_zero_strain.jl")
         include("test_M3_7b_dimension_lift_3d.jl")
     end
+    @testset verbose = true "Phase M3-7c: SO(3) Berry coupling integration (3D)" begin
+        # M3-7c sub-phase of M3-7 (3D extension). Promotes the trivial-
+        # driven θ_{ab} rows of M3-7b's 3D EL residual to Newton-active
+        # rows coupled via the verified SO(3) Berry kinetic 1-form
+        # `Θ_rot^{(3D)} = (1/3) Σ_{a<b} (α_a^3 β_b - α_b^3 β_a) dθ_{ab}`
+        # from `src/berry.jl`. Each pair (a, b) contributes Berry α/β-
+        # modifications to the per-axis residual rows, summed across
+        # the three pair-generators in which axis a participates. The
+        # F^θ_{ab} rows remain kinematic-drive form (drive = 0;
+        # off-diagonal velocity-gradient stencil deferred to M3-9).
+        # Four test files:
+        #   • Berry verification reproduction (§7.2): 6 random samples
+        #     × per-pair θ probes; FD-vs-closed-form match to 1e-9 +
+        #     cross-check against `berry_partials_3d`.
+        #   • Iso-pullback ε-expansion (§7.3): F_{ab} = 0 on iso slice;
+        #     ε-extrapolation slope ≈ 1 ± 0.1; residual-level Berry
+        #     contribution scales linearly in ε.
+        #   • H_rot solvability (§7.4): closed-form ∂H_rot/∂θ_{ab} per
+        #     pair satisfies kernel-orthogonality at 5 random (α, β,
+        #     γ²) × 3 (θ̇)_test × 3 pairs (45 contractions); Newton
+        #     converges in ≤ 7 iter on non-isotropic 3D IC; post-Newton
+        #     residual ≤ 1e-10.
+        #   • Dimension-lift parity with Berry (§7.1a + §7.1b — the
+        #     load-bearing M3-7c acceptance criterion):
+        #       §7.1a 3D-Berry ⊂ 1D matches M1 byte-equal (0.0 abs);
+        #       §7.1b 3D-Berry ⊂ 2D-Berry matches M3-3c's
+        #       `det_step_2d_berry_HG!` byte-equal (0.0 abs) on both
+        #       1D-symmetric and non-trivial Berry ICs (β + θ_12).
+        # See `reference/notes_M3_7_3d_extension.md` §4 + §7 and
+        # `reference/notes_M3_7c_3d_berry_integration.md`.
+        include("test_M3_7c_berry_3d_residual.jl")
+        include("test_M3_7c_iso_pullback_3d.jl")
+        include("test_M3_7c_h_rot_solvability_3d.jl")
+        include("test_M3_7c_dimension_lift_3d_with_berry.jl")
+    end
 end
