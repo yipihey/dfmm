@@ -3,6 +3,13 @@
 > **Created (2026-04-26):** at M4 entry, immediately after M3 close
 > (`reference/MILESTONE_3_FINAL.md`). Tracks M4-as-shipped phase by
 > phase against `reference/notes_M4_plan.md`.
+>
+> **CLOSED (2026-04-26):** M4 closed in honest-partial mode after
+> three sub-phases. The "M4 close" section at the bottom synthesizes
+> all phase verdicts; the remaining original-plan phases (full GPU,
+> MPI, E.4, D.6/D.8/D.9, Bernstein, paper resubmission) are deferred
+> to M5 — see `reference/MILESTONE_4_FINAL.md` and
+> `reference/notes_M5_plan.md`.
 
 ## M4 phase ledger
 
@@ -11,13 +18,14 @@
 | M4-1: closed-loop β_off ↔ β_a coupling | **CLOSED** (HONEST_FALSIFICATION) | +598 | D.1 KH: closed-loop preserves regression but does not activate eigenmode |
 | M4-2: 3D D.1 KH falsifier (lift of M4-1) | **CLOSED** (HONEST_FALSIFICATION_LIFTED) | +1187 | 2D kinematic-only finding generalizes to 3D; c_off ≈ 1.57 at L=3 |
 | M4-3: per-species momentum (D.7 follow-up) | **CLOSED** (HONEST_PARTIAL) | +1708 | substrate + kernel + IC factory in place; τ_drag regimes differentiate with u_dust_offset bias; static gas equilibrium leaves regimes identical without offset |
-| M4-4: 3D Tier-D headlines (D.7, D.10) | not started | — | |
-| M4-5: full Metal/CUDA port | not started (HG `Backend` blocker) | — | |
-| M4-6: MPI scaling | not started | — | |
-| M4-7: E.4 cosmological + ColDICE | not started | — | |
-| M4-8: D.6 / D.8 / D.9 two-fluid 2D | not started | — | |
-| M4-9: Bernstein reconstruction | not started | — | |
-| M4-10: methods paper resubmission | not started | — | |
+| M4-wrap-up: paper revision + M5 plan | **CLOSED** | 0 (paper-only) | §10.5 D.1/D.7 revised; §10.7 honest characterization; MILESTONE_4_FINAL + notes_M5_plan |
+| M4-4: 3D Tier-D headlines (D.7, D.10) | **DEFERRED to M5** | — | rolled into M5-1 / M5-2 follow-ups |
+| M4-5: full Metal/CUDA port | **DEFERRED to M5** (HG `Backend` blocker) | — | M5-3 (HG upstream) → M5-4 Metal → M5-5 CUDA |
+| M4-6: MPI scaling | **DEFERRED to M5** | — | rolled into M5-6 |
+| M4-7: E.4 cosmological + ColDICE | **DEFERRED to M5** | — | requires multigrid Poisson coupling |
+| M4-8: D.6 / D.8 / D.9 two-fluid 2D | **DEFERRED to M5** | — | orthogonal to D.1/D.7 closures |
+| M4-9: Bernstein reconstruction | **DEFERRED to M5** | — | natural place to resolve eigenmode question |
+| M4-10: methods paper resubmission | **DEFERRED to M5** (M5-7) | — | needs M5-1/M5-2 results before resubmission |
 
 ## M4-1 close (2026-04-26)
 
@@ -338,3 +346,91 @@ full physics requires either a non-stationary base flow or
 explicit centrifugal-force computation, both deferred to M4 Phase
 4. M4 Phase 4 (3D D.7, two-way momentum exchange, Metal port post-
 HG-Backend) is unblocked.*
+
+## M4 close (2026-04-26)
+
+**Total commits across M4 sub-phases:**
+- M4-1 closed-loop β_off ↔ β_a (D.1 2D): 1 sub-phase commit + close.
+- M4-2 (a, b, c, d): 4 sub-phase commits + close.
+- M4-3 (a, b, c, d): 4 sub-phase commits + close.
+- M4 wrap-up (a, b, c, close): 4 commits.
+
+**Test count growth:** 33,940+1 deferred (M3 close) → 37,433+1
+deferred (M4 close), a delta of +3493 asserts. Bit-exact regression
+discipline held throughout: every M4 sub-phase landed without
+invalidating prior gates. The full M3 + M4 regression battery
+preserves byte-equal behaviour at the regression IC for every M4
+addition.
+
+**Phase verdicts:**
+
+| Phase | Verdict | Test delta | Cumulative |
+|---|---|---:|---:|
+| M4-1 D.1 2D closed-loop | HONEST_FALSIFICATION | +598 | 34,538 |
+| M4-2 D.1 3D KH lift | HONEST_FALSIFICATION_LIFTED | +1187 | 35,725 |
+| M4-3 D.7 per-species momentum | HONEST_PARTIAL | +1708 | 37,433 |
+| M4 wrap-up | paper + notes only | 0 | 37,433 |
+
+**Performance summary:**
+- M4-1 closed-loop H_back: ~22% per-Newton-step overhead at level 3
+  (more nonzero Jacobian entries to evaluate via ForwardDiff).
+- M4-2 21-dof 3D KH-active residual: 3.41 s/step at level 3
+  (8³ = 512 cells); 102 s wall for 30 steps.
+- M4-3 per-species momentum: 0% overhead when not constructed
+  (opt-in extension); ~0.04 s/step at level 3 + 64 cells when
+  active.
+- No matrix-free Newton-Krylov promotion was attempted on M4 paths
+  (M3-8b's 13-dof / 15-dof patterns lift naturally to 21-dof; this
+  is a deferred M5 engineering item).
+
+**M5 entry-point list (full detail in `reference/notes_M5_plan.md`):**
+
+1. **M5-1 — Centrifugal-force kernel + two-way coupling.** Closes
+   literal D.7. `apply_centrifugal_drift!` adds `(u_k · ∇)u_gas`
+   finite-difference term; gas residual gains
+   `Σ_k≠gas ρ_k(u_k − u_gas)/τ_drag_k` back-reaction.
+2. **M5-2 — Higher-order Hamiltonian (per-cell linearised
+   Rayleigh).** Closes literal D.1. Either cubic/quartic in
+   perturbation amplitudes (creating a positive-eigenvalue linear
+   block), or per-cell stencil-level Rayleigh-equation
+   reconstruction (eigenvector projection).
+3. **M5-3 — HG `Backend`-parameterized `PolynomialFieldSet`
+   upstream.** PR to HG; prerequisite for M5-4.
+4. **M5-4 — Apple Metal kernel port** for the per-cell residual
+   (after M5-3).
+5. **M5-5 — CUDA backend** (after Metal stabilizes).
+6. **M5-6 — MPI scaling** on HG `partition_for_threads` chunk
+   structure.
+7. **M5-7 — Methods paper resubmission** with M4 + M5 findings.
+
+(D.6 / D.8 / D.9 two-fluid 2D content, Bernstein reconstruction,
+E.4 cosmological + ColDICE / PM N-body cross-comparison are
+tracked as M5+ items orthogonal to the M5-1/M5-2 closures and
+M5-3..M5-6 engineering work; see `notes_M5_plan.md`.)
+
+**Methods paper revisions in this wrap-up:**
+- §10.5 D.1 sub-paragraph: consolidates M3-6 Phase 1c + M4 Phase 1
+  + M4 Phase 2 honest-falsification findings.
+- §10.5 D.7 sub-paragraph: consolidates M3-6 Phase 4 + M4 Phase 3
+  honest-partial finding (substrate complete, literal accumulation
+  deferred).
+- §10.7 (NEW) "Honest scientific characterization" subsection:
+  formalizes natively-captured vs requires-extensions split as the
+  reviewer-facing framing.
+- §10.9 implementation-milestones: M4-as-shipped close summary.
+
+**PDF rebuild:** 31-page baseline (M3-9) → 34 pages post-M4-wrap-up;
+zero LaTeX warnings.
+
+---
+
+*M4 closed on 2026-04-26 in honest-partial mode. The substrates for
+the two M3-flagged physics extensions (D.1 closed-loop β coupling
+in 2D and 3D; D.7 per-species momentum) are operational and bit-
+exact-regression-preserving across +3493 asserts; the literal D.1
+eigenmode and D.7 centrifugal-accumulation predictions remain open
+in the precise sense of needing additional physics terms (higher-
+order Hamiltonian, centrifugal-force kernel, two-way momentum
+coupling), each documented as a concrete M5 entry point. The
+methods paper now consolidates M3 + M4 findings with an upfront
+honest characterization. M5 is unblocked.*
