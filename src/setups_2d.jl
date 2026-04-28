@@ -3037,3 +3037,193 @@ function tier_e_low_knudsen_ic_full(; level::Integer = 4,
                    Gamma = Gamma, cv = cv),
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────
+# M4 Phase 2: 3D KH-active field-set allocator + IC factory
+# ─────────────────────────────────────────────────────────────────────
+#
+# The M4 Phase 2 D.1 3D KH falsifier driver requires the 3D Cholesky-
+# sector field set to carry six off-diagonal `β_{ab}` slots in addition
+# to the M3-7 Phase a 13-Newton-driven scalars. This allocator produces
+# the 22-named-field set (15 base + 6 off-diag + 1 entropy = 22).
+#
+# Off-diagonal slots:
+#     β_12, β_21 — pair (1, 2)
+#     β_13, β_31 — pair (1, 3)
+#     β_23, β_32 — pair (2, 3)
+#
+# At β_off = 0 IC (the M3-7c regression configuration), the M4 Phase 2
+# 21-dof residual `cholesky_el_residual_3D_berry_kh!` reduces to the
+# M3-7c 15-dof Berry residual byte-equal in the first 15 slots; the
+# off-diag slots reduce to trivial kinematic drives. So allocating the
+# extra field set is purely additive — no impact on the M3-7c regression
+# path.
+
+"""
+    allocate_cholesky_3d_kh_fields(mesh::HierarchicalMesh{3}; T=Float64)
+        -> PolynomialFieldSet
+
+M4 Phase 2 22-named-field 3D allocator. Like
+`allocate_cholesky_3d_fields` plus six off-diagonal Cholesky `β_{ab}`
+slots. Returns a `PolynomialFieldSet{MonomialBasis{3, 0}}` with named
+fields:
+
+    :x_1, :x_2, :x_3        — Lagrangian position (charge 0)
+    :u_1, :u_2, :u_3        — Lagrangian velocity (charge 0)
+    :α_1, :α_2, :α_3        — principal-axis Cholesky factors
+    :β_1, :β_2, :β_3        — per-axis conjugate momenta
+    :θ_12, :θ_13, :θ_23     — Berry rotation angles
+    :β_12, :β_21            — off-diagonal pair (1, 2)
+    :β_13, :β_31            — off-diagonal pair (1, 3)
+    :β_23, :β_32            — off-diagonal pair (2, 3)
+    :s                      — specific entropy (operator-split)
+
+All fields are sized to `n_cells(mesh)` so HG `halo_view`-based neighbor
+access maps 1-to-1 against `mesh.cells[i]`.
+"""
+function allocate_cholesky_3d_kh_fields(mesh::HierarchicalMesh{3};
+                                          T::Type = Float64)
+    basis = MonomialBasis{3, 0}()
+    nc = HierarchicalGrids.n_cells(mesh)
+    return allocate_polynomial_fields(SoA(), basis, Int(nc);
+                                       x_1 = T, x_2 = T, x_3 = T,
+                                       u_1 = T, u_2 = T, u_3 = T,
+                                       α_1 = T, α_2 = T, α_3 = T,
+                                       β_1 = T, β_2 = T, β_3 = T,
+                                       θ_12 = T, θ_13 = T, θ_23 = T,
+                                       β_12 = T, β_21 = T,
+                                       β_13 = T, β_31 = T,
+                                       β_23 = T, β_32 = T,
+                                       s = T)
+end
+
+"""
+    tier_d_kh_3d_ic_full(; level=3, U_jet=1.0, jet_width=0.1,
+                          perturbation_amp=1e-3, perturbation_k=2,
+                          y_0=nothing, ρ0=1.0, P0=1.0,
+                          lo=nothing, hi=nothing, quad_order=3,
+                          Gamma=GAMMA_LAW_DEFAULT, cv=CV_DEFAULT,
+                          T=Float64) -> NamedTuple
+
+D.1 3D Kelvin–Helmholtz Cholesky-sector full IC. The 3D analog of
+`tier_d_kh_ic_full` (2D). Builds a balanced octree on `[lo, hi]`
+(default `[0, 1]³`), allocates the 22-named 3D KH-active field set, and
+populates each leaf with:
+
+  * Sheared base flow `u_1(y) = U_jet · tanh((y - y_0) / w)`,
+    `u_2 = u_3 = 0`. Periodic on x; reflecting on y; periodic on z.
+  * Cold-limit base state `α = (1, 1, 1)`, `β = (0, 0, 0)`,
+    `θ_{ab} = 0`, `s = s(ρ, P)`.
+  * Antisymmetric tilt-mode perturbation in pair (1, 2):
+    `δβ_12 = A · sin(2π k_x x / L_1) · sech²((y - y_0)/w)`,
+    `δβ_21 = -δβ_12`. Other pairs (1, 3) and (2, 3) start at zero.
+
+Returns a NamedTuple shape matching `tier_d_kh_ic_full` (2D):
+
+  • `name = "tier_d_kh_3d_full"`
+  • `mesh, frame, leaves, fields` — 3D KH-active field set ready for
+    `det_step_3d_berry_kh_HG!`.
+  • `ρ_per_cell::Vector{Float64}` — uniform `fill(ρ0, N)`.
+  • `params::NamedTuple` — IC parameters echo plus `(L1, L2, L3, y_0)`.
+
+# 2D ⊂ 3D dimension-lift property
+
+At z-symmetric (no z-axis dependence): `u_3 ≡ 0`, the (1, 3) and (2, 3)
+pair velocity gradients vanish, the (1, 3)/(2, 3) off-diag β slots stay
+zero across the trajectory, and the per-axis residual rows for axis 3
+reduce to the regression form. Per-axis 1 and 2 dynamics match the 2D
+KH falsifier byte-equal (modulo the additional axis-3 coupling that
+vanishes by symmetry).
+"""
+function tier_d_kh_3d_ic_full(; level::Integer = 3,
+                                U_jet::Real = 1.0,
+                                jet_width::Real = 0.1,
+                                perturbation_amp::Real = 1e-3,
+                                perturbation_k::Integer = 2,
+                                y_0::Union{Real,Nothing} = nothing,
+                                ρ0::Real = 1.0, P0::Real = 1.0,
+                                lo = nothing, hi = nothing,
+                                quad_order::Integer = 3,
+                                Gamma::Real = GAMMA_LAW_DEFAULT,
+                                cv::Real = CV_DEFAULT,
+                                T::Type = Float64)
+    lo_t, hi_t = _default_box(3, lo, hi, T;
+                                default_lo = (zero(T), zero(T), zero(T)),
+                                default_hi = (one(T), one(T), one(T)))
+    L1 = hi_t[1] - lo_t[1]
+    L2 = hi_t[2] - lo_t[2]
+    L3 = hi_t[3] - lo_t[3]
+    y0_t = y_0 === nothing ? T(0.5) * (lo_t[2] + hi_t[2]) : T(y_0)
+    w_t  = T(jet_width)
+    U_t  = T(U_jet)
+    A_t  = T(perturbation_amp)
+    k_x  = Int(perturbation_k)
+
+    mesh = HierarchicalMesh{3}(; balanced = true)
+    for _ in 1:level
+        refine_cells!(mesh, enumerate_leaves(mesh))
+    end
+    leaves = enumerate_leaves(mesh)
+    frame = EulerianFrame(mesh, lo_t, hi_t)
+    fields = allocate_cholesky_3d_kh_fields(mesh; T = T)
+
+    s_iso = s_from_pressure_density(Float64(ρ0), Float64(P0);
+                                      Gamma = Gamma, cv = cv)
+    ρ_per_cell = fill(Float64(ρ0), length(leaves))
+    @inbounds for (j, ci) in enumerate(leaves)
+        lo_c, hi_c = cell_physical_box(frame, ci)
+        cx = 0.5 * (lo_c[1] + hi_c[1])
+        cy = 0.5 * (lo_c[2] + hi_c[2])
+        cz = 0.5 * (lo_c[3] + hi_c[3])
+        # Sheared base flow at cell centre.
+        u1 = Float64(U_t) * tanh((cy - Float64(y0_t)) / Float64(w_t))
+        u2 = 0.0
+        u3 = 0.0
+        # Base Cholesky-sector state (cold-limit, isotropic).
+        fields.x_1[ci]  = (Float64(cx),)
+        fields.x_2[ci]  = (Float64(cy),)
+        fields.x_3[ci]  = (Float64(cz),)
+        fields.u_1[ci]  = (u1,)
+        fields.u_2[ci]  = (u2,)
+        fields.u_3[ci]  = (u3,)
+        fields.α_1[ci]  = (1.0,)
+        fields.α_2[ci]  = (1.0,)
+        fields.α_3[ci]  = (1.0,)
+        fields.β_1[ci]  = (0.0,)
+        fields.β_2[ci]  = (0.0,)
+        fields.β_3[ci]  = (0.0,)
+        fields.θ_12[ci] = (0.0,)
+        fields.θ_13[ci] = (0.0,)
+        fields.θ_23[ci] = (0.0,)
+        # Antisymmetric tilt-mode perturbation in pair (1, 2):
+        #     δβ_12 = A · sin(2π k_x · (x - lo_x) / L_1) · sech²((y - y_0) / w)
+        # Other pairs zero.
+        sech_arg = (cy - Float64(y0_t)) / Float64(w_t)
+        sech_val = 1.0 / cosh(sech_arg)
+        sech2 = sech_val * sech_val
+        sin_phase = sin(2π * Float64(k_x) * (cx - Float64(lo_t[1])) / Float64(L1))
+        δβ12 = Float64(A_t) * sin_phase * sech2
+        fields.β_12[ci] = (δβ12,)
+        fields.β_21[ci] = (-δβ12,)
+        fields.β_13[ci] = (0.0,)
+        fields.β_31[ci] = (0.0,)
+        fields.β_23[ci] = (0.0,)
+        fields.β_32[ci] = (0.0,)
+        fields.s[ci]    = (Float64(s_iso),)
+    end
+
+    return (
+        name = "tier_d_kh_3d_full",
+        mesh = mesh, frame = frame, leaves = leaves,
+        fields = fields,
+        ρ_per_cell = ρ_per_cell,
+        params = (level = level, U_jet = U_jet, jet_width = jet_width,
+                   perturbation_amp = perturbation_amp,
+                   perturbation_k = perturbation_k,
+                   y_0 = Float64(y0_t),
+                   ρ0 = ρ0, P0 = P0,
+                   lo = lo_t, hi = hi_t,
+                   L1 = Float64(L1), L2 = Float64(L2), L3 = Float64(L3),
+                   quad_order = quad_order, Gamma = Gamma, cv = cv),
+    )
+end
