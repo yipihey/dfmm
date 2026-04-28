@@ -864,4 +864,35 @@ using Test
         include("test_M3_8b_matrix_free_newton_krylov.jl")
         include("test_M3_8b_metal_kernel.jl")
     end
+    @testset verbose = true "Phase M4-1: closed-loop β_off ↔ β_a coupling" begin
+        # M4 Phase 1 closes the M3-6 Phase 1c honest-finding loop on the
+        # D.1 Kelvin-Helmholtz falsifier. The Phase 1a residual wired the
+        # forward strain coupling H_rot^off = G̃_12·(α_1·β_21 + α_2·β_12)/2
+        # but produced linear-in-t (kinematically forced) growth rather
+        # than the Drazin-Reid eigenmode's exp-in-t (self-amplified) growth.
+        # M4 Phase 1 adds a closed-loop back-reaction Hamiltonian
+        #   H_back = c_back · G̃_12 · (α_2·β_12·β_2 + α_1·β_21·β_1)/2
+        # that creates symmetric coupling β_off ↔ β_a in F^β_a (via
+        # ∂H_back/∂α_a) and F^β_off (via ∂H_back/∂β_off). The c_back
+        # parameter (default 1.0; 0.0 recovers Phase 1a kinematic-only
+        # byte-equal) closes the symplectic loop. M4 Phase 1 also fixes
+        # the missing 1/α_a² normalization on the Phase 1a H_rot^off
+        # α-derivative term in F^β_a (the previous form was correct only
+        # at α = 1; M4 Phase 1's form is symplectic-natural at all α).
+        #
+        # Honest finding (verified by GATE 4 of test_M4_phase1_kh_eigenmode):
+        # the closed-loop coupling does NOT activate the Drazin-Reid
+        # eigenmode at the linear-Rayleigh order. Linear-in-t fits better
+        # than exp-in-t. The methods paper §10.5 D.1 calibration band
+        # [0.5, 2.0] still passes (c_off ≈ 1.26 at level 4); the tighter
+        # aspiration band [0.8, 1.2] is not achieved. The M4 Phase 1 close
+        # is therefore HONEST_FALSIFICATION: closing the symplectic loop
+        # is necessary but not sufficient for the eigenmode dynamics. M4
+        # Phase 2 (3D KH lift) will revisit; the missing physics is
+        # likely a higher-order Berry block or a per-cell linearised
+        # Rayleigh-equation reconstruction. See
+        # `reference/notes_M4_phase1_closed_loop_beta.md`.
+        include("test_M4_phase1_dimension_lift.jl")
+        include("test_M4_phase1_kh_eigenmode.jl")
+    end
 end
