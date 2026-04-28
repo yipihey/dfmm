@@ -815,4 +815,27 @@ using Test
         include("test_M3_7e_C3_3d_plane_wave.jl")
         include("test_M3_7e_D4_zeldovich_3d.jl")
     end
+    @testset verbose = true "Phase M3-8a: Tier-E stress tests + GPU prep" begin
+        # M3-8 Phase a (first sub-phase of M3-8). Three Tier-E stress-test
+        # drivers per methods paper §10.6:
+        #
+        #   • E.1 high-Mach 2D shocks (`test_M3_8a_E1_high_mach.jl`):
+        #     Mach 5/10 Sod-style; graceful failure (no NaN, KE bounded);
+        #     analytical Rankine-Hugoniot downstream state at IC.
+        #   • E.2 severe shell-crossing (`test_M3_8a_E2_shell_crossing.jl`):
+        #     2D extension of M2-3 compression cascade; superposition of
+        #     two-axis Zel'dovich at A=0.7; realizability projection
+        #     prevents γ_min from going negative pre-caustic.
+        #   • E.3 very low Knudsen (`test_M3_8a_E3_low_knudsen.jl`):
+        #     stiff-τ BGK relaxation regime; tests Newton stability;
+        #     near-equilibrium preservation (γ²_a ≈ M_vv).
+        #
+        # GPU readiness audit + Apple Metal probe deferred to
+        # `reference/notes_M3_8a_gpu_readiness_audit.md`. The actual
+        # Metal kernel port is M3-8b. See
+        # `reference/notes_M3_8a_tier_e_gpu_prep.md`.
+        include("test_M3_8a_E1_high_mach.jl")
+        include("test_M3_8a_E2_shell_crossing.jl")
+        include("test_M3_8a_E3_low_knudsen.jl")
+    end
 end
