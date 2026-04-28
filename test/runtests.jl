@@ -895,4 +895,37 @@ using Test
         include("test_M4_phase1_dimension_lift.jl")
         include("test_M4_phase1_kh_eigenmode.jl")
     end
+    @testset verbose = true "Phase M4-2: 3D D.1 KH falsifier (lift of M4 Phase 1)" begin
+        # M4 Phase 2 lifts the M4 Phase 1 closed-loop β_off ↔ β_a coupling
+        # to 3D. The 3D Berry block has three pairs (1, 2), (1, 3), (2, 3),
+        # so the off-diagonal Cholesky sector carries six β_{ab} slots
+        # (vs the 2D Phase 1's single pair). Each pair has its own forward
+        # strain coupling H_rot^off,(ab) and closed-loop H_back per pair;
+        # the cross-axis velocity-gradient stencil is computed per pair.
+        # Per-cell unknowns: 21 (15 base M3-7c + 6 off-diag β).
+        #
+        # New residual: `cholesky_el_residual_3D_berry_kh!`.
+        # New Newton driver: `det_step_3d_berry_kh_HG!`.
+        # New IC factory: `tier_d_kh_3d_ic_full`.
+        # New 22-named-field allocator: `allocate_cholesky_3d_kh_fields`.
+        #
+        # The 21-dof residual reduces byte-equal to the M3-7c 15-dof Berry
+        # residual on the first 15 slots when β_off = 0 IC + axis-aligned
+        # u (every off-diag contribution carries a multiplicative β_off
+        # AND/OR G̃_{ab} factor that vanishes at the regression IC). The
+        # M3-7c regression is therefore preserved bit-exactly; the 21-dof
+        # variant is only consumed by the M4 Phase 2 KH driver.
+        #
+        # Honest verdict (GATE 5 of test_M4_phase2_3d_kh_falsifier):
+        # at level 3 (8³ = 512 cells) with c_back = 1, linear-in-t fits
+        # the trajectory better than exp-in-t (ssr_lin ≪ ssr_exp). The
+        # M4 Phase 1 2D HONEST_FALSIFICATION (kinematic-only growth)
+        # GENERALIZES to 3D: closing the symplectic loop is necessary
+        # but not sufficient for the Drazin-Reid eigenmode dynamics, even
+        # with the additional axis-3 degrees of freedom. The methods
+        # paper §10.5 D.1 broad band [0.5, 2.0] passes; the tighter
+        # aspiration [0.8, 1.2] does not. See
+        # `reference/notes_M4_phase2_3d_kh_falsifier.md`.
+        include("test_M4_phase2_3d_kh_falsifier.jl")
+    end
 end
