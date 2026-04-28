@@ -1,4 +1,4 @@
-# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 in flight, M3-7a + M3-7b CLOSED)
+# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 in flight, M3-7a + M3-7b + M3-7c CLOSED)
 
 **Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26;
 M3-6 Phase 1a/1b/1c closed 2026-04-26 (the D.1 KH falsifier — methods
@@ -97,6 +97,10 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-7b (a)** | Native HG-side **3D** EL residual (`cholesky_el_residual_3D!`) + 15-dof pack/unpack + 3-axis face-neighbor + periodic-wrap tables in `src/eom.jl`; θ_ab trivial-driven (Berry deferred to M3-7c) | done | (residual covered jointly with (b)/(c)) | Per-axis lift of M3-3b; 6-face stencil; 3-axis periodic wrap |
 | **M3-7b (b)** | 3D Newton driver `det_step_3d_HG!` in `src/newton_step_HG.jl`: `cell_adjacency_sparsity ⊗ ones(15, 15)` Jacobian prototype; mirrors `det_step_2d_HG!` pattern | done | (driver covered jointly with (a)/(c)) | Newton converges in 2 iterations on smooth IC (zero-strain / β=0) |
 | **M3-7b (c)** | Zero-strain regression + dimension-lift gates §7.1a (3D ⊂ 1D) + §7.1b (3D ⊂ 2D) — the load-bearing M3-7b acceptance criteria | done | +1546 | Both gates at **0.0 absolute** (well below ≤ 1e-12 tolerance); 4×4×4 (64 leaves) + 8×8×8 (512 leaves); 100-step M1 Phase-1 trajectory match; axis-swap symmetry across all 3 principal axes; 3D ⊂ 2D byte-equal vs M3-3b's `det_step_2d_HG!` |
+| **M3-7c (a)** | SO(3) Berry coupling integration in `cholesky_el_residual_3D_berry!` (`src/eom.jl`); promotes θ_{ab} rows to Newton-active; per-axis Berry α/β-modifications summed across pair-generators (1,2), (1,3), (2,3) per `Ω · X = -dH` | done | (residual covered jointly with (b)/(c)/(d)) | Per-axis Hamilton equations match boxed M3-3c form per pair; θ_{ab} rows kinematic-drive form (drive=0; off-diag velocity-gradient stencil deferred to M3-9) |
+| **M3-7c (b)** | 3D Newton driver `det_step_3d_berry_HG!` in `src/newton_step_HG.jl`: `cell_adjacency_sparsity ⊗ ones(15, 15)` (same prototype as M3-7b — Berry couplings live in existing within-cell block); mirrors `det_step_2d_berry_HG!` pattern | done | (driver covered jointly with (a)/(c)/(d)) | Newton converges in ≤ 7 iter on non-isotropic 3D IC (post-Newton residual ≤ 1e-10); ≤ 2 iter on smooth ICs |
+| **M3-7c (c)** | Berry verification + iso-pullback + H_rot solvability gates: 8 SymPy CHECKs reproduced at residual level; `h_rot_partial_dtheta_3d` per-pair closed form satisfies kernel-orthogonality at 5 random (α, β, γ²) × 3 (θ̇)_test × 3 pairs | done | +372 | FD-vs-closed-form per-pair Berry partials at 1e-9; iso-pullback ε-extrapolation slope = 1 ± 1e-3; H_rot kernel-orthogonality residual ≤ 1e-10 absolute |
+| **M3-7c (d)** | Dimension-lift parity with Berry §7.1a + §7.1b — the load-bearing M3-7c acceptance criteria | done | +113 | §7.1a 3D-Berry ⊂ 1D matches M1 byte-equal **0.0 abs** on single-step + 100-step + axis-swap; §7.1b 3D-Berry ⊂ 2D-Berry matches M3-3c `det_step_2d_berry_HG!` byte-equal **0.0 abs** on single-step + 10-step + non-trivial Berry IC (β + θ_12) |
 
 ## Test summary
 
@@ -129,7 +133,8 @@ L↔E remap substrate per §6 / §6.6.
 | M3-7 prep (3D scaffolding: `DetField3D` + `cholesky_DD_3d.jl`) | 736 |
 | M3-7a (3D HaloView smoke + 3D field-set allocator + read/write) | 2581 |
 | M3-7b (3D EL residual + Newton + zero-strain + dimension-lift §7.1a/b) | 1546 |
-| **Total** | **~31526 + 1 deferred** (= 29980 baseline + 1546 from M3-7b) |
+| M3-7c (SO(3) Berry coupling + verification + iso-pullback + H_rot + dim-lift) | 485 |
+| **Total** | **~32011 + 1 deferred** (= 31526 + 485 from M3-7c) |
 
 ## M3-3 headline scientific findings
 
