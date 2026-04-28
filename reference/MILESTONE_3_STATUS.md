@@ -869,3 +869,114 @@ the Tier-C C.1 / C.2 / C.3
 acceptance gates fire. 1D-path bit-exact 0.0 parity holds across
 all 19211 + 1 currently passing tests. Methods paper §10.4 / §10.7
 numbers all hold. Ready for M3-5 (in flight in another worktree).*
+
+---
+
+## M3 close (2026-04-26 — M3-9 wrap-up)
+
+**Status:** M3 entirely CLOSED. M3-9 wrap-up commits land the methods
+paper §10.5 D.1 / D.4 / D.7 / D.10 honest revisions, the §10.6 Tier E
+results paragraph, and the §11 closing milestones table update; this
+file gets the close section below; new files
+`reference/MILESTONE_3_FINAL.md` (1-page synthesis) and
+`reference/notes_M4_plan.md` capture the final synthesis and the
+M4 entry point.
+
+**Test count growth:**
+
+| Phase | Cumulative tests |
+|---|---:|
+| M3-3 close (M3-3e-5) | 13375 + 1 deferred |
+| M3-4 close | 19211 + 1 |
+| M3-5 close | 19297 + 1 |
+| M3-6 Phase 0 close | 19687 + 1 |
+| M3-6 Phase 1 close (D.1 KH) | 21951 + 1 |
+| M3-6 Phase 2 close (D.4 2D) | 24669 + 1 |
+| M3-6 entire close (D.7 + D.10) | 27399 + 1 |
+| M3-7 entire close (3D substrate + D.4 3D) | 33611 + 1 |
+| M3-8 entire close (Tier E + matrix-free) | 33940 + 3 deferred |
+| **M3 final** | **~33940 + 3 deferred** |
+
+Test count grew by **~20565 asserts over M3-3 baseline** (13375 →
+33940). Each phase landed under bit-exact-regression discipline:
+no phase invalidated a prior phase's gates.
+
+### Tier-D headline verdicts (the methods paper §10.5 deliverable)
+
+| Test | Verdict | Headline number | Honest framing |
+|---|---|---|---|
+| **D.1 KH** | PASSED at broad-band gate | $\gamma_{\rm meas}/\gamma_{\rm DR} = 1.34$ at L5; mesh-converged 1.2% L4→L5; $c_{\rm off}^2 = 1.78$; $n_{\rm neg\,Jac} = 0$ | Growth is forced kinematic, not Drazin-Reid eigenmode. Closed-loop $\beta_a \leftrightarrow \beta_{\rm off}$ coupling missing in current Phase 1a strain residual. Per-axis-noise structure verified kinematically. Eigenmode dynamics flagged as M4 physics extension. |
+| **D.4 2D Zel'dovich** | PASSED | std$(\gamma_1)/$std$(\gamma_2) \approx 2.6\times 10^{14}$ at near-caustic L4 T=0.16; $\gamma_1$ dyn-range $4.18\times$; $\gamma_2$ uniform to round-off; $\max|\beta_{\rm off}|=0$ | Selectivity ratio exceeds methods-paper $10^6$ gate by 8 orders. Headline scientific success of M3-6. |
+| **D.4 3D Zel'dovich** | PASSED | std$(\gamma_1)/($std$(\gamma_2)+$std$(\gamma_3)+\varepsilon) \approx 3.0\times 10^{13}$; $\gamma_2 = \gamma_3$ byte-equal by symmetry; $u_2 = u_3 = 0$; conservation $\le 10^{-8}$ | The cosmological reference test in 3D: PASSED. Exceeds $10^{10}$ gate by 3 orders. The headline 3D scientific success. |
+| **D.7 dust traps** | FALSIFIED on literal claim; substrate sound | $M_{\rm dust\,err}=0.0$ bit-exact; $\gamma$ separation $>10^{10}$; $n_{\rm neg\,Jac}=0$; $P_{x,y\,err}=0.0$ Taylor-Green symmetry | Pure-Lagrangian substrate preserves multi-species tracer matrix bit-exactly; sub-cell centrifugal drift is not captured natively. Per-species momentum coupling flagged as M4+ physics extension. The honest finding is the value of falsifiable predictions — they reveal which claims need extensions. |
+| **D.10 ISM tracers** | PASSED in strongest possible form | tracers_byte_equal_to_ic == true; tracers_max_diff_final == 0.0 across L=3,4,5 under stochastic injection | Literal zero per-step error (not tolerance-bounded). 2D analogue of M2-2's structural argument. Community-impact claim verified bit-exact. |
+
+### Tier-E graceful-degradation verdicts (M3-8a)
+
+| Test | Verdict | Headline numbers |
+|---|---|---|
+| **E.1 high-Mach** | graceful failure achieved | M=10 RH: $p_R/p_L = 124.75$, $\rho_R/\rho_L = 3.88$; $n_{\rm NaN}=0$; KE bounded $\le 5\times$ IC; transverse-indep $\le 10^{-10}$ |
+| **E.2 severe shell-crossing** | realizability projection effective | $A_x=A_y=0.7$, $t_{\rm cross}=0.227$; pre-caustic $T_{\rm factor}=0.25$ NaN-free; $\gamma_{\rm min}>0.5$; projection events $\ge 1$ with `:reanchor` |
+| **E.3 low Knudsen** | Navier-Stokes limit verified | $\tau=10^{-6}$, Kn $\approx 1.3\times 10^{-6}$; $\beta_{\rm max}<10^{-2}$; $|\gamma_a^2/M_{vv} - 1|\le 10^{-2}$ across all cells/steps |
+| **E.4 cosmological IC** | DEFERRED to M4 | requires multigrid Poisson self-gravity coupling not yet in substrate |
+
+### Performance summary
+
+| Optimization | Speedup | Phase |
+|---|---|---|
+| M3-3e-1 native `det_step_HG!` (retire `cache_mesh::Mesh1D`) | ~1.7-2× at N=80 (1D) | M3-3e |
+| M3-8b matrix-free Newton-Krylov vs dense ForwardDiff | 1.87× (L3), 1.51× (L4), 1.17× (L5); CPU-side, bit-equal to round-off | M3-8b |
+| Aggregate vs original M3-2 cache_mesh baseline at L4-5 | ~3× (composite of 1D-native + 2D-native + matrix-free) | M3-3e + M3-8b |
+
+### M3 phase notes — cross-reference list
+
+Design notes consolidated in `reference/notes_M3_*.md`:
+
+- M3-prep: Berry stencil 2D + 3D + off-diagonal: `notes_M3_phase0_berry_connection.md`, `notes_M3_phase0_berry_connection_3D.md`, `notes_M3_prep_berry_stencil.md`, `notes_M3_prep_3D_berry_verification.md`, `notes_M3_prep_tierC_ic_factories.md`
+- M3-0/1/2 substrate port: `notes_M3_0_hg_integration.md`, `notes_M3_1_phase2_5_5b_port.md`, `notes_M3_2_phase7811_m2_port.md`
+- M3-2b HG-feature swaps: `notes_M3_2b_swap1_periodic.md`, `notes_M3_2b_swap5_init_field.md`, `notes_M3_2b_swaps23_amr.md`, `notes_M3_2b_swaps68_sparsity_bc.md`
+- M3-3 (2D Cholesky + Berry): `notes_M3_3_2d_cholesky_berry.md` plus `notes_M3_3a_field_set_cholesky.md`, `notes_M3_3b_native_residual.md`, `notes_M3_3c_berry_integration.md`, `notes_M3_3d_per_axis_gamma_amr.md`, `notes_M3_3e_*.md` (5 sub-phase notes)
+- M3-4 Tier C: `notes_M3_4_tier_c_consistency.md`
+- M3-5 Bayesian remap: `notes_M3_5_bayesian_remap.md`
+- M3-6 Tier-D headlines: `notes_M3_6_phase0_offdiag_beta.md`, `notes_M3_6_phase1a_strain_coupling.md`, `notes_M3_6_phase1b_kh_ic_realizability.md`, **`notes_M3_6_phase1c_D1_kh_falsifier.md` (D.1 honest finding)**, `notes_M3_6_phase2_D4_zeldovich.md`, `notes_M3_6_phase3_2d_substrate.md`, **`notes_M3_6_phase4_D7_dust_traps.md` (D.7 honest finding)**, `notes_M3_6_phase5_D10_ism_tracers.md`
+- M3-7 3D extension: `notes_M3_7_prep_3d_scaffolding.md`, `notes_M3_7_3d_extension.md`, `notes_M3_7a_3d_halo_allocator.md`, `notes_M3_7b_native_3d_residual.md`, `notes_M3_7c_3d_berry_integration.md`, `notes_M3_7d_3d_per_axis_gamma_amr.md`, `notes_M3_7e_3d_tier_cd_drivers.md`
+- M3-8 Tier E + GPU prep: `notes_M3_8a_tier_e_gpu_prep.md`, `notes_M3_8a_gpu_readiness_audit.md`, `notes_M3_8b_metal_gpu_port.md`
+- M3-9 paper revisions: `notes_M3_3_prep_paper_section10_revision_applied.md`, `notes_M3_prep_paper_section5_revision_applied.md`, `notes_M3_prep_paper_section6_revision_applied.md`, `notes_M3_9_prep_paper_section11_revision_applied.md`, `notes_M3_9_prep_c3_convergence_plot.md`
+
+### M4 entry-point list (the load-bearing items)
+
+Substantive physics + engineering items deferred to M4 (see
+`reference/notes_M4_plan.md` for detail):
+
+1. **3D Tier-D headlines** — D.1 3D KH, D.7 3D dust traps, D.10 3D ISM (the 3D analogues of the 2D Tier-D battery; the M3-7 substrate is ready).
+2. **Off-diagonal $\beta$ closed-loop coupling** — for self-amplified Drazin-Reid KH eigenmode dynamics (the D.1 honest finding's follow-up).
+3. **Per-species momentum coupling** — drag + size-dependent dust drift; OR Lagrangian volume update via M3-5 Bayesian remap composition with per-species mass tracking (the D.7 honest finding's follow-up).
+4. **Full Metal/CUDA port** — pending the upstream HG `Backend`-parameterized `PolynomialFieldSet{<:KA.Backend}` (the M3-8c deferral).
+5. **MPI scaling** — domain decomposition via HG's `partition_for_threads` chunk structure; halo exchange through `HaloView` + `face_neighbors_with_bcs`.
+6. **E.4 cosmological collapse with self-gravity** — multigrid Poisson on the Eulerian quadtree, interpolation to Lagrangian; compare to ColDICE / PM N-body.
+7. **D.6 / D.8 / D.9 two-fluid 2D** — D.6 cold-sinusoid dust-in-gas, D.8 plasma equilibration with anisotropy, D.9 tracer fidelity in 2D KH (orthogonal to the D.7 momentum coupling extension).
+8. **Higher-order Bernstein per-cell reconstruction** — for tighter shock L$^\infty$ at high Mach (Open Issue #2 carry-forward).
+9. **Methods paper resubmission** — final figures + supplementary materials + reviewer-response package.
+
+### Repo housekeeping at M3 close
+
+- Total commits since M1 close: ~40+ across M3-prep / M3-0/1/2 / M3-2b / M3-3a/b/c/d/e / M3-4 / M3-5 / M3-6 (Phases 0--5) / M3-7 (Phases a--e) / M3-8 (Phases a--b) / M3-9.
+- M3-9 close on `m3-9-wrap-up` branch; lands paper revisions + final synthesis + M4 plan.
+- All M3 named branches preserved as audit history.
+- Methods paper rebuilt to **31 pages** (was 28 at M3-9 entry); only LaTeX warning is the pre-existing `sec:appendix-soft` undefined reference + pre-existing font-shape warning (no new warnings introduced by M3-9 §10.5/§10.6/§11 edits).
+
+---
+
+*M3 closed in its entirety on 2026-04-26 with M3-9 wrap-up: methods
+paper §10.5 D.1/D.4/D.7/D.10 honestly revised; §10.6 Tier-E results
+added; §11 closing milestones table reflects M3 substantially closed
+with M3-8c (full Metal port) deferred pending HG `Backend` upstream.
+Tier-D verdicts: D.1 broad-band PASSED with closed-loop coupling
+flagged as M4 extension; D.4 PASSED in 2D and PASSED in 3D (the
+headline scientific success); D.7 substrate sound + literal claim
+FALSIFIED with per-species momentum flagged as M4 extension; D.10
+PASSED bit-exact (the strongest possible verification). Tier-E E.1,
+E.2, E.3 PASSED in graceful-degradation mode; E.4 deferred to M4.
+33940 + 3 deferred tests; methods paper at 31 pages. M4 plan +
+final synthesis live in `reference/notes_M4_plan.md` and
+`reference/MILESTONE_3_FINAL.md`.*
