@@ -928,4 +928,35 @@ using Test
         # `reference/notes_M4_phase2_3d_kh_falsifier.md`.
         include("test_M4_phase2_3d_kh_falsifier.jl")
     end
+    @testset verbose = true "Phase M4-3: per-species momentum coupling (D.7 follow-up)" begin
+        # M4 Phase 3 closes the M3-6 Phase 4 D.7 dust-traps honest finding
+        # by adding per-species momentum + drag relaxation to the 2D
+        # variational substrate. The new `PerSpeciesMomentumHG2D` is a
+        # purely additive opt-in extension of `TracerMeshHG2D`: it carries
+        # per-species (u_x, u_y) per cell + per-species drag relaxation
+        # timescale `τ_drag` + per-species Lagrangian position offsets.
+        # The drag relaxation kernel is exponential Stokes-drag toward
+        # gas: `u_k ← u_k + (1 − exp(−dt/τ_k)) · (u_gas − u_k)`. The
+        # position kernel is kinematic `dx_k ← dx_k + dt · u_k`. The
+        # remap kernel `accumulate_species_to_cells!` deposits species
+        # mass back to per-cell concentration after integrating the
+        # Lagrangian drift, producing the kinematic mechanism for vortex-
+        # centre dust accumulation.
+        #
+        # Honest finding: under the M3-6 Phase 4 Taylor-Green vortex IC,
+        # the gas equilibrium is *static* (cold-limit Cholesky-sector
+        # residual has no time evolution for incompressible ∇·u=0 +
+        # uniform pressure ICs); with co-moving dust IC all τ_drag
+        # regimes integrate the same constant velocity field and produce
+        # identical drift. The `u_dust_offset` keyword introduces a
+        # controlled IC bias that differentiates τ regimes (tightly-
+        # coupled erases offset on first drag step; decoupled retains it
+        # throughout); GATE 6 verifies the differentiation. The literal
+        # D.7 centrifugal-accumulation prediction in the strict sense
+        # (driven by gas time-evolution) requires either a non-stationary
+        # base flow or an explicit centrifugal-force computation in the
+        # drag kernel — both deferred to M4 Phase 4 or beyond. See
+        # `reference/notes_M4_phase3_per_species_momentum.md`.
+        include("test_M4_phase3_per_species_momentum.jl")
+    end
 end
