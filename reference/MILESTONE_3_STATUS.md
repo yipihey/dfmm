@@ -1,4 +1,4 @@
-# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 in flight, M3-7a + M3-7b + M3-7c + M3-7d CLOSED)
+# Milestone 3 — Status synthesis (M3-6 entire CLOSED; M3-7 ENTIRE CLOSED; M3-8 next)
 
 **Date:** 2026-04-27 (combined close); M3-6 Phase 0 closed 2026-04-26;
 M3-6 Phase 1a/1b/1c closed 2026-04-26 (the D.1 KH falsifier — methods
@@ -18,6 +18,16 @@ KH-style sheared base flow + N=3 species `TracerMeshHG2D`
 deterministic-step + stochastic-injection iterations bit-exact;
 the 2D analog of M2-2's 1D structural argument). M3-6 ENTIRE NOW
 CLOSED.**
+
+**M3-7 ENTIRE CLOSED 2026-04-26.** Sub-phases M3-7a (3D HaloView +
+field-set allocator), M3-7b (native HG-side 3D EL residual + Newton
+driver + dimension-lift gates §7.1a/b), M3-7c (SO(3) Berry coupling
+integration + verification + iso-pullback + H_rot solvability),
+M3-7d (per-axis γ + AMR/realizability per-axis 3D + selectivity gate),
+M3-7e (3D Tier-C/D drivers + the D.4 3D Zel'dovich pancake — methods
+paper §10.5 D.4 cosmological reference test in 3D — selectivity ratio
+**3.0e13** at near-caustic, exceeds the 1e10 gate by 3 orders of
+margin). The 3D Cholesky-sector substrate is operational + verified.
 
 ## D.7 falsification + D.10 verification — complementary findings
 
@@ -105,6 +115,10 @@ L↔E remap substrate per §6 / §6.6.
 | **M3-7d (b)** | 3D action-AMR via `register_field_set_on_refine_3d!` + `action_error_indicator_3d_per_axis` + `step_with_amr_3d!` in `src/action_amr_helpers.jl`; per-axis `max_a` aggregation (3D analog of M3-3d's 2D `max_a` over 2 axes) | done | +53 | Uniform field ⇒ indicator ≡ 0; refine octant of 8-leaf mesh ⇒ 15 leaves with 8 children inheriting parent value across all 16 named fields; refine + coarsen round-trip byte-equal; full-3D k=(1,1,1) all axes fire |
 | **M3-7d (c)** | `realizability_project_3d!` + `ProjectionStats3D` in `src/stochastic_injection.jl`; per-axis 3-component cone projection (3D analog of M3-3d's 2D 2-component projection); off-diagonal β still omitted per M3-3a Q3 + M3-7 §4.4 | done | +85 | No-op when M_vv ≥ headroom·max_a β_a²; fires with β_1, β_2, or β_3 binding (each axis tested); Mvv_floor branch; 2D-symmetric reduction (β_3 = 0) byte-equal to M3-3d 2D; 1D-symmetric reduction matches M2-3 1D target ≤ 1e-12 |
 | **M3-7d (d)** | §7.5 Per-axis γ selectivity gate (3D headline scientific gate): 1D-symmetric, 2D-symmetric, full-3D selectivity ratios | done | +27 | **1D-sym ratio std(γ_1)/(std(γ_2)+std(γ_3)+eps) = 6.4e10** (above 1e10 gate); 2D-sym ratio (avg active)/std(γ_3)+eps = 6.4e10 (above 1e6 gate); full-3D all three γ stds ≈ 1.43e-5 by symmetry; γ trajectory monotonicity verified |
+| **M3-7e (a)** | 3D Tier-C IC bridge `cholesky_sector_state_from_primitive_3d` + 3D primitive recovery + four full-IC factories: `tier_c_sod_3d_full_ic`, `tier_c_cold_sinusoid_3d_full_ic`, `tier_c_plane_wave_3d_full_ic`, `tier_d_zeldovich_pancake_3d_ic_full` — 3D analogs of M3-4 Phase 2's 2D factories + M3-6 Phase 2's D.4 | done | (covered jointly with (b)/(c)/(d)) | +470 LOC; cold-limit α=1, β=0, θ_ab=0, s=EOS bridge convention |
+| **M3-7e (b)** | C.1 / C.2 / C.3 + D.4 3D drivers in `experiments/`: `C1_3d_sod.jl` (transverse independence + axis-swap), `C2_3d_cold_sinusoid.jl` (per-axis γ + selectivity), `C3_3d_plane_wave.jl` (boundedness + convergence harness), `D4_zeldovich_3d.jl` (headline 3D scientific test) | done | (drivers covered jointly with (c)/(d)) | +615 LOC; D.4 driver tracks per-axis γ uniformity + conservation |
+| **M3-7e (c)** | C.1 / C.2 / C.3 + D.4 3D acceptance gates in `test/test_M3_7e_*.jl` | done | +1182 | **C.1**: 280 asserts, transverse-indep ≤ 1e-12; **C.2**: 405 asserts, 1D-sym ratio = 6.4e10 (>1e10), 2D-sym ratio = 6.4e10 (>1e6), full-3D all axes fire; **C.3**: 147 asserts, IC bridge round-trip + linear-acoustic boundedness; **D.4**: 350 asserts, **selectivity ratio = 3.0e13** (>1e10 gate); conservation ≤ 1e-8; γ_2 = γ_3 byte-equal by symmetry; 1D-symmetry preservation u_2 = u_3 = 0 throughout |
+| **M3-7e (d)** | D.4 3D Zel'dovich pancake headline figure `reference/figs/M3_7e_D4_zeldovich_3d.png` (4-panel CairoMakie: γ_1 spatial profile, γ_2/γ_3 std vs time, Lagrangian deviation, log10(γ_1) at near-caustic) | done | (figure-only) | Rendered from level=2, A=0.5, T_factor=0.25 trajectory |
 
 ## Test summary
 
@@ -139,7 +153,8 @@ L↔E remap substrate per §6 / §6.6.
 | M3-7b (3D EL residual + Newton + zero-strain + dimension-lift §7.1a/b) | 1546 |
 | M3-7c (SO(3) Berry coupling + verification + iso-pullback + H_rot + dim-lift) | 485 |
 | M3-7d (per-axis γ + AMR/realizability per-axis 3D + selectivity gate) | 418 |
-| **Total** | **~32429 + 1 deferred** (= 32011 + 418 from M3-7d) |
+| M3-7e (3D Tier-C/D drivers + D.4 3D Zel'dovich pancake headline) | 1182 |
+| **Total** | **~33611 + 1 deferred** (= 32429 + 1182 from M3-7e) |
 
 ## M3-3 headline scientific findings
 
