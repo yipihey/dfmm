@@ -43,6 +43,12 @@ include("artificial_viscosity.jl")
 include("heat_flux.jl")
 include("newton_step.jl")
 
+# Enzyme reverse-mode adjoint for the Phase-1 Cholesky-sector
+# integrator (implicit function theorem; never differentiates through
+# the Newton iterations). First end-to-end gradient deliverable.
+include("enzyme_adjoint.jl")
+include("enzyme_adjoint_phase2.jl")
+
 # --- Phase M3-0 API: HierarchicalGrids-based Cholesky-sector path ----------
 # Foundation phase for the M3 (multi-D) refactor. Adds a thin shim that
 # runs the Phase-1 Cholesky-sector integrator on top of HG's
@@ -57,6 +63,7 @@ import HierarchicalGrids
 import R3D
 include("eom.jl")
 include("newton_step_HG.jl")
+include("enzyme_adjoint_HG.jl")
 
 # --- Phase 1 API ----------------------------------------------------------
 export ChField, gamma_from_Mvv
@@ -64,6 +71,10 @@ export Segment, Mesh1D, single_segment_mesh
 export D_t_q
 export cholesky_one_step_action, cholesky_el_residual, cholesky_hamiltonian
 export cholesky_step, cholesky_run
+export cholesky_step_pullback, cholesky_run_gradient
+export cholesky_step_jvp, cholesky_run_jvp
+export det_step_functional, det_step_pullback, det_run_gradient
+export cholesky_run_HG_gradient
 
 # --- Phase M3-0 API (HG substrate) ----------------------------------------
 # Note: `spatial_dimension(::ChFieldND)` is intentionally NOT exported —

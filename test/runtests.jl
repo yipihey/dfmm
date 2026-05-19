@@ -5,6 +5,31 @@ using Test
     @testset verbose = true "Phase 1: zero-strain" begin
         include("test_phase1_zero_strain.jl")
     end
+    @testset verbose = true "Enzyme reverse-mode end-to-end gradient" begin
+        # First end-to-end Enzyme deliverable. Reverse-mode adjoint
+        # for the Phase-1 Cholesky-sector integrator via the implicit
+        # function theorem at the converged Newton state. Validated
+        # against high-order central finite differences on three
+        # configurations (1-step / 4-step zero strain / 20-step uniform
+        # compression). See `src/enzyme_adjoint.jl`.
+        include("test_enzyme_gradient.jl")
+    end
+    @testset verbose = true "Enzyme Phase-2 mesh-level adjoint" begin
+        # Multi-segment Phase-2 deterministic Newton solve adjoint via
+        # IFT (dense ForwardDiff Jacobian + Enzyme reverse VJP on
+        # det_el_residual). Periodic BC, no q-viscosity. Validated
+        # against high-order central differences on a 4-segment mesh
+        # at 1-step and 4-step horizons. See
+        # `src/enzyme_adjoint_phase2.jl`.
+        include("test_enzyme_gradient_phase2.jl")
+    end
+    @testset verbose = true "Enzyme HG Phase-1 driver adjoint" begin
+        # Cholesky-sector adjoint lifted onto the HG PolynomialFieldSet
+        # storage layer. Per-cell IFT pullback (Phase-1 has zero
+        # inter-cell coupling) with shared (M_vv, divu, dt) cotangents
+        # summed across cells. See `src/enzyme_adjoint_HG.jl`.
+        include("test_enzyme_gradient_HG.jl")
+    end
     @testset verbose = true "Phase 1: uniform-strain" begin
         include("test_phase1_uniform_strain.jl")
     end
