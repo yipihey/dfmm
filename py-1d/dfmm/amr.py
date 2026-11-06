@@ -273,6 +273,9 @@ class TwoLevelAMR:
     dyn_memory: float = 0.98  # EMA factor for the dynamic C_eps regression
     reflux: bool = True
     t: float = 0.0
+    coarse_hook: object = None  # f(Uc1, Kc1, dt) -> (Uc1, Kc1), applied to the
+                                # coarse prediction before the defect (e.g. a
+                                # band correction being calibrated dynamically)
     Kc0: np.ndarray = None    # initial K on each level (default 0)
     Kf0: np.ndarray = None
 
@@ -327,6 +330,8 @@ class TwoLevelAMR:
         Kcg = pad_periodic(self.Kc, ng)
         Uc1, Kc1, Fc, FKc, Dc = level_step(Ucg, Kcg, self.dxc, dt, cfg.tau, ng,
                                            cfg, self.model, self.dxc, self.wsc)
+        if self.coarse_hook is not None:
+            Uc1, Kc1 = self.coarse_hook(Uc1, Kc1, dt)
         # coarse decay sensitivity dK/dC_eps (for dynamic C_eps), per cell
         rho1 = Uc1[IDX_RHO]
         Kpre = np.maximum(Kc1, 0.0)

@@ -47,6 +47,7 @@ class TransferMeter:
         self.edges = band_edges(n_cells)
         nb = len(self.edges) - 1
         self.num = np.zeros(nb); self.den = np.zeros(nb); self.dts = []
+        self.pc = np.zeros(nb)
 
     def add(self, U_pred, U_true, dt):
         uc = np.fft.rfft(U_pred[IDX_MOM] / U_pred[IDX_RHO])
@@ -55,28 +56,50 @@ class TransferMeter:
         for b in range(len(self.edges) - 1):
             sl = slice(self.edges[b], self.edges[b + 1])
             self.num[b] += cr[sl].sum(); self.den[b] += pf[sl].sum()
+            self.pc[b] += (np.abs(uc[sl])**2).sum()
         self.dts.append(dt)
 
-    def rate(self):
-        """Per-band damping rate nu_b = -ln(g_b)/<dt>, and band centres."""
-        g = self.num / np.maximum(self.den, 1e-300)
+    def rate(self, estimator="energy"):
+        """Per-band damping rate nu_b = -ln(g_b)/<dt>, and band centres.
+
+        estimator='energy':     g = sqrt(<|u_c|^2> / <|u_f|^2>), the one-step
+                                amplitude (energy) loss -- what a
+                                deconvolution should undo
+        estimator='regression': g = <Re u_c u_f*> / <|u_f|^2>; also lowered
+                                by phase decorrelation (noise, not
+                                dissipation), so it over-estimates damping
+        """
+        if estimator == "energy":
+            g = np.sqrt(self.pc / np.maximum(self.den, 1e-300))
+        else:
+            g = self.num / np.maximum(self.den, 1e-300)
         dt = np.mean(self.dts)
         nu = -np.log(np.clip(g, 1e-6, None)) / dt
         kc = np.sqrt(self.edges[:-1] * np.maximum(self.edges[1:] - 1, self.edges[:-1]))
         return kc, nu, g
 
 
-def measure_transfer(Uc0, Uf0, r, cfg, t_end, model=None, dynamic=False):
-    """Full-coverage AMR run; returns (k_centres, nu_b, g_b, amr)."""
+def measure_transfer(Uc0, Uf0, r, cfg, t_end, model=None, dynamic=False,
+                     estimator="energy", corrector=None):
+    """Full-coverage AMR run; returns (k_centres, nu_b, g_b, amr).
+    With `corrector`, it is applied to every coarse prediction, so the
+    returned rates are the RESIDUAL damping with the correction active."""
     Nc = Uc0.shape[1]
+    hook = None
+    if corrector is not None:
+        def hook(U, K, dt):
+            U2, K2, _ = corrector.apply(U, K, dt, cfg)
+            return U2, K2
     amr = TwoLevelAMR(Uc=Uc0.copy(), Uf=Uf0.copy(), i0=0, i1=Nc, r=r, cfg=cfg,
                       model=model if model is not None else TurbModel(),
-                      dynamic_C_eps=dynamic, dynamic_f_K=dynamic)
+                      dynamic_C_eps=dynamic, dynamic_f_K=dynamic,
+                      coarse_hook=hook)
     meter = TransferMeter(Nc)
     while amr.t < t_end - 1e-12:
         rec = amr.step(t_stop=t_end)
         meter.add(rec["eps"] + amr.Uc, amr.Uc, rec["dt"])  # Uc == R(Uf) now
-    kc, nu, g = meter.rate()
+    kc, nu, g = meter.rate(estimator)
+    amr.meter = meter
     return kc, nu, g, amr
 
 
@@ -84,7 +107,8 @@ class BandCorrector:
     """ADM-style deconvolution of the measured numerical damping."""
 
     def __init__(self, kc, nu, n_cells, N=3, lambda_min=8.0, lambda_max=None,
-                 shock_mask=None, lambda_full=None, strength=1.0):
+                 shock_mask=None, lambda_full=None, strength=1.0,
+                 heat_fraction=0.25):
         self.N_terms = N
         k = np.arange(n_cells // 2 + 1)
         # interpolate the band rates in log k; no correction outside band
@@ -103,6 +127,8 @@ class BandCorrector:
             w = x * x * (3 - 2 * x)
         self.nu_k = strength * np.where(band, w * nu_k, 0.0)
         self.shock_mask = shock_mask   # None or threshold on -du/dx*dx/cs
+        # max share of local P_th the correction may draw on (0 = K only)
+        self.heat_fraction = heat_fraction
 
     def factor(self, dt):
         g = np.exp(-self.nu_k * dt)
@@ -134,7 +160,7 @@ class BandCorrector:
         Pth = Pxx - 2 * K
         from_K = np.minimum(np.maximum(dKE, 0.0), K)
         from_th = np.maximum(dKE, 0.0) - from_K
-        cap = 0.25 * Pth
+        cap = self.heat_fraction * Pth
         over = from_th > cap
         if np.any(over):
             # scale back the correction in cells that would overdraw heat
@@ -154,6 +180,25 @@ class BandCorrector:
         U[IDX_M3] = rho * u_new**3 + 3 * u_new * Pxx_new + Q
         K_new = np.clip(K_new, 0.0, 0.5 * 0.99 * Pxx_new)
         return U, K_new, float(from_th.sum())
+
+
+def calibrate_dynamic(Uc0, Uf0, r, cfg, t_end, model, n_iter=3, relax=1.0,
+                      **corr_kw):
+    """Self-consistent band correction: measure the damping, correct, re-
+    measure the residual damping WITH the correction active, update
+    nu <- nu + relax * nu_residual (in the corrected band), repeat.
+    Returns (corrector, history[(kc, nu, nu_residual)])."""
+    Nc = Uc0.shape[1]
+    kc, nu, _, _ = measure_transfer(Uc0, Uf0, r, cfg, t_end, model=model)
+    hist = []
+    corr = BandCorrector(kc, nu, Nc, **corr_kw)
+    for _ in range(n_iter):
+        _, nres, _, _ = measure_transfer(Uc0, Uf0, r, cfg, t_end, model=model,
+                                         corrector=corr)
+        hist.append((kc, nu.copy(), nres.copy()))
+        nu = np.maximum(nu + relax * nres, 0.0)
+        corr = BandCorrector(kc, nu, Nc, **corr_kw)
+    return corr, hist
 
 
 class RunAborted(RuntimeError):

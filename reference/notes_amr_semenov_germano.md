@@ -164,6 +164,75 @@ should then persist for ~ min(eddy time at k_c, numerical damping time),
 so it should matter more with low-dissipation schemes such as PPM.
 Measuring φ_band online is dimension-agnostic and carries over directly.
 
+## Band correction: deconvolving the scheme's numerical damping (prototype)
+
+Motivation: numerical dissipation acts far above the grid scale. On this
+problem (N_c = 256), the coarse/filtered-DNS spectrum ratio T(k) is:
+
+| wavelength (coarse cells) | first-order T(k) | MUSCL-MC T(k) |
+|---|---|---|
+| 64–85 | 0.87–0.93 | 1.00 |
+| 37–43 | 0.75 | 1.00 |
+| 21–26 | 0.57 | 0.95 |
+| 11–13 | 0.30 | 0.94 |
+| 8–10 | 0.17 | 0.82 |
+| 4–5 | 0.06 | 0.39 |
+
+The per-step coarse–fine defect, however, sits mostly at the grid scale:
+80–90% of its power is at wavelengths under 6 cells for first-order, and
+the bands under 10 cells hold 91% of it for MUSCL. The large-scale
+deficit is the accumulation of small systematic per-step errors.
+
+`dfmm/band_correction.py` (ADM-style, after Stolz & Adams):
+- `TransferMeter` / `measure_transfer`: measure the one-step damping rate
+  ν(k) per band from the full-coverage AMR defect. Estimators: energy ratio
+  (default) or regression; they agree to 5–20%. First-order: ν ∝ k²,
+  measurable already at 40–85 cells.
+- `BandCorrector`: multiplies the velocity spectrum by the truncated van
+  Cittert factor Q_N(e^{−νΔt}) for wavelengths ≥ λ_min, optionally tapered
+  to zero toward λ_min (the analogue of ADM's relaxation term). Momentum is
+  exact. The added KE is funded from K first, then from a capped share
+  `heat_fraction` of P_th.
+- `calibrate_dynamic`: re-measures the residual damping with the correction
+  active (via `TwoLevelAMR.coarse_hook`) and iterates ν ← ν + ν_res.
+- `run_corrected`: coarse-only runs that raise `RunAborted` if the state
+  becomes non-finite or the time step collapses.
+
+Probe results (`experiments/21_band_correction_probe.py`; first-order HLL,
+calibrated on seed 42, tested on held-out seeds 77/101; T for the
+64–256 / 32–64 / 16–32 / 8–16-cell bands):
+
+| variant | result |
+|---|---|
+| no correction | 0.90–0.95 / 0.62–0.83 / 0.69–0.74 / 0.26–0.28 |
+| hard cutoff at λ ≥ 8, one-pass ν | 0.96–1.00 / 0.81–0.85 / 0.83–1.24 / **5.4–6.3** (pile-up at the cutoff) |
+| taper 8→32, one-pass ν | 1.29–1.35 / 1.27–1.38 / 1.5–1.7 / 0.63–0.72 (large-scale over-correction) |
+| dynamic ν, heat allowed | converges a priori (residual 12–26%), but **every** a-posteriori run blows up (t ≈ 0.02–0.09) |
+| dynamic, taper, K-only funding | seed 101: **1.04 / 0.92 / 0.91 / 0.43** with ~0 heat drawn; seed 77: blows up at t = 0.13 |
+
+Lessons:
+1. ADM's two ingredients are both needed. Deconvolution without relaxation
+   piles energy up at the cutoff.
+2. Damping measured on the uncorrected scheme over-corrects once the band
+   is restored, because part of it was transfer into the damped band.
+   Self-consistent (dynamic) calibration is required, and the AMR coarse
+   hook provides it.
+3. A-priori convergence does not give a-posteriori stability. A global
+   linear anti-diffusion with cell-wise energy caps is not robust near
+   shocks: per-cell limiting makes the effective amplification
+   discontinuous, which feeds grid-scale ringing.
+4. Funding only from K (no heat) is the physically consistent version and
+   gives the best result when it is stable. In 1D, however, the dissipation
+   in the 10–60-cell band is genuinely shock heating, and K (f_K ≈ 0.05)
+   holds little of it.
+
+To make it robust: a local (compact-stencil) filter instead of the global
+FFT; correction scale factors smoothed in space; route the in-band
+numerical dissipation D_band to the reservoir; in 3D, act on the solenoidal
+velocity only. The real target is 3D vortical flow, where under-resolved
+swirls in the 10–60-cell band lose energy to numerical dissipation rather
+than to shocks.
+
 ## Next steps
 
 1. Dynamic regridding driven by the defect |ε| relative to the model's
