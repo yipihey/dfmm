@@ -156,9 +156,16 @@ class BandCorrector:
         return U, K_new, float(from_th.sum())
 
 
-def run_corrected(U, t_end, save_times, cfg, model, corrector=None, K=None):
+class RunAborted(RuntimeError):
+    pass
+
+
+def run_corrected(U, t_end, save_times, cfg, model, corrector=None, K=None,
+                  dt_floor=1e-7):
     """Single-level periodic run with K model and optional band correction.
-    Returns snapshots [(t, U, K)] and the cumulative thermal debit."""
+    Returns snapshots [(t, U, K)] and the cumulative thermal debit.
+    Raises RunAborted if the CFL step collapses below dt_floor or the
+    state becomes non-finite (an unstable correction)."""
     N = U.shape[1]; dx = 1.0 / N
     K = np.zeros(N) if K is None else K.copy()
     U = U.copy(); t = 0.0; si = 0; th_debit = 0.0
@@ -166,7 +173,12 @@ def run_corrected(U, t_end, save_times, cfg, model, corrector=None, K=None):
     ws = Workspace.for_padded_state(np.ascontiguousarray(pad_periodic(U, cfg.n_ghost)),
                                     reconstruction=cfg.reconstruction)
     while si < len(save_times):
-        dt = min(cfg.cfl * dx / max_signal_speed(U), save_times[si] - t)
+        if not np.all(np.isfinite(U)):
+            raise RunAborted(f"non-finite state at t={t:.4g}")
+        dt_cfl = cfg.cfl * dx / max_signal_speed(U)
+        if dt_cfl < dt_floor:
+            raise RunAborted(f"CFL step {dt_cfl:.2e} < {dt_floor:.0e} at t={t:.4g}")
+        dt = min(dt_cfl, save_times[si] - t)
         if dt > 1e-14:
             U, K, _ = coarse_only_step(U, K, dx, dt, cfg.tau, cfg, model, ws)
             if corrector is not None:
