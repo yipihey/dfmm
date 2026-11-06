@@ -1,8 +1,10 @@
 # Two-level AMR as an online closure laboratory (1D)
 
-**Code:** `py-1d/dfmm/amr.py` · **Experiment:** `py-1d/experiments/19_amr_germano_online.py`
-(~2 min; `QUICK=1` for ~30 s) · **Tests:** `py-1d/tests/test_amr.py` (7 tests) ·
-**Figure:** `py-1d/paper/figs/amr_germano_online.png` · **Numbers:** `py-1d/data/amr_online_params.npz`
+**Code:** `py-1d/dfmm/amr.py` · **Experiments:** `py-1d/experiments/19_amr_germano_online.py`
+(~2 min), `py-1d/experiments/20_amr_refinement_nyquist.py` (~1 min); `QUICK=1` for smoke runs ·
+**Tests:** `py-1d/tests/test_amr.py` (15 tests) ·
+**Figures:** `py-1d/paper/figs/amr_germano_online.png`, `py-1d/paper/figs/amr_refinement_nyquist.png` ·
+**Numbers:** `py-1d/data/amr_online_params.npz`
 
 ## Idea
 
@@ -29,7 +31,12 @@ best seen as a *correction* to it, and three things follow:
 
 - `TwoLevelAMR`: static fine patch (or full coverage), Berger–Oliger
   subcycling with r fine steps per coarse step. Fine ghosts are the coarse
-  state, linearly interpolated in time and prolonged with minmod slopes.
+  state, linearly interpolated in time and prolonged by `prolong_cells`.
+  Plain linear prolongation of E_xx and ρu can make P_xx negative (it
+  reached −0.2 on the wave pool). `prolong_cells` therefore prolongs the
+  thermal P_th with minmod and takes the slope-induced sub-cell KE out of K,
+  which makes it positivity-preserving and conservative. First-order HLL or
+  MUSCL-Hancock (`cfg.reconstruction`).
   Projection, then refluxing of the two uncovered neighbours. It wraps the
   unchanged `cholesky.hll_step` (BGK disabled inside, reapplied outside).
 - K model (`TurbModel`). K is a *partition* of P_xx (P_xx = P_th,xx + 2K), not
@@ -103,13 +110,65 @@ than Laplace.
   stores forward-transferred energy, and noise could draw backscatter from K
   rather than from heat.
 
+## Refinement events: K_c → resolved fluctuations at the new Nyquist scale
+
+`refine_from_coarse` builds a new fine level. Modes:
+
+- `heat`: smooth prolongation, K handed to P_th (a hierarchy without K).
+- `keepK`: smooth prolongation, K_f = K_c − K_res.
+- `nyquist`: random-phase k^-n velocity fluctuations on wavelengths
+  2Δ_f…2Δ_c. They have zero mass-weighted mean per coarse cell (momentum
+  exact), and their KE is debited from P_xx (that is, from K) so E_xx is
+  exact. The total resolved sub-cell KE is set to φK_c with φ = 1 − r^{1−n}
+  (0.875 for n=2, r=8). Afterwards K_f = K_c − K_res, so Germano continuity
+  holds exactly.
+- `phi_band_only=True`: inject φ·K_c *on top of* the slope-restored part.
+- `shape='front'`: place the same energy in a tanh sub-grid shock in each
+  compressive coarse cell.
+
+Experiment 20 refines at t = 0.1 a coarse+K run (N_c = 256) by r = 8, then
+compares the fine level with the same-scheme DNS. (C_ε, f_K, φ_band) for
+each scheme come from a short online calibration run.
+
+1. **Box filter vs spectral band.** Only 9% (first-order) or 20% (MUSCL-MC)
+   of the box-filter K_res at N_c = 256 lies above k_c; the rest is sinc²
+   leakage of resolved modes just below k_c. The share is resolution-dependent
+   (first-order 26/17/9%, MUSCL 60/39/19% at N_c = 64/128/256). So
+   φ = 1 − r^{1−n} overfills the band 6.5–8.3×. The online-measured φ_band
+   (`band_fraction`) gives 2.3–3.1×. Most of the remainder is the coarse
+   K_c itself being 1.4–1.7× too large (constant-coefficient coarse run).
+   In a coarse-run probe at N_c = 128, MUSCL with φ = 0.875 hit 1.0× the DNS
+   band power. The bookkeeping is right; the amplitude needs the measured
+   band share.
+2. **Injected band energy does not persist in 1D.** For every injection
+   (random, steep spectrum, band-limited to k ≤ k_f/4, sub-grid shock
+   fronts), the band power collapses within 0.0025–0.005 (2–4 coarse
+   steps). From then on all modes follow the same curve: the band refills
+   from the resolved cascade (first-order: 0.53 of DNS at 0.01, 0.82 at
+   0.05; MUSCL: 0.65 at 0.01, 0.92 at 0.02). Estimate: the numerical
+   viscosity ν ≈ ½cΔ_f damps the new band on 1/(νk_c²) ≈ 0.008 at k_c and
+   ~1e-4 at the fine Nyquist. The eddy time Δ_c/σ_t ≈ 0.17. In 1D the
+   sub-grid content is shocks, which thermalize KE on a crossing time, so
+   shock-shaped fronts do no better. MUSCL holds the injection somewhat
+   longer, as expected from its lower dissipation.
+3. **What does persist is continuity of the total sub-coarse dispersion.**
+   K_res + ⟨K_f⟩ (what a Semenov-type star-formation criterion sees) equals
+   K_c at the refinement instant for keepK/nyquist/front, but drops to
+   0.18–0.21 of the DNS value for `heat`. It recovers over ~0.005 (MUSCL) to
+   ~0.02 (first-order). A virial-parameter criterion would see a spurious
+   collapse of σ_t in exactly the cells that were just refined.
+
+Expectation for 3D: solenoidal sub-grid motions at k ≳ k_c are not
+thermalized on a crossing time the way 1D shocks are. Nyquist injection
+should then persist for ~ min(eddy time at k_c, numerical damping time),
+so it should matter more with low-dissipation schemes such as PPM.
+Measuring φ_band online is dimension-agnostic and carries over directly.
+
 ## Next steps
 
-1. Dynamic regridding. Then the refinement event matters: prolongation can
-   either keep K_f = K_c or seed resolved fluctuations from K_c (correlated
-   over ~2 fine cells, as dfmm's ℓ_corr result suggests). Also use the
-   defect |ε| relative to the model's predicted variance as the refinement
-   criterion.
+1. Dynamic regridding driven by the defect |ε| relative to the model's
+   predicted variance, using `refine_from_coarse` at each new patch
+   (refinement events are done; see above).
 2. Coarse-only runs with time-dependent (C_ε, f_K) taken from an AMR run.
 3. Draw the KM-noise energy debit from K instead of P_th (physical backscatter).
 4. Resolve the experiment-11 vs production-coefficient discrepancy.

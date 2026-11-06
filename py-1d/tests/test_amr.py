@@ -97,3 +97,63 @@ def test_dynamic_fit_independent_of_initial_guess():
         out.append((amr.model.C_eps, amr.model.f_K))
     assert abs(out[0][0] - out[1][0]) < 5e-2 * max(1.0, out[0][0])
     assert abs(out[0][1] - out[1][1]) < 1e-2
+
+
+# ---------------------------------------------------------------- refinement
+from dfmm.amr import refine_from_coarse, pad_periodic, band_fraction
+
+
+@pytest.mark.parametrize("kw", [dict(mode="heat"), dict(mode="keepK"),
+                                dict(mode="nyquist"),
+                                dict(mode="nyquist", phi=0.2, phi_band_only=True),
+                                dict(mode="nyquist", shape="front")])
+def test_refinement_conserves_and_stays_positive(ic, kw):
+    Uc0, _ = ic
+    rho = Uc0[0]; u = Uc0[1] / rho
+    Kc = 0.1 * (Uc0[2] - rho * u * u)
+    Uf, Kf, info = refine_from_coarse(pad_periodic(Uc0, 1), pad_periodic(Kc, 1),
+                                      R, rng=np.random.default_rng(0), **kw)
+    Rf = restrict(Uf, R)
+    for k in (0, 1, 2, 3):          # mass, momentum, E_xx, P_perp per coarse cell
+        np.testing.assert_allclose(Rf[k], Uc0[k], rtol=0, atol=1e-13)
+    Pxx = Uf[2] - Uf[1]**2 / Uf[0]
+    assert (Pxx - 2 * Kf).min() > 0 and Kf.min() >= 0
+    if kw["mode"] != "heat":        # Germano continuity where K_c covers K_res0
+        ok = info["Kres0"] <= Kc
+        G = Kc - restrict(Kf, R) - resolved_subcell_ke(Uf, R)
+        assert np.abs(G[ok]).max() < 1e-12
+
+
+def test_nyquist_injection_hits_target_energy(ic):
+    Uc0, _ = ic
+    rho = Uc0[0]; u = Uc0[1] / rho
+    Kc = 0.1 * (Uc0[2] - rho * u * u)
+    Uf, Kf, info = refine_from_coarse(pad_periodic(Uc0, 1), pad_periodic(Kc, 1),
+                                      R, mode="nyquist", phi=0.5,
+                                      rng=np.random.default_rng(1))
+    ok = info["Kres0"] <= 0.5 * Kc
+    np.testing.assert_allclose(info["Kres"][ok], 0.5 * Kc[ok], rtol=1e-10)
+
+
+def test_band_fraction_of_band_limited_field():
+    nf, r = 256, 8
+    x = (np.arange(nf) + 0.5) / nf
+    U = np.zeros((8, nf)); U[0] = 1.0
+    U[1] = np.sin(2 * np.pi * 100 * x)        # all power above k_c = 16
+    assert band_fraction(U, r) > 0.9
+    U[1] = np.sin(2 * np.pi * 3 * x)          # all power far below k_c
+    assert band_fraction(U, r) < 1e-6
+
+
+def test_muscl_patch_conservation(ic):
+    Uc0, Uf0 = ic
+    cfg = SimulationConfig(reconstruction="muscl", limiter="mc")
+    i0, i1 = 8, 24
+    amr = TwoLevelAMR(Uc=Uc0.copy(), Uf=Uf0[:, i0 * R:i1 * R].copy(), i0=i0,
+                      i1=i1, r=R, cfg=cfg,
+                      model=TurbModel(enabled=True, C_eps=2.0, f_K=0.1))
+    T0 = amr.composite_totals()
+    _run(amr, 0.1)
+    T1 = amr.composite_totals()
+    for k in T0:
+        assert abs(T1[k] - T0[k]) < 1e-12, k
